@@ -102,6 +102,11 @@ public class MinesweeperScreen extends Screen {
             }
             return true;
         }
+        if (state == State.GAME_OVER) {
+            if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 22 && my <= cy + 40) { startGame(); return true; }
+            if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 44 && my <= cy + 62) { state = State.MENU; return true; }
+            return true;
+        }
         if (state != State.PLAYING) return super.mouseClicked(mx, my, btn);
 
         int gx = (int)((mx - offsetX) / cellSize);

@@ -29,7 +29,7 @@ public class Minecraft2DScreen extends Screen {
     // ─── 世界 ─────────────────────────────────────────────────
     private static final int   W   = 120;
     private static final int   H   = 64;
-    private static final int   BS  = 16;   // 方块像素
+    private static final int   BS  = 20;   // 方块像素（放大以提升清晰度）
     private static final float PW  = 0.6f; // 玩家宽
     private static final float PH  = 1.8f; // 玩家高
 
@@ -55,6 +55,8 @@ public class Minecraft2DScreen extends Screen {
 
     // ─── 相机 ─────────────────────────────────────────────────
     private float camX=0, camY=0;
+    /** 渲染/点击共用的整数像素偏移，消除取整不一致导致的偏移 */
+    private int camPX=0, camPY=0;
 
     // ─── 快捷栏 ──────────────────────────────────────────────
     /** 游戏逻辑用（放置/破坏） */
@@ -309,6 +311,7 @@ public class Minecraft2DScreen extends Screen {
         camX+=(tx-camX)*.12f;camY+=(ty-camY)*.12f;
         camX=Math.max(0,Math.min(W-(float)width/BS,camX));
         camY=Math.max(0,Math.min(H-(float)height/BS,camY));
+        camPX=Math.round(camX*BS);camPY=Math.round(camY*BS);
     }
 
     // ══════════════ 渲染 ══════════════
@@ -361,7 +364,7 @@ public class Minecraft2DScreen extends Screen {
         for(int x=sx;x<ex;x++)for(int y=sy;y<ey;y++){Block b=world[x][y];if(b!=null)drawBlock(g,b,x,y);}
     }
     private void drawBlock(GuiGraphics g,Block b,int wx,int wy){
-        int sx=(int)((wx-camX)*BS),sy=(int)((wy-camY)*BS);
+        int sx=wx*BS-camPX,sy=wy*BS-camPY;
         ResourceLocation t=TEX.get(b);
         if(t!=null){try{g.blit(t,sx,sy,0,0,BS,BS,BS,BS);shade(g,b,sx,sy);return;}catch(Exception ignored){}}
         g.fill(sx,sy,sx+BS,sy+BS,COL.getOrDefault(b,0xFF888888));
@@ -377,8 +380,8 @@ public class Minecraft2DScreen extends Screen {
      * ★ 修复渲染偏移：playerY=脚底，身体从 (screenY-BODY_PX) 到 screenY
      */
     private void renderPlayer(GuiGraphics g){
-        int px=(int)((playerX-camX)*BS);
-        int py=(int)((playerY-camY)*BS); // 脚底像素y
+        int px=Math.round(playerX*BS)-camPX;
+        int py=Math.round(playerY*BS)-camPY; // 脚底像素y
 
         boolean dmg=System.currentTimeMillis()-lastDmgTime<300;
         int bodyC=dmg?0xFFFF4444:0xFF1565C0;
@@ -404,14 +407,14 @@ public class Minecraft2DScreen extends Screen {
     }
 
     private void renderBreak(GuiGraphics g,int mx,int my){
-        int hx=(int)(camX+mx/(float)BS),hy=(int)(camY+my/(float)BS);
+        int hx=(camPX+mx)/BS,hy=(camPY+my)/BS;
         if(inW(hx,hy)&&world[hx][hy]!=null){
-            int sx=(int)((hx-camX)*BS),sy=(int)((hy-camY)*BS);
+            int sx=hx*BS-camPX,sy=hy*BS-camPY;
             g.fill(sx,sy,sx+BS,sy+1,0x77FFFFFF);g.fill(sx,sy,sx+1,sy+BS,0x77FFFFFF);
             g.fill(sx+BS-1,sy,sx+BS,sy+BS,0x77FFFFFF);g.fill(sx,sy+BS-1,sx+BS,sy+BS,0x77FFFFFF);
         }
         if(!holdBreak||breakBX<0||breakProg<=0)return;
-        int sx=(int)((breakBX-camX)*BS),sy=(int)((breakBY-camY)*BS);
+        int sx=breakBX*BS-camPX,sy=breakBY*BS-camPY;
         g.fill(sx,sy,sx+BS,sy+BS,(int)(0xAA*breakProg)<<24|0x000000);
         g.fill(sx,sy+BS-3,sx+BS,sy+BS,0xFF333333);
         g.fill(sx,sy+BS-3,sx+(int)(BS*breakProg),sy+BS,0xFFFFDD00);
@@ -424,7 +427,7 @@ public class Minecraft2DScreen extends Screen {
         float t=dayTick/2400f;String ts=t<.25f?"§8深夜":t<.5f?"§e白天":t<.75f?"§6傍晚":"§8夜晚";
         g.drawString(font,ts,width-40,8,0xFFFFFF);
         if(sprinting)g.drawString(font,"§e⚡疾跑",8,19,0xFFFFFF);
-        int hbx=(int)(camX+mx/(float)BS),hby=(int)(camY+my/(float)BS);
+        int hbx=(camPX+mx)/BS,hby=(camPY+my)/BS;
         if(inW(hbx,hby)&&world[hbx][hby]!=null)g.drawCenteredString(font,"§7["+bname(world[hbx][hby])+"]",width/2,height/2+20,0xAAAAAA);
         int cw=width/2,ch=height/2;
         g.fill(cw-5,ch-1,cw+5,ch+1,0x88FFFFFF);g.fill(cw-1,ch-5,cw+1,ch+5,0x88FFFFFF);
@@ -510,7 +513,7 @@ public class Minecraft2DScreen extends Screen {
             return super.mouseClicked(mx,my,btn);
         }
         if(dead||showInv)return super.mouseClicked(mx,my,btn);
-        int bx2=(int)(camX+mx/BS),by2=(int)(camY+my/BS);
+        int bx2=(camPX+(int)mx)/BS,by2=(camPY+(int)my)/BS;
         if(!inW(bx2,by2))return super.mouseClicked(mx,my,btn);
         if(btn==0&&world[bx2][by2]!=null){holdBreak=true;breakBX=bx2;breakBY=by2;breakProg=0;return true;}
         if(btn==1&&world[bx2][by2]==null&&hotbarBlock[slot]!=null&&hotbarCount[slot]>0){

@@ -355,7 +355,12 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (mx>=cx+4&&mx<=cx+104&&my>=cy+30&&my<=cy+52) { vsAI=false; initBoard(); return true; }
             return true;
         }
-        if (state==S.OVER) return super.mouseClicked(mx,my,btn);
+        if (state==S.OVER) {
+            int cx2=width/2, cy2=height/2;
+            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) { initBoard(); return true; }
+            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+44&&my<=cy2+62) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            return super.mouseClicked(mx,my,btn);
+        }
         if (promoPending) { handlePromoClick((int)mx,(int)my); return true; }
         int col=((int)mx-bx)/cellSize, row=((int)my-by)/cellSize;
         if (col<0||col>=8||row<0||row>=8) return super.mouseClicked(mx,my,btn);

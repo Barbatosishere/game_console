@@ -543,6 +543,10 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             }
             return true;
         }
+        if (gameState == GameState.GAME_OVER && lanMode != LAN_CLIENT) {
+            if (mx >= cx-80 && mx <= cx+80 && my >= cy+20 && my <= cy+38) { restart(); return true; }
+            if (mx >= cx-80 && mx <= cx+80 && my >= cy+44 && my <= cy+62) { gameState = GameState.MENU; session = null; return true; }
+        }
         return super.mouseClicked(mx, my, btn);
     }
 

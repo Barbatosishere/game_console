@@ -183,6 +183,10 @@ public class PlatformerScreen extends Screen {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (state == State.MENU && mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) { startGame(); return true; }
+        if (state == State.GAME_OVER) {
+            if (mx >= cx-60 && mx <= cx+60 && my >= cy+20 && my <= cy+38) { startGame(); return true; }
+            if (mx >= cx-60 && mx <= cx+60 && my >= cy+42 && my <= cy+60) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+        }
         return super.mouseClicked(mx, my, btn);
     }
 

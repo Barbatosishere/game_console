@@ -744,6 +744,13 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             if (mx>=cx-155&&mx<=cx-15&&my>=cy-54&&my<=cy-28) { initGame(false); return true; }
             if (mx>=cx+15 &&mx<=cx+155&&my>=cy-54&&my<=cy-28) { initGame(true);  return true; }
         }
+        if (gameOver && lanMode != LAN_CLIENT) {
+            int ww=320, wh=190;
+            int wx=(this.width-ww)/2, wy=(this.height-wh)/2;
+            int btnY = wy+wh-54;
+            if (mx>=wx+20&&mx<=wx+ww-20&&my>=btnY&&my<=btnY+20) { initGame(gameMode == GameMode.TWO_PLAYER); return true; }
+            if (mx>=wx+20&&mx<=wx+ww-20&&my>=btnY+24&&my<=btnY+44) { gameMode = GameMode.MENU; gameRunning = false; return true; }
+        }
         return super.mouseClicked(mx, my, btn);
     }
 

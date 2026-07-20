@@ -105,6 +105,12 @@ public class Match3GameScreen extends Screen {
         GRID_START_X = (width - GRID_SIZE * CELL_SIZE) / 2;
         GRID_START_Y = (height - GRID_SIZE * CELL_SIZE) / 2;
     }
+
+    @Override
+    public void init() {
+        // ★ 修复偏移：每次屏幕尺寸变化时重新计算布局
+        calcDynamicLayout();
+    }
     
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {

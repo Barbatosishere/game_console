@@ -244,12 +244,6 @@ public class GameSelectorScreen extends Screen {
     public boolean mouseClicked(double mx, double my, int btn) {
         int cx = width / 2;
 
-        // ─── 联机大厅点击 ───
-        if (lobbyHovered) {
-            Minecraft.getInstance().setScreen(new MultiplayerLobbyScreen());
-            return true;
-        }
-
         // ─── 分类标签点击 ───
         int catY = 48;
         int catTotalW = 0;
@@ -267,6 +261,13 @@ public class GameSelectorScreen extends Screen {
                 return true;
             }
             catX += tw + 4;
+        }
+
+        // ─── 联机大厅点击（保持与渲染相同的间距计算） ───
+        catX += 8;
+        if (mx >= catX && mx <= catX + lobbyW && my >= catY && my <= catY + 14) {
+            Minecraft.getInstance().setScreen(new MultiplayerLobbyScreen());
+            return true;
         }
 
         // ─── 游戏卡片点击 ───

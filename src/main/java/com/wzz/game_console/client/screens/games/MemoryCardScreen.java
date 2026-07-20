@@ -92,6 +92,10 @@ public class MemoryCardScreen extends Screen {
 
     @Override
     public void init() {
+        clearWidgets();
+        // ★ 修复偏移：构造时 width/height 为0，必须在 init 中重新计算网格位置
+        startX = (this.width - (GRID_COLS * (CARD_SIZE + CARD_MARGIN))) / 2;
+        startY = (this.height - (GRID_ROWS * (CARD_SIZE + CARD_MARGIN))) / 2;
         int centerX = this.width / 2;
         this.addRenderableWidget(Button.builder(Component.literal("重新开始"), b -> {
             initializeGame();

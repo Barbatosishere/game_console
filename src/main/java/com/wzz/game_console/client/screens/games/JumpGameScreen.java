@@ -201,16 +201,30 @@ public class JumpGameScreen extends Screen {
 
     void addPlatform() {
         Platform last = platforms.get(platforms.size()-1);
-        float angle = rng.nextFloat() * (float)Math.PI / 2f
-                      - (float)Math.PI / 4f; // ±45° 偏转
-        float dist  = DIST_MIN + rng.nextFloat()*(DIST_MAX-DIST_MIN);
-        // 基础方向沿 x+z 对角方向，保证等轴视图中向右下前进
-        float baseAngle = (float)Math.PI / 4f;
-        float finalAngle = baseAngle + angle;
-        float nx = last.wx + dist * (float)Math.cos(finalAngle);
-        float nz = last.wz + dist * (float)Math.sin(finalAngle);
+        float nx = last.wx + DIST_MAX, nz = last.wz + DIST_MAX;
         float hw  = PLAT_MIN_W + rng.nextFloat()*(PLAT_MAX_W-PLAT_MIN_W);
         PlatType t= PlatType.values()[rng.nextInt(PlatType.values().length)];
+        // 尝试生成不与旧平台重叠的位置（跳过相邻平台，间距由 DIST 控制）
+        for (int attempt = 0; attempt < 25; attempt++) {
+            float angle = rng.nextFloat() * (float)Math.PI / 2f
+                          - (float)Math.PI / 4f; // ±45° 偏转
+            float dist  = DIST_MIN + rng.nextFloat()*(DIST_MAX-DIST_MIN);
+            if (attempt > 8) dist = Math.min(dist + (attempt-8)*0.35f, 6.4f); // 多次失败时适度拉远（不超过最大跳跃距离）
+            // 基础方向沿 x+z 对角方向，保证等轴视图中向右下前进
+            float finalAngle = (float)Math.PI / 4f + angle;
+            nx = last.wx + dist * (float)Math.cos(finalAngle);
+            nz = last.wz + dist * (float)Math.sin(finalAngle);
+            hw  = PLAT_MIN_W + rng.nextFloat()*(PLAT_MAX_W-PLAT_MIN_W);
+            t   = PlatType.values()[rng.nextInt(PlatType.values().length)];
+            boolean ok = true;
+            for (int i = Math.max(0, platforms.size()-6); i < platforms.size()-1; i++) {
+                Platform p = platforms.get(i);
+                float dx = nx - p.wx, dz = nz - p.wz;
+                float minD = hw + p.hw + 1.5f; // 额外间距防止方块角部视觉重叠
+                if (dx*dx + dz*dz < minD*minD) { ok = false; break; }
+            }
+            if (ok) break;
+        }
         Platform np = new Platform(nx, nz, hw, t);
         np.lit = false;
         platforms.add(np);
@@ -844,7 +858,15 @@ public class JumpGameScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx,double my,int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
-        if (btn==0) { if (!gameOver&&player.onGround) charging=true; }
+        if (gameOver) {
+            int ww=300, wh=160;
+            int wx=(width-ww)/2, wy=(height-wh)/2;
+            int btnY=wy+88;
+            if (mx>=wx+20&&mx<=wx+130&&my>=btnY&&my<=btnY+24) { startGame(); return true; }
+            if (mx>=wx+150&&mx<=wx+ww-20&&my>=btnY&&my<=btnY+24) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            return true;
+        }
+        if (btn==0) { if (player.onGround) charging=true; }
         return true;
     }
     @Override

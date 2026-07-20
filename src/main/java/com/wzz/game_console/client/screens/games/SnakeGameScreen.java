@@ -204,6 +204,10 @@ public class SnakeGameScreen extends Screen {
         if (state == State.MENU) {
             if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 40 && my <= cy + 62) { startGame(); return true; }
         }
+        if (state == State.GAME_OVER) {
+            if (mx >= cx - 70 && mx <= cx + 70 && my >= cy + 20 && my <= cy + 38) { startGame(); return true; }
+            if (mx >= cx - 70 && mx <= cx + 70 && my >= cy + 42 && my <= cy + 60) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+        }
         return super.mouseClicked(mx, my, btn);
     }
 
