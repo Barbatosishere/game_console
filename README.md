@@ -1,4 +1,4 @@
-# 🎮 小桃游戏机 (Momoi Game Console)
+# 🎮 Game Console 游戏机
 
 一个 Minecraft 模组，为游戏添加一台便携式游戏机，内含 **32 款**经典小游戏。
 

@@ -1,7 +1,7 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "com.wzz.momoi_game_console.mixin",
+  "package": "com.wzz.game_console.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
   ],
