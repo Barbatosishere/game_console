@@ -319,6 +319,11 @@ public class BlackHoleGameScreen extends Screen {
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(graphics, font, width, height, mouseX, mouseY);
     }
     
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 游戏已在render()中绘制不透明背景,阻止默认32x32菜单纹理和模糊效果
+    }
+
     public void renderBackground(GuiGraphics graphics) {
         // 使用黑曜石纹理作为背景
         RenderSystem.setShaderTexture(0, BACKGROUND);
@@ -400,6 +405,7 @@ public class BlackHoleGameScreen extends Screen {
             int centerX = width / 2;
             int centerY = height / 2;
             
+            graphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
             graphics.fill(0, 0, width, height, 0x80000000);
             
             String gameOver = "游戏结束!";

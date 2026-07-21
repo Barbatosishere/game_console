@@ -426,6 +426,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             case PLAYING -> renderBoard(g,mx,my);
             case OVER    -> { renderBoard(g,mx,my); renderOver(g,mx,my); }
         }
+        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
     }
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx=width/2, cy=height/2;

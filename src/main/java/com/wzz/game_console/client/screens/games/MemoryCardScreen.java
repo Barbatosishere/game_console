@@ -120,6 +120,11 @@ public class MemoryCardScreen extends Screen {
     private long elapsedSeconds;
 
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(@NotNull GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         GameRenderHelper.fillDarkBackground(graphics, width, height);
 

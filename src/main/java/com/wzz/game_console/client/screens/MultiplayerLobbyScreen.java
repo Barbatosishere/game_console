@@ -14,6 +14,7 @@ import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 多人游戏联机大厅
@@ -59,10 +60,15 @@ public class MultiplayerLobbyScreen extends Screen {
     private UUID invitedPlayer = null;
 
     // ─── 斗地主三人联机：需要选两个玩家 ───
-    private final Set<UUID> selectedLanPeers = new LinkedHashSet<>();  // 最多2个
+    private final Set<UUID> selectedLanPeers = Collections.synchronizedSet(new LinkedHashSet<>());  // 最多2个，线程安全
     private int pendingAccepts = 0;       // 已接受的数量
     private int expectedAccepts = 1;      // 期待的接受数量（斗地主=2，其他=1）
-    private final Map<UUID, String> acceptedPeers = new LinkedHashMap<>(); // uuid->name
+    private final Map<UUID, String> acceptedPeers = new ConcurrentHashMap<>(); // uuid->name，线程安全
+    private UUID lanHostUuid = null;      // 发起邀请时记录主机自身UUID
+
+    // ─── 等待超时机制 ───
+    private long waitingStartTick = 0;
+    private static final long WAIT_TIMEOUT_TICKS = 600; // 30秒超时
 
     // ─── 分页 ───
     private int playerListPage = 0;
@@ -107,6 +113,8 @@ public class MultiplayerLobbyScreen extends Screen {
                     if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
                         lobby.state = LobbyState.MODE_SELECT;
                         lobby.waitingMessage = "对方拒绝了邀请";
+                        lobby.resetLanWaitState();
+                        lobby.waitingMessage = "对方拒绝了邀请"; // resetLanWaitState会清空，重新设置提示
                     }
                 });
             }
@@ -170,8 +178,11 @@ public class MultiplayerLobbyScreen extends Screen {
     /** 斗地主：选好2个玩家后批量发邀请 */
     private void sendLandlordInvites() {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
-        String senderName = Minecraft.getInstance().player != null ?
-                Minecraft.getInstance().player.getGameProfile().getName() : "???";
+        Minecraft mc = Minecraft.getInstance();
+        String senderName = mc.player != null ?
+                mc.player.getGameProfile().getName() : "???";
+        // 记录主机UUID，启动游戏时传入三个UUID（主机+两个接受者）
+        lanHostUuid = mc.player != null ? mc.player.getGameProfile().getId() : null;
         for (UUID uuid : selectedLanPeers) {
             ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
                     MultiplayerGamePacket.PacketType.INVITE, uuid, game.id, senderName
@@ -182,7 +193,20 @@ public class MultiplayerLobbyScreen extends Screen {
         pendingAccepts = 0;
         acceptedPeers.clear();
         state = LobbyState.WAITING;
+        waitingStartTick = tickCount;
         waitingMessage = "等待两位玩家接受邀请 (0/2)...";
+    }
+
+    /** 统一清理联机等待状态（无论成功或失败都调用） */
+    private void resetLanWaitState() {
+        invitedPlayer = null;
+        lanHostUuid = null;
+        pendingAccepts = 0;
+        expectedAccepts = 1;
+        acceptedPeers.clear();
+        selectedLanPeers.clear();
+        waitingMessage = "";
+        waitingStartTick = 0;
     }
 
     private void onInviteAccepted(MultiplayerGamePacket packet) {
@@ -199,15 +223,13 @@ public class MultiplayerLobbyScreen extends Screen {
             waitingMessage = "等待两位玩家接受邀请 (" + pendingAccepts + "/2)...";
 
             if (pendingAccepts >= 2) {
-                // 两人都接受，启动游戏
+                // 两人都接受，启动游戏（传入三个UUID：主机 + 两个接受者）
                 UUID[] peers = acceptedPeers.keySet().toArray(new UUID[0]);
                 UUID p1 = peers[0], p2 = peers[1];
                 Screen gs = new com.wzz.game_console.client.screens.games.landlord
-                        .LandlordGameScreen(true, p1, p2);
+                        .LandlordGameScreen(true, lanHostUuid, p1, p2);
                 Minecraft.getInstance().setScreen(gs);
-                waitingMessage = "";
-                selectedLanPeers.clear();
-                acceptedPeers.clear();
+                resetLanWaitState(); // 统一清理
             }
         } else {
             // 普通单人邀请
@@ -218,8 +240,7 @@ public class MultiplayerLobbyScreen extends Screen {
             } else {
                 state = LobbyState.GAME_SELECT;
             }
-            waitingMessage = "";
-            invitedPlayer = null;
+            resetLanWaitState(); // 统一清理
         }
     }
 
@@ -230,6 +251,13 @@ public class MultiplayerLobbyScreen extends Screen {
                 && tickCount - lastRefreshTime > 40) {
             requestPlayerList();
             lastRefreshTime = tickCount;
+        }
+        // 等待超时机制：长时间无人接受则自动取消邀请
+        if (state == LobbyState.WAITING && waitingStartTick > 0
+                && tickCount - waitingStartTick > WAIT_TIMEOUT_TICKS) {
+            state = LobbyState.MODE_SELECT;
+            resetLanWaitState();
+            waitingMessage = "等待超时，邀请已取消"; // resetLanWaitState会清空，重新设置提示
         }
     }
 
@@ -452,6 +480,7 @@ public class MultiplayerLobbyScreen extends Screen {
         int cx = width / 2, cy = height / 2;
 
         // 半透明全屏遮罩
+        g.flush(); // 防止先绘制的标题文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0, 0, width, height, 0xAA000022);
 
         // 弹窗主体
@@ -579,6 +608,7 @@ public class MultiplayerLobbyScreen extends Screen {
                     pendingAccepts = 0;
                     acceptedPeers.clear();
                     state = LobbyState.WAITING;
+                    waitingStartTick = tickCount;
                     waitingMessage = "等待对方接受邀请...";
                     return true;
                 }
@@ -625,6 +655,7 @@ public class MultiplayerLobbyScreen extends Screen {
             case WAITING -> {
                 if (mx >= cx - 40 && mx <= cx + 40 && my >= height / 2 + 10 && my <= height / 2 + 28) {
                     state = LobbyState.MODE_SELECT;
+                    resetLanWaitState(); // 取消时统一清理
                     return true;
                 }
             }
@@ -687,7 +718,7 @@ public class MultiplayerLobbyScreen extends Screen {
                 case MODE_SELECT -> { state = LobbyState.GAME_SELECT; return true; }
                 case PLAYER_LIST -> { state = LobbyState.MODE_SELECT; return true; }
                 case PLAYER_LIST_MULTI -> { selectedLanPeers.clear(); state = LobbyState.MODE_SELECT; return true; }
-                case WAITING     -> { state = LobbyState.MODE_SELECT; return true; }
+                case WAITING     -> { state = LobbyState.MODE_SELECT; resetLanWaitState(); return true; }
                 default -> { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             }
         }

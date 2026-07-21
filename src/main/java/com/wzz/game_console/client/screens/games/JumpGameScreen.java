@@ -471,6 +471,11 @@ public class JumpGameScreen extends Screen {
     }
 
     // ── 背景 ─────────────────────────────────────
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 游戏已在render()中绘制不透明背景,阻止默认32x32菜单纹理和模糊效果
+    }
+
     public void renderBackground(GuiGraphics g) {
         // 渐变天空
         for (int i=0;i<height;i++) {
@@ -823,6 +828,7 @@ public class JumpGameScreen extends Screen {
 
     // ── 游戏结束 ────────────────────────────────────
     void renderGameOver(GuiGraphics g) {
+        g.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xBB0A0F1A);
         int cx=width/2, cy=height/2;
         int ww=300, wh=160;

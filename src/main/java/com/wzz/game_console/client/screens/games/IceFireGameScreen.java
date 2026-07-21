@@ -253,6 +253,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     // ──────────────── 结算画面 ────────────────
     private void renderGameOver(GuiGraphics g) {
         // 半透明遮罩
+        g.flush(); // 防止先绘制的游戏文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0, 0, width, height, 0xAA000000);
         int cx = width / 2, cy = height / 2;
         boolean win = session != null && session.isVictory();

@@ -273,6 +273,7 @@ public class PipePuzzleScreen extends Screen {
     }
 
     private void drawWin(GuiGraphics g, int mx, int my) {
+        g.flush(); // 防止先绘制的管道/HUD文字盖住遮罩背景（批量渲染text批次后置）
         int cx=width/2, cy=height/2;
         int pulse=(int)(128+80*Math.sin((tickCount-winTick)*0.2));
         int wc=0xFF000000|(pulse<<16)|(255<<8)|pulse;

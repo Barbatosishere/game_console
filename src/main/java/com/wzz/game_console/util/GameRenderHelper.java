@@ -159,6 +159,9 @@ public class GameRenderHelper {
 
     /** 半透明游戏结束遮罩 */
     public static void drawGameOverOverlay(GuiGraphics g, int w, int h) {
+        // 先flush将之前绘制的游戏内容落盘：GuiGraphics批量渲染时text批次整体晚于gui批次，
+        // 不flush会导致先绘制的游戏文字盖住遮罩背景
+        g.flush();
         g.fill(0, 0, w, h, 0xAA000000);
     }
 
@@ -385,6 +388,9 @@ public class GameRenderHelper {
 
     /** 绘制ESC退出确认弹窗覆盖层 */
     public static void drawExitConfirmOverlay(GuiGraphics g, Font font, int w, int h, int mx, int my) {
+        // 先flush将之前绘制的游戏内容落盘：GuiGraphics批量渲染时text批次整体晚于gui批次，
+        // 不flush会导致先绘制的游戏文字盖住弹窗背景
+        g.flush();
         g.fill(0, 0, w, h, 0xAA000000);
         int cx = w / 2, cy = h / 2;
         int ww = 240, wh = 90;

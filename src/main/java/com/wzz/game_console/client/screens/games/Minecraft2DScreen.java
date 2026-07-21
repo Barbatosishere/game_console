@@ -316,6 +316,11 @@ public class Minecraft2DScreen extends Screen {
 
     // ══════════════ 渲染 ══════════════
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics g,int mx,int my,float pt){
         if(!started){renderMenu(g,mx,my);return;}
         g.fill(0,0,width,height,skyColor());
@@ -480,6 +485,7 @@ public class Minecraft2DScreen extends Screen {
         g.drawString(font,"§7挖到的方块自动进入快捷栏",px+8,py+79,0xFFFFFF);
     }
     private void renderDeath(GuiGraphics g){
+        g.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xAA660000);
         drawSh(g,"你死了！",width/2,height/2-16,0xFF4444,2);
         g.drawCenteredString(font,"§73秒后自动重生...",width/2,height/2+6,0xAAAAAA);

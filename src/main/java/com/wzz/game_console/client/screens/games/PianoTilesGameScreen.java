@@ -1018,6 +1018,11 @@ public class PianoTilesGameScreen extends Screen {
     }
 
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         // 绘制背景
         guiGraphics.fill(0, 0, this.width, this.height, 0xFF0A0A0A);
@@ -1033,8 +1038,8 @@ public class PianoTilesGameScreen extends Screen {
             }
         }
 
-        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
         super.render(guiGraphics, mouseX, mouseY, partialTick);
+        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
     }
 
     private void renderGameArea(GuiGraphics guiGraphics) {
@@ -1230,6 +1235,7 @@ public class PianoTilesGameScreen extends Screen {
             int hintX = (this.width - font.width(resumeHint)) / 2;
             int pauseY = (this.height - font.lineHeight) / 2;
 
+            guiGraphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
             guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
             guiGraphics.drawString(font, pauseText, pauseX, pauseY, 0xFFFFFFFF);
             guiGraphics.drawString(font, resumeHint, hintX, pauseY + font.lineHeight + 10, 0xFFCCCCCC);
@@ -1310,6 +1316,7 @@ public class PianoTilesGameScreen extends Screen {
 
     private void renderGameOverScreen(GuiGraphics guiGraphics) {
         // 半透明遮罩
+        guiGraphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
 
         // 游戏结束窗口

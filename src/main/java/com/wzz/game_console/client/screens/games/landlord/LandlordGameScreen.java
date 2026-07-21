@@ -40,6 +40,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
 
     // ── LAN ───────────────────────────────────────────
     private int  lanMode     = LAN_NONE;
+    private UUID hostSelfUuid = null;  // host's own UUID for 3-player LAN
     private UUID peer1Uuid   = null;
     private UUID peer2Uuid   = null;
     private UUID hostUuid    = null;
@@ -59,9 +60,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         super(Component.literal("斗地主"));
         game=new LandlordGame(); ai1=new AIPlayer(); ai2=new AIPlayer();
     }
-    public LandlordGameScreen(boolean isHost,UUID p1,UUID p2){
+    public LandlordGameScreen(boolean isHost, UUID hostSelf, UUID p1, UUID p2){
         super(Component.literal("斗地主"));
-        lanMode=LAN_HOST; peer1Uuid=p1; peer2Uuid=p2; myPlayerIdx=0;
+        lanMode=LAN_HOST; hostSelfUuid=hostSelf; peer1Uuid=p1; peer2Uuid=p2; myPlayerIdx=0;
         game=new LandlordGame();
     }
     public LandlordGameScreen(boolean isHost,UUID host){
@@ -158,14 +159,18 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     @Override public void render(GuiGraphics g,int mx,int my,float pt){
         g.fillGradient(0,0,width,height,BG1,BG2);
         GameRenderHelper.renderDecorativeLines(g,width,height,tickCount,0x001133);
-        if(waitingStart){renderWait(g);return;}
-        drawHUD(g);
-        drawSideHands(g);
-        drawCenter(g);
-        drawMyHand(g,mx,my);
-        drawActionBar(g,mx,my);
-        drawMsgBubble(g);
-        if(game.getGameState()==LandlordGame.GameState.ENDED) drawResult(g,mx,my);
+        if(waitingStart){
+            renderWait(g);
+        }else{
+            drawHUD(g);
+            drawSideHands(g);
+            drawCenter(g);
+            drawMyHand(g,mx,my);
+            drawActionBar(g,mx,my);
+            drawMsgBubble(g);
+            if(game.getGameState()==LandlordGame.GameState.ENDED) drawResult(g,mx,my);
+        }
+        if(showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
     }
 
     private void renderWait(GuiGraphics g){
@@ -270,6 +275,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
 
     private void drawResult(GuiGraphics g,int mx,int my){
         int cx=width/2,cy=height/2;
+        g.flush(); // 防止先绘制的扑克牌文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xAA000000);
         int[]sc=game.getScores();
         boolean win=sc[myPlayerIdx]>0;

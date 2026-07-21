@@ -231,6 +231,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             case PLAYING -> renderPlaying(g, mx, my);
             case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g, mx, my); }
         }
+        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
     }
 
     private void renderMenu(GuiGraphics g, int mx, int my) {
@@ -318,6 +319,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     private void renderGameOver(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
+        g.flush(); // 防止先绘制的棋盘/HUD文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0, 0, width, height, 0xAA000000);
 
         int pw = 300, ph = 120;

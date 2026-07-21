@@ -233,6 +233,11 @@ public class SudokuGameScreen extends Screen {
     }
 
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         // 绘制背景
         guiGraphics.fill(0, 0, this.width, this.height, 0xFF1E1E1E);
@@ -363,6 +368,7 @@ public class SudokuGameScreen extends Screen {
 
     private void renderCompletionScreen(GuiGraphics guiGraphics) {
         // 半透明遮罩
+        guiGraphics.flush(); // 防止先绘制的数独数字盖住遮罩背景（批量渲染text批次后置）
         guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
 
         // 完成窗口

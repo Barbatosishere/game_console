@@ -273,6 +273,11 @@ public class WhackAMoleScreen extends Screen {
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
     }
 
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 游戏已在render()中绘制不透明背景,阻止默认32x32菜单纹理和模糊效果
+    }
+
     public void renderBackground(GuiGraphics guiGraphics) {
         // 渲染草地背景
         try {
@@ -366,6 +371,7 @@ public class WhackAMoleScreen extends Screen {
 
     private void renderGameOver(GuiGraphics guiGraphics) {
         // 半透明背景
+        guiGraphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
 
         // 游戏结束文本

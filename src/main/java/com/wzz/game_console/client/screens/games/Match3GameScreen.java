@@ -113,6 +113,11 @@ public class Match3GameScreen extends Screen {
     }
     
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         // 渲染背景
         GameRenderHelper.fillDarkBackground(guiGraphics, width, height);

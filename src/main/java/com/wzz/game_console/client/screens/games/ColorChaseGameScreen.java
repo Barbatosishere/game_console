@@ -398,6 +398,11 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     //  渲染
     // ══════════════════════════════════════
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics g, int mx, int my, float pt) {
         g.fill(0, 0, this.width, this.height, 0xFF1A1A2E);
 
@@ -654,6 +659,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
     // ─────── 游戏结束弹窗 ───────
     private void renderGameOver(GuiGraphics g) {
+        g.flush(); // 防止先绘制的游戏文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0, 0, this.width, this.height, 0x88000000);
 
         int ww=320, wh=190;

@@ -1,5 +1,6 @@
 package com.wzz.game_console.client.screens.games;
 
+import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -238,6 +239,22 @@ public class SokobanScreen extends Screen {
     }
 
     @Override
+    public boolean mouseClicked(double mx, double my, int btn) {
+        if (showExitConfirm) {
+            int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height);
+            if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            if (click == 2) { showExitConfirm = false; return true; }
+            return true;
+        }
+        return super.mouseClicked(mx, my, btn);
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         GameRenderHelper.fillDarkBackground(guiGraphics, width, height);
 
@@ -289,8 +306,8 @@ public class SokobanScreen extends Screen {
         guiGraphics.drawCenteredString(font, "WASD移动 | R重置 | N下一关",
                 width / 2, startY - 15, 0xAAAAAA);
 
-        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
         super.render(guiGraphics, mouseX, mouseY, partialTick);
+        if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
     }
 
     private void movePlayer(int dx, int dy) {

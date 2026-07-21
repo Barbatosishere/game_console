@@ -284,6 +284,11 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     //  主渲染
     // ══════════════════════════════════════════════
     @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
+    }
+
+    @Override
     public void render(GuiGraphics g, int mx, int my, float pt) {
         g.fill(0, 0, width, height, 0xFF140E00);
         if (gameMode == GameMode.MENU) {
@@ -295,6 +300,9 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             drawPieces(g);
             drawHUD(g);
             if (gameMode == GameMode.PVA) drawAiStatus(g);
+            // 覆盖层绘制前先flush：GuiGraphics批量渲染时text批次整体晚于gui批次，
+            // 不flush会导致先绘制的棋子文字盖住后绘制的弹窗/结束面板背景
+            if (gameOver || showExitConfirm) g.flush();
             if (gameOver) drawGameOver(g);
             if (showExitConfirm) drawExitConfirm(g, mx, my);
         }

@@ -344,6 +344,7 @@ public class KlotskiScreen extends Screen {
     }
 
     private void drawWin(GuiGraphics g, int mx, int my) {
+        g.flush(); // 防止先绘制的棋子文字盖住遮罩背景（批量渲染text批次后置）
         int cx = width/2, cy = height/2;
         g.fill(0, 0, width, height, 0xAA000000);
 
