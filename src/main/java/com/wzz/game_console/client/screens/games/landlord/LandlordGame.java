@@ -108,6 +108,10 @@ public class LandlordGame {
         }
 
         if (cards.isEmpty()) {
+            // 桌面为空说明轮到当前玩家领出，领出必须实际出牌，禁止空过牌（让牌只允许在桌面已有牌时）
+            if (lastPlayedCards.isEmpty()) {
+                return false;
+            }
             // 过牌
             passed[player] = true;
             
@@ -384,19 +388,25 @@ public class LandlordGame {
         return sb.toString();
     }
 
-    /** 把字符串还原成牌列表 */
+    /** 把字符串还原成牌列表（对远端数据做防护，畸形片段直接跳过） */
     public static List<Card> deserializeCards(String s) {
         List<Card> list = new ArrayList<>();
         if (s == null || s.isEmpty()) return list;
         for (String part : s.split(",")) {
-            String[] kv = part.split("_");
-            if (kv.length != 2) continue;
-            int suitOrd = Integer.parseInt(kv[0]);
-            int val     = Integer.parseInt(kv[1]);
-            Card.Suit suit = Card.Suit.values()[suitOrd];
-            Card.Rank rank = null;
-            for (Card.Rank r : Card.Rank.values()) if (r.getValue() == val) { rank = r; break; }
-            if (rank != null) list.add(new Card(suit, rank));
+            try {
+                String[] kv = part.split("_");
+                if (kv.length != 2) continue;
+                int suitOrd = Integer.parseInt(kv[0]);
+                int val     = Integer.parseInt(kv[1]);
+                // 范围校验：非法的花色/点数序号直接跳过，不抛异常
+                if (suitOrd < 0 || suitOrd >= Card.Suit.values().length) continue;
+                Card.Suit suit = Card.Suit.values()[suitOrd];
+                Card.Rank rank = null;
+                for (Card.Rank r : Card.Rank.values()) if (r.getValue() == val) { rank = r; break; }
+                if (rank != null) list.add(new Card(suit, rank));
+            } catch (NumberFormatException ignored) {
+                // 畸形的远端数据，跳过该片段
+            }
         }
         return list;
     }

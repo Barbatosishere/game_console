@@ -1,7 +1,9 @@
 package com.wzz.game_console.client.screens.games;
 
+import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.util.GameRenderHelper;
 import com.wzz.game_console.util.ResourceUtil;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -300,7 +302,7 @@ public class Minecraft2DScreen extends Screen {
         if(hotbarItem[i]!=null)hotbarItem[i].setCount(hotbarCount[i]);
     }
 
-    private void hungerTick(){if(tick-lastHungerTick>80&&(Math.abs(velX)>.1f||!onGround)){hunger=Math.max(0f,hunger-.5f);lastHungerTick=tick;}if(hunger<=0&&tick-lastHungerTick>40)hurt(1f);}
+    private void hungerTick(){if(tick-lastHungerTick>80&&(Math.abs(velX)>.1f||!onGround)){hunger=Math.max(0f,hunger-.5f);lastHungerTick=tick;}if(hunger<=0&&tick-lastHungerTick>80){hurt(1f);lastHungerTick=tick;}} // 修复：饥饿伤害改固定间隔并更新时间戳，避免饱食度归零后每 tick 扣血
     private void regenTick(){if(hunger>18f&&hp<maxHp&&tick-lastRegenTick>10){hp=Math.min(maxHp,hp+.5f);lastRegenTick=tick;}}
     private void hurt(float d){if(dead)return;hp=Math.max(0f,hp-d);lastDmgTime=System.currentTimeMillis();if(hp<=0){dead=true;deadAt=System.currentTimeMillis();}}
     private void respawn(){dead=false;hp=maxHp;hunger=20f;playerX=spawnX;playerY=spawnY;velX=velY=0;onGround=true;wasFalling=false;}
@@ -503,16 +505,22 @@ public class Minecraft2DScreen extends Screen {
     // ══════════════ 输入 ══════════════
     @Override public boolean keyPressed(int k,int sc,int m){
         if(!started)return super.keyPressed(k,sc,m);
-        keys[k]=true;
+        // 修复：退出确认弹窗打开时，仅允许 ESC（再次按 ESC 关闭弹窗），拦截移动等所有游戏按键输入
+        if(k==GLFW.GLFW_KEY_ESCAPE){
+            if(showExitConfirm){showExitConfirm=false;}
+            else{showExitConfirm=true;Arrays.fill(keys,false);} // 清空已按住的按键，防止打开弹窗前按住的 WASD 继续移动
+            return true;
+        }
+        if(showExitConfirm) return true;
+        if(k>=0&&k<keys.length)keys[k]=true; // 修复：GLFW_KEY_UNKNOWN(-1) 等非法 keyCode 会数组越界
         if(k>=GLFW.GLFW_KEY_1&&k<=GLFW.GLFW_KEY_9){slot=k-GLFW.GLFW_KEY_1;return true;}
         if(k==GLFW.GLFW_KEY_E){showInv=!showInv;return true;}
-        if(k==GLFW.GLFW_KEY_ESCAPE){if(showExitConfirm){showExitConfirm=false;}else{showExitConfirm=true;}return true;}
-        if(showExitConfirm) return true;
         return super.keyPressed(k,sc,m);
     }
-    @Override public boolean keyReleased(int k,int sc,int m){keys[k]=false;return super.keyReleased(k,sc,m);}
+    @Override public boolean keyReleased(int k,int sc,int m){if(k>=0&&k<keys.length)keys[k]=false;return super.keyReleased(k,sc,m);} // 修复：同上，过滤非法 keyCode
     @Override public boolean mouseClicked(double mx,double my,int btn){
-        if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;onClose();return true;}if(click==2){showExitConfirm=false;return true;}return true;}
+        // 修复：退出后回游戏选择界面，与其他游戏保持一致（原 onClose() 会回到游戏世界）
+        if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}if(click==2){showExitConfirm=false;return true;}return true;}
         if(!started){
             int bw=160,bh=22,bx2=width/2-bw/2,by2=height/2+42;
             if(mx>=bx2&&mx<=bx2+bw&&my>=by2&&my<=by2+bh){started=true;return true;}

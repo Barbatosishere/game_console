@@ -11,12 +11,15 @@ import net.minecraft.resources.ResourceLocation;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 @OnlyIn(Dist.CLIENT)
 public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(IceFireGameScreen.class);
     // ──────────────── 常量 ────────────────
     static final int TILE_SIZE  = 16;
     static final int GAME_W     = 320;
@@ -56,6 +59,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     private volatile boolean clientJumpRequested = false;
     /** 活跃实例（供静态网络回调使用） */
     public static volatile IceFireGameScreen activeInstance = null;
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     /** 单机构造 */
     public IceFireGameScreen() {
@@ -73,20 +78,64 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override public java.util.UUID getLanPeer()  { return remotePeer; }
     @Override public String getLanGameId()         { return "icefire"; }
 
+    /**
+     * 来源校验：CLIENT 仅接受已配对 HOST（服务端盖章 UUID）广播的状态，
+     * 防止在线第三方伪造状态报文。
+     */
+    @Override
+    public void onRemoteState(java.util.UUID senderUuid, String data) {
+        if (lanMode == LAN_CLIENT) {
+            if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+                LOGGER.warn("[冰火人] 丢弃来源非法的状态包: sender={}，期望对端={}", senderUuid, remotePeer);
+                return;
+            }
+        }
+        this.onRemoteState(data);
+    }
+
+    /**
+     * 来源校验：HOST 仅接受已配对 CLIENT（服务端盖章 UUID）发来的输入，
+     * 防止在线第三方伪造输入报文。
+     */
+    @Override
+    public void onRemoteMove(java.util.UUID senderUuid, String data) {
+        if (lanMode == LAN_HOST) {
+            if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+                LOGGER.warn("[冰火人] 丢弃来源非法的输入包: sender={}，期望对端={}", senderUuid, remotePeer);
+                return;
+            }
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (lanMode == LAN_NONE || lanLeaveSent || remotePeer == null) return;
+        lanLeaveSent = true;
+        sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        sendLeaveGameOnce();
+        super.onClose();
+    }
+
     /** CLIENT 收到 HOST 广播的完整状态 */
     @Override
     public void onRemoteState(String data) { receivedState = data; }
 
-    /** HOST 收到 CLIENT 发来的输入掩码（"4"=纯跳跃） */
+    /** HOST 收到 CLIENT 发来的输入掩码（bit0=左 bit1=右 bit2=跳，含一次性 "4" 跳跃包） */
     @Override
     public void onRemoteMove(String data) {
         try {
             int val = Integer.parseInt(data.trim());
-            if (val == 4) {
+            // 修复：统一跳跃位语义——CLIENT 每 tick 发送的掩码可能带跳跃位（5/6/7），
+            // 原先只识别纯跳跃包 "4" 导致掩码中的跳跃被忽略
+            if ((val & 4) != 0) {
                 clientJumpRequested = true;  // 独立处理跳跃，防止被移动掩码覆盖
-            } else {
-                receivedClientInput = val;
             }
+            receivedClientInput = val & 3;   // 只保留左右移动位
         } catch (Exception ignored) {}
     }
 
@@ -495,7 +544,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (gameState == GameState.DIFFICULTY) { gameState = GameState.MENU; return true; }
-            if (gameState == GameState.GAME_OVER) { gameState = GameState.MENU; session = null; return true; }
+            if (gameState == GameState.GAME_OVER) { sendLeaveGameOnce(); gameState = GameState.MENU; session = null; return true; }
             if (gameState != GameState.MENU) { showExitConfirm = true; return true; }
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
@@ -528,7 +577,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; gameState = GameState.MENU; session = null; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); gameState = GameState.MENU; session = null; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (gameState == GameState.MENU && lanMode == LAN_NONE) {
             if (mx >= cx-80 && mx <= cx+80 && my >= cy+54 && my <= cy+76) {
@@ -546,7 +595,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         }
         if (gameState == GameState.GAME_OVER && lanMode != LAN_CLIENT) {
             if (mx >= cx-80 && mx <= cx+80 && my >= cy+20 && my <= cy+38) { restart(); return true; }
-            if (mx >= cx-80 && mx <= cx+80 && my >= cy+44 && my <= cy+62) { gameState = GameState.MENU; session = null; return true; }
+            if (mx >= cx-80 && mx <= cx+80 && my >= cy+44 && my <= cy+62) { sendLeaveGameOnce(); gameState = GameState.MENU; session = null; return true; }
         }
         return super.mouseClicked(mx, my, btn);
     }

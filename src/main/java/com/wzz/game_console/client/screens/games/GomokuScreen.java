@@ -13,9 +13,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @OnlyIn(Dist.CLIENT)
 public class GomokuScreen extends Screen implements LanMultiplayerScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GomokuScreen.class);
     boolean showExitConfirm = false;
     private static final int BOARD_SIZE = 15;
     /** 四方向偏移（横、竖、两对角线），避免每次评估重复创建 */
@@ -35,6 +38,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private int lanMode = 0;
     private UUID remotePeer = null;
     private boolean isMyTurn = true;
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     public GomokuScreen() {
         super(Component.literal("五子棋"));
@@ -54,6 +59,32 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
     public String getLanGameId() {
         return "gomoku";
+    }
+
+    /**
+     * 来源校验：仅接受已配对对端（服务端盖章 UUID）发来的走法，
+     * 防止在线第三方伪造报文注入走法。
+     */
+    @Override
+    public void onRemoteMove(UUID senderUuid, String data) {
+        if (this.remotePeer == null || !this.remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[五子棋] 丢弃来源非法的联机走法: sender={}，期望对端={}", senderUuid, this.remotePeer);
+            return;
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (this.lanMode == 0 || this.lanLeaveSent || this.remotePeer == null) return;
+        this.lanLeaveSent = true;
+        this.sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        this.sendLeaveGameOnce();
+        super.onClose();
     }
 
     public void onRemoteMove(String data) {
@@ -579,6 +610,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             if (this.lanMode == 0 && this.state != State.MENU) {
                 showExitConfirm = true;
             } else {
+                this.sendLeaveGameOnce(); // 联机退出时通知对端，避免对方无限等待
                 Minecraft.getInstance().setScreen(new GameSelectorScreen());
             }
 
@@ -618,6 +650,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 if (this.lanMode == 0) {
                     showExitConfirm = true;
                 } else {
+                    this.sendLeaveGameOnce(); // 联机退出时通知对端
                     Minecraft.getInstance().setScreen(new GameSelectorScreen());
                 }
                 return true;

@@ -16,7 +16,9 @@ public class ModNetworks {
     public static final PacketHandlerCompat PACKET_HANDLER = new PacketHandlerCompat();
 
     public static void register(final RegisterPayloadHandlersEvent event) {
-        final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.0.0");
+        // 协议版本闸门：包格式变更（新增 INVITE_CANCELLED 等）时必须升级版本号，
+        // 版本不一致的客户端/服务端将在连接握手阶段被拒绝，避免新旧协议混用。
+        final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.1.0");
 
         // 服务端 → 客户端：打开游戏选择器
         registrar.playToClient(

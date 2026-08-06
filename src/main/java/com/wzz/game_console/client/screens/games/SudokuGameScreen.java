@@ -1,6 +1,7 @@
 package com.wzz.game_console.client.screens.games;
 
 import com.wzz.game_console.client.screens.GameSelectorScreen;
+import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -202,21 +203,24 @@ public class SudokuGameScreen extends Screen {
     }
 
     private boolean isValidMove(int[][] grid, int row, int col, int num) {
-        // 检查行
+        // 检查行（跳过自身格，否则已填数字会与自身冲突，导致所有格子恒判为错误）
         for (int c = 0; c < GRID_SIZE; c++) {
+            if (c == col) continue;
             if (grid[row][c] == num) return false;
         }
 
-        // 检查列
+        // 检查列（跳过自身格）
         for (int r = 0; r < GRID_SIZE; r++) {
+            if (r == row) continue;
             if (grid[r][col] == num) return false;
         }
 
-        // 检查3x3方块
+        // 检查3x3方块（跳过自身格）
         int boxRow = (row / 3) * 3;
         int boxCol = (col / 3) * 3;
         for (int r = boxRow; r < boxRow + 3; r++) {
             for (int c = boxCol; c < boxCol + 3; c++) {
+                if (r == row && c == col) continue;
                 if (grid[r][c] == num) return false;
             }
         }
@@ -247,6 +251,11 @@ public class SudokuGameScreen extends Screen {
 
         if (gameCompleted) {
             renderCompletionScreen(guiGraphics);
+        }
+
+        // 修复：退出确认弹窗（与其他游戏保持一致）
+        if (showExitConfirm) {
+            GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
         }
 
         super.render(guiGraphics, mouseX, mouseY, partialTick);
@@ -406,6 +415,20 @@ public class SudokuGameScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // 修复：弹窗打开时只响应确认/取消点击，拦截其他点击
+        if (showExitConfirm) {
+            int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height);
+            if (click == 1) {
+                showExitConfirm = false;
+                Minecraft.getInstance().setScreen(new GameSelectorScreen());
+                return true;
+            }
+            if (click == 2) {
+                showExitConfirm = false;
+                return true;
+            }
+            return true;
+        }
         if (button == 0 && !gameCompleted) { // 左键点击
             int gridX = (int) (mouseX - gameStartX) / CELL_SIZE;
             int gridY = (int) (mouseY - gameStartY) / CELL_SIZE;
@@ -427,7 +450,12 @@ public class SudokuGameScreen extends Screen {
             return super.keyPressed(keyCode, scanCode, modifiers);
         }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            // 修复：ESC 打开/关闭退出确认弹窗，而不是直接退出（与其他游戏保持一致）
+            showExitConfirm = !showExitConfirm;
+            return true;
+        }
+        // 弹窗打开期间拦截所有游戏按键输入（仅 ESC 除外）
+        if (showExitConfirm) {
             return true;
         }
         if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
@@ -548,13 +576,10 @@ public class SudokuGameScreen extends Screen {
     }
 
     private boolean isPuzzleComplete() {
-        // 检查是否所有格子都填满且无错误
+        // 修复：对照生成时保存的完整解判定，防止玩家用“填满但错误”的棋盘骗过通关判定
         for (int row = 0; row < GRID_SIZE; row++) {
             for (int col = 0; col < GRID_SIZE; col++) {
-                if (puzzle[row][col] == 0) {
-                    return false;
-                }
-                if (!isValidMove(puzzle, row, col, puzzle[row][col])) {
+                if (puzzle[row][col] != solution[row][col]) {
                     return false;
                 }
             }

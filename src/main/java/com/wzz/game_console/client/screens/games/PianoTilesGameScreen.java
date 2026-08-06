@@ -83,7 +83,8 @@ public class PianoTilesGameScreen extends Screen {
     // 每条轨道的颜色（亮色）
     private static final int[] LANE_BRIGHT = {0xFF3F51B5, 0xFF4CAF50, 0xFF9C27B0, 0xFFE91E63};
     private static final int[] LANE_DARK   = {0xFF0D1442, 0xFF0D3210, 0xFF260A4E, 0xFF440728};
-    private static final String[] LANE_KEYS = {"D", "F", "J", "K"};
+    // 显示标签与实际按键绑定一致（1/2/3/4为主绑定，另有ASDF/方向键/JK等替代键）
+    private static final String[] LANE_KEYS = {"1", "2", "3", "4"};
     private static final int HIT_ZONE_HEIGHT = 80;
     private static final int PERFECT_THRESHOLD = 80;   // 从20增加到80毫秒
     private static final int GREAT_THRESHOLD = 150;    // 从40增加到150毫秒
@@ -876,7 +877,8 @@ public class PianoTilesGameScreen extends Screen {
     }
 
     private void startGame() {
-        Minecraft.getInstance().getSoundManager().stop();
+        // 修复：移除全局停声（会误停游戏世界其他声音），改为只停本界面自己的音频
+        audioPlayer.stop();
         gameActive = true;
         gamePaused = false;
         gameOver = false;
@@ -1538,7 +1540,10 @@ public class PianoTilesGameScreen extends Screen {
     @Override
     public void onClose() {
         super.onClose();
-        Minecraft.getInstance().getSoundManager().stop();
+        // 只停止本界面自己启动的音频实例，不再停止游戏全局声音
+        if (audioPlayer != null) {
+            audioPlayer.closeAudio();
+        }
         Minecraft.getInstance().setScreen(new GameSelectorScreen());
     }
 

@@ -6,6 +6,8 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,6 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *     后台线程运算，运算时显示"思考中…"动画，不卡游戏
  */
 public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChessGameScreen.class);
 
     // ══════════════════════════════════════════════
     //  常量
@@ -161,6 +165,8 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     /** 防止远程走法回音：收到远程走法时不发送回去 */
     private boolean receivingRemoteMove = false;
     private java.util.UUID remotePeer = null;
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     /** LAN 联机构造：isHost=true → 执红先手，false → 执黑后手 */
     public ChessGameScreen(boolean isHost, java.util.UUID remote) {
@@ -171,6 +177,32 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId() { return "chess"; }
+
+    /**
+     * 来源校验：仅接受已配对对端（服务端盖章 UUID）发来的走法，
+     * 防止在线第三方伪造报文注入走法。
+     */
+    @Override
+    public void onRemoteMove(java.util.UUID senderUuid, String data) {
+        if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[中国象棋] 丢弃来源非法的联机走法: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (lanMode == LAN_NONE || lanLeaveSent || remotePeer == null) return;
+        lanLeaveSent = true;
+        sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        sendLeaveGameOnce();
+        super.onClose();
+    }
 
     @Override
     public void onRemoteMove(String data) {
@@ -305,6 +337,9 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             if (gameOver || showExitConfirm) g.flush();
             if (gameOver) drawGameOver(g);
             if (showExitConfirm) drawExitConfirm(g, mx, my);
+            // 兜底：当前回合方无合法走法时立即判负结算（被将死/困毙），
+            // 避免玩家卡死无任何提示（正常路径由 doMove 检测，此处兼顾悔棋等边缘情况）
+            checkNoLegalMovesEnd();
         }
         super.render(g, mx, my, pt);
     }
@@ -632,6 +667,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             int cx=width/2, cy=height/2;
             if(inBtn((int)mx,(int)my,cx-105,cy+10,96,24)){
                 showExitConfirm=false; gameMode=GameMode.MENU;
+                sendLeaveGameOnce(); // 联机退出对局时通知对端，避免对方无限等待
                 if(aiThread!=null)aiThread.interrupt(); aiThinking.set(false);
                 return true;
             }
@@ -896,6 +932,24 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             }
         }
         return false;
+    }
+
+    /**
+     * 检测当前回合方是否无任何合法走法，是则立即结算（将死/困毙判负）。
+     * 复用现有结束流程：置 gameOver 并显示 resultMsg。
+     */
+    void checkNoLegalMovesEnd(){
+        if(gameOver || gameMode==GameMode.MENU) return;
+        if(!isCheckmate(redTurn)) return; // 仍有合法走法
+        gameOver=true;
+        if(gameMode==GameMode.PVA)
+            resultMsg=(redTurn?"AI胜利！玩家无合法走法。":"玩家胜利！AI无合法走法。");
+        else if(lanMode==LAN_HOST)
+            resultMsg=(redTurn?"黑方（对手）胜利！":"红方（你）胜利！");
+        else if(lanMode==LAN_CLIENT)
+            resultMsg=(redTurn?"黑方（你）胜利！":"红方（对手）胜利！");
+        else
+            resultMsg=(redTurn?"红":"黑")+"方无合法走法，"+(redTurn?"黑":"红")+"方胜利！";
     }
 
     boolean isCheckmate(boolean isRed){

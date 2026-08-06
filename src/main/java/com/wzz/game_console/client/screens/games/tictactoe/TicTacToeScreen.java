@@ -10,9 +10,12 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import com.wzz.game_console.client.screens.games.LanMultiplayerScreen;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @OnlyIn(Dist.CLIENT)
 public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(TicTacToeScreen.class);
     boolean showExitConfirm = false;
     private enum State { MENU, PLAYING }
     private State state = State.MENU;
@@ -26,6 +29,8 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
     private java.util.UUID remotePeer = null;
     /** HOST=X先手，CLIENT=O后手；true=到我落子 */
     private boolean isMyTurn = true;
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     public TicTacToeScreen(TicTacToeGame.GameMode mode) {
         super(Component.literal("井字棋"));
@@ -45,6 +50,32 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
     // ── LanMultiplayerScreen 接口实现 ──────────────────────────────
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId()        { return "tictactoe"; }
+
+    /**
+     * 来源校验：仅接受已配对对端（服务端盖章 UUID）发来的走法，
+     * 防止在线第三方伪造报文注入走法。
+     */
+    @Override
+    public void onRemoteMove(java.util.UUID senderUuid, String data) {
+        if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[井字棋] 丢弃来源非法的联机走法: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (lanMode == LAN_NONE || lanLeaveSent || remotePeer == null) return;
+        lanLeaveSent = true;
+        sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        sendLeaveGameOnce();
+        super.onClose();
+    }
 
     /** 收到对方走法 "row,col" 或 "RESTART" */
     @Override
@@ -79,9 +110,11 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (state == State.MENU || (state == State.PLAYING && game.isGameOver())) {
+                sendLeaveGameOnce(); // 联机退出时通知对端，避免对方无限等待
                 Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
             }
             if (lanMode != LAN_NONE) {
+                sendLeaveGameOnce(); // 联机退出时通知对端
                 Minecraft.getInstance().setScreen(new GameSelectorScreen());
             } else {
                 showExitConfirm = true;
@@ -209,6 +242,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
                 return true;
             }
             if (mx >= cx-60 && mx <= cx+60 && my >= by+30 && my <= by+52) {
+                sendLeaveGameOnce(); // 联机退出时通知对端
                 Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
             }
             return true;

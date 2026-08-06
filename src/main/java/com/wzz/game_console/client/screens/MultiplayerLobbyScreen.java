@@ -12,6 +12,8 @@ import net.minecraft.network.chat.Component;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,6 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @OnlyIn(Dist.CLIENT)
 public class MultiplayerLobbyScreen extends Screen {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(MultiplayerLobbyScreen.class);
 
     // ─── 支持多人的游戏列表 ───
     public record MultiplayerGame(String id, String name, String icon, boolean supportsAI, boolean supportsLocal, boolean supportsLAN) {}
@@ -77,9 +81,20 @@ public class MultiplayerLobbyScreen extends Screen {
     // ─── 收到的邀请 ───
     private static MultiplayerGamePacket pendingInvite = null;
     private static String inviterName = null;
+    private static long pendingInviteArrivalMs = 0;                       // 邀请到达时间戳
+    private static final long INVITE_TIMEOUT_MS = 60_000;                 // 邀请 60 秒过期
+    // 说明：主机不在大厅时到达的 ACCEPT_INVITE 不再缓存回放。
+    // 原因：回放发生在新建的大厅实例上，邀请上下文（invitedPlayer、selectedLanPeers 等）
+    // 无法随包可靠恢复，回放会被来源校验全部拒绝（形同虚设），且误恢复上下文反而
+    // 可能被伪造包利用。故降级为明确的 LOGGER.warn + 丢弃，见 ACCEPT_INVITE 分支。
 
     public MultiplayerLobbyScreen() {
         super(Component.literal("联机大厅"));
+        // 进入大厅时清理已过期的邀请
+        if (pendingInvite != null && System.currentTimeMillis() - pendingInviteArrivalMs > INVITE_TIMEOUT_MS) {
+            pendingInvite = null;
+            inviterName = null;
+        }
     }
 
     /** 由网络包处理器调用 */
@@ -88,7 +103,10 @@ public class MultiplayerLobbyScreen extends Screen {
         switch (packet.getType()) {
             case INVITE -> {
                 pendingInvite = packet;
-                inviterName = packet.getData();
+                // 邀请者名字优先用服务端盖章的 senderName，data 只作兜底
+                inviterName = (packet.getSenderName() != null && !packet.getSenderName().isEmpty())
+                        ? packet.getSenderName() : packet.getData();
+                pendingInviteArrivalMs = System.currentTimeMillis();
                 // 如果当前不在大厅，显示通知
                 if (!(mc.screen instanceof MultiplayerLobbyScreen)) {
                     mc.execute(() -> {
@@ -105,6 +123,27 @@ public class MultiplayerLobbyScreen extends Screen {
                 mc.execute(() -> {
                     if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
                         lobby.onInviteAccepted(packet);
+                    } else {
+                        // 主机不在大厅界面：邀请上下文（invitedPlayer、selectedLanPeers 等）无法
+                        // 随包可靠恢复，缓存回放会被来源校验全部拒绝且存在被伪造包利用的风险，
+                        // 故明确记录日志后丢弃，不做静默处理。
+                        LOGGER.warn("[游戏机联机] 收到 ACCEPT_INVITE 但主机不在大厅界面，邀请上下文不可恢复，已丢弃（来自 {}）",
+                                packet.getSenderName());
+                    }
+                });
+            }
+            case INVITE_CANCELLED -> {
+                // 主机取消/超时/离开大厅：被邀者清除待处理邀请并提示
+                mc.execute(() -> {
+                    // 仅当取消方确实是当前待处理邀请的发起者时才清除，防止伪造包顶掉正常邀请
+                    if (pendingInvite != null
+                            && Objects.equals(pendingInvite.getSenderUuid(), packet.getSenderUuid())) {
+                        pendingInvite = null;
+                        inviterName = null;
+                    }
+                    if (mc.player != null) {
+                        mc.player.displayClientMessage(
+                                Component.literal("§e[游戏机] §c邀请已取消/超时"), false);
                     }
                 });
             }
@@ -129,19 +168,46 @@ public class MultiplayerLobbyScreen extends Screen {
             case GAME_MOVE -> {
                 mc.execute(() -> {
                     if (mc.screen instanceof LanMultiplayerScreen s)
-                        s.onRemoteMove(packet.getData());
+                        // 传入服务端盖章的发送者 UUID，供需要按来源校验座位的游戏使用
+                        s.onRemoteMove(packet.getSenderUuid(), packet.getData());
                 });
             }
             case GAME_STATE_SYNC -> {
                 mc.execute(() -> {
                     if (mc.screen instanceof LanMultiplayerScreen s)
-                        s.onRemoteState(packet.getData());
+                        // 传入服务端盖章的发送者 UUID，供需要按来源校验的游戏使用
+                        s.onRemoteState(packet.getSenderUuid(), packet.getData());
                 });
             }
             case GAME_OVER -> {
                 mc.execute(() -> {
                     if (mc.screen instanceof LanMultiplayerScreen s)
-                        s.onRemoteGameOver(packet.getData());
+                        // 传入服务端盖章的发送者 UUID，供需要按来源校验的游戏使用
+                        s.onRemoteGameOver(packet.getSenderUuid(), packet.getData());
+                });
+            }
+            case LEAVE_GAME -> {
+                // 对方退出对局：提示并关闭当前对局界面
+                mc.execute(() -> {
+                    if (mc.screen instanceof LanMultiplayerScreen s) {
+                        // 校验包中 gameId 与当前对局一致，防止第三方伪造 LEAVE_GAME 关闭无关界面
+                        // （当前界面未提供 gameId 时才退化为仅凭 instanceof 判断）
+                        String currentGameId = s.getLanGameId();
+                        if (currentGameId != null
+                                && !currentGameId.equals(packet.getGameId())) {
+                            LOGGER.warn("[游戏机联机] 忽略 gameId 不匹配的 LEAVE_GAME（当前={}，包中={}）",
+                                    currentGameId, packet.getGameId());
+                            return;
+                        }
+                        String name = packet.getSenderName() == null || packet.getSenderName().isEmpty()
+                                ? "对方" : packet.getSenderName();
+                        s.onRemoteLeave(name);
+                        if (mc.player != null) {
+                            mc.player.displayClientMessage(
+                                    Component.literal("§e[游戏机] §f" + name + " §c已退出对局"), false);
+                        }
+                        mc.setScreen(null);
+                    }
                 });
             }
         }
@@ -197,6 +263,23 @@ public class MultiplayerLobbyScreen extends Screen {
         waitingMessage = "等待两位玩家接受邀请 (0/2)...";
     }
 
+    /**
+     * 主机侧：邀请超时/主动取消/离开大厅时，通知所有被邀者邀请已作废。
+     * 无需额外字段：target 指向被邀者，发送者身份由服务端盖章。
+     */
+    private void notifyInviteCancelled() {
+        Set<UUID> targets = new LinkedHashSet<>();
+        if (invitedPlayer != null) targets.add(invitedPlayer);
+        targets.addAll(selectedLanPeers); // 斗地主：批量邀请的所有候选
+        if (targets.isEmpty()) return;
+        String gameId = MP_GAMES.get(selectedGameIndex).id;
+        for (UUID target : targets) {
+            ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+                    MultiplayerGamePacket.PacketType.INVITE_CANCELLED, target, gameId, ""
+            ));
+        }
+    }
+
     /** 统一清理联机等待状态（无论成功或失败都调用） */
     private void resetLanWaitState() {
         invitedPlayer = null;
@@ -210,13 +293,23 @@ public class MultiplayerLobbyScreen extends Screen {
     }
 
     private void onInviteAccepted(MultiplayerGamePacket packet) {
-        // packet.getTargetPlayer() = 接受方 UUID
-        // packet.getGameId()       = 游戏 id
-        String gameId    = packet.getGameId();
-        UUID accepterUuid = packet.getTargetPlayer();
-        String accepterName = packet.getData();
+        // 接受者身份一律以服务端盖章的 senderUuid/senderName 为准
+        // （targetPlayer 是收件人即主机自己，不可用作接受者身份）
+        String gameId      = packet.getGameId();
+        UUID accepterUuid  = packet.getSenderUuid();
+        String accepterName = packet.getSenderName() != null && !packet.getSenderName().isEmpty()
+                ? packet.getSenderName() : packet.getData();
+        if (accepterUuid == null) {
+            LOGGER.warn("[游戏机联机] 收到缺少发送者身份的 ACCEPT_INVITE，已忽略");
+            return;
+        }
 
         if ("landlord".equals(gameId) && expectedAccepts == 2) {
+            // 斗地主三人联机：只接受被邀请过的玩家，防止陌生人冒充
+            if (!selectedLanPeers.contains(accepterUuid)) {
+                LOGGER.warn("[游戏机联机] 忽略未邀请玩家 {} 的接受消息", accepterName);
+                return;
+            }
             // 斗地主三人联机：等够2人
             acceptedPeers.put(accepterUuid, accepterName);
             pendingAccepts = acceptedPeers.size();
@@ -228,19 +321,26 @@ public class MultiplayerLobbyScreen extends Screen {
                 UUID p1 = peers[0], p2 = peers[1];
                 Screen gs = new com.wzz.game_console.client.screens.games.landlord
                         .LandlordGameScreen(true, lanHostUuid, p1, p2);
-                Minecraft.getInstance().setScreen(gs);
+                // 先清理再切屏：避免 setScreen 触发 removed() 时误发 INVITE_CANCELLED
                 resetLanWaitState(); // 统一清理
+                Minecraft.getInstance().setScreen(gs);
             }
         } else {
+            // 普通单人邀请：校验接受者确实是受邀玩家
+            if (invitedPlayer == null || !accepterUuid.equals(invitedPlayer)) {
+                LOGGER.warn("[游戏机联机] 忽略非受邀玩家 {} 的接受消息", accepterName);
+                return;
+            }
             // 普通单人邀请
             UUID clientUuid = accepterUuid;
             Screen gameScreen = launchGameForLAN(gameId, clientUuid);
+            // 先清理再切屏：避免 setScreen 触发 removed() 时误发 INVITE_CANCELLED
+            resetLanWaitState(); // 统一清理
             if (gameScreen != null) {
                 Minecraft.getInstance().setScreen(gameScreen);
             } else {
                 state = LobbyState.GAME_SELECT;
             }
-            resetLanWaitState(); // 统一清理
         }
     }
 
@@ -255,9 +355,15 @@ public class MultiplayerLobbyScreen extends Screen {
         // 等待超时机制：长时间无人接受则自动取消邀请
         if (state == LobbyState.WAITING && waitingStartTick > 0
                 && tickCount - waitingStartTick > WAIT_TIMEOUT_TICKS) {
+            notifyInviteCancelled(); // 超时前先通知被邀者，避免对方无限等待
             state = LobbyState.MODE_SELECT;
             resetLanWaitState();
             waitingMessage = "等待超时，邀请已取消"; // resetLanWaitState会清空，重新设置提示
+        }
+        // 收到的邀请超时清理：避免过期的邀请弹窗一直遮挡界面
+        if (pendingInvite != null && System.currentTimeMillis() - pendingInviteArrivalMs > INVITE_TIMEOUT_MS) {
+            pendingInvite = null;
+            inviterName = null;
         }
     }
 
@@ -512,7 +618,13 @@ public class MultiplayerLobbyScreen extends Screen {
             // 接受按钮：nx+20, ny+nh-28, 宽110, 高22
             if (mx >= nx + 20 && mx <= nx + 130 && my >= ny + nh - 28 && my <= ny + nh - 6) {
                 String gameId    = pendingInvite.getGameId();
-                UUID hostUuid    = pendingInvite.getTargetPlayer(); // 服务端转发后变为HOST的UUID
+                // 主机 UUID 以服务端盖章的发送者身份为准（targetPlayer 仍是收件人即自己）
+                UUID hostUuid    = pendingInvite.getSenderUuid();
+                if (hostUuid == null) {
+                    // 缺失发送者身份的畸形邀请，直接丢弃
+                    pendingInvite = null;
+                    return true;
+                }
                 ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
                         MultiplayerGamePacket.PacketType.ACCEPT_INVITE,
                         hostUuid, gameId, ""
@@ -543,11 +655,15 @@ public class MultiplayerLobbyScreen extends Screen {
 
             // 拒绝按钮：nx+nw-130, ny+nh-28, 宽110, 高22
             if (mx >= nx + nw - 130 && mx <= nx + nw - 20 && my >= ny + nh - 28 && my <= ny + nh - 6) {
-                ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                        MultiplayerGamePacket.PacketType.DECLINE_INVITE,
-                        pendingInvite.getTargetPlayer(),
-                        pendingInvite.getGameId(), ""
-                ));
+                // 拒绝消息发给服务端盖章的邀请者（targetPlayer 仍是自己，不能用）
+                UUID inviterUuid = pendingInvite.getSenderUuid();
+                if (inviterUuid != null) {
+                    ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+                            MultiplayerGamePacket.PacketType.DECLINE_INVITE,
+                            inviterUuid,
+                            pendingInvite.getGameId(), ""
+                    ));
+                }
                 pendingInvite = null;
                 return true;
             }
@@ -654,6 +770,7 @@ public class MultiplayerLobbyScreen extends Screen {
             }
             case WAITING -> {
                 if (mx >= cx - 40 && mx <= cx + 40 && my >= height / 2 + 10 && my <= height / 2 + 28) {
+                    notifyInviteCancelled(); // 主机主动取消：通知被邀者
                     state = LobbyState.MODE_SELECT;
                     resetLanWaitState(); // 取消时统一清理
                     return true;
@@ -718,11 +835,21 @@ public class MultiplayerLobbyScreen extends Screen {
                 case MODE_SELECT -> { state = LobbyState.GAME_SELECT; return true; }
                 case PLAYER_LIST -> { state = LobbyState.MODE_SELECT; return true; }
                 case PLAYER_LIST_MULTI -> { selectedLanPeers.clear(); state = LobbyState.MODE_SELECT; return true; }
-                case WAITING     -> { state = LobbyState.MODE_SELECT; resetLanWaitState(); return true; }
+                case WAITING     -> { notifyInviteCancelled(); state = LobbyState.MODE_SELECT; resetLanWaitState(); return true; }
                 default -> { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             }
         }
         return super.keyPressed(key, scan, mods);
+    }
+
+    @Override
+    public void removed() {
+        super.removed();
+        // 主机离开大厅时若仍有未决邀请，通知被邀者取消。
+        // 成功开局的路径会在 setScreen 前先 resetLanWaitState，不会误发。
+        if (state == LobbyState.WAITING) {
+            notifyInviteCancelled();
+        }
     }
 
     @Override

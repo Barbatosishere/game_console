@@ -10,6 +10,8 @@ import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +28,7 @@ import java.util.List;
  */
 @OnlyIn(Dist.CLIENT)
 public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(WesternChessScreen.class);
     boolean showExitConfirm = false;
 
     // ─── 棋子 ─────────────────────────────────────────────────
@@ -76,6 +79,10 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     // LAN
     private int lanMode = LAN_NONE;
     private java.util.UUID remotePeer = null;
+    /** LAN 升变走法：本地选完升变子后才携带最终子力类型发送，避免双端分叉 */
+    private String pendingLanPromote = null;
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     public WesternChessScreen() { super(Component.literal("国际象棋")); }
     public WesternChessScreen(boolean isHost, java.util.UUID remote) {
@@ -85,10 +92,56 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     }
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId()        { return "wchess"; }
+
+    /**
+     * 来源校验：仅接受已配对对端（服务端盖章 UUID）发来的走法，
+     * 防止在线第三方伪造报文注入走法。
+     */
+    @Override
+    public void onRemoteMove(java.util.UUID senderUuid, String data) {
+        if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[国际象棋] 丢弃来源非法的联机走法: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (lanMode == LAN_NONE || lanLeaveSent || remotePeer == null) return;
+        lanLeaveSent = true;
+        sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        sendLeaveGameOnce();
+        super.onClose();
+    }
+
     @Override public void onRemoteMove(String data) {
         if ("RESTART".equals(data)) { initBoard(); return; }
         try { String[] p = data.split(",");
-            applyMove(new int[]{Integer.parseInt(p[0]),Integer.parseInt(p[1]),Integer.parseInt(p[2]),Integer.parseInt(p[3]),Integer.parseInt(p[4])}, true);
+            int[] m = new int[]{Integer.parseInt(p[0]),Integer.parseInt(p[1]),Integer.parseInt(p[2]),Integer.parseInt(p[3]),Integer.parseInt(p[4])};
+            if (m[4] == SP_PROMOTE) {
+                // LAN 升变走法：报文携带最终升变子类型（第6字段，缺省兼容旧报文默认升后），
+                // 接收方不弹升变面板、直接按报文完成升变，避免升变子由对手选择导致双端棋盘分叉
+                int promoType = p.length > 5 ? Integer.parseInt(p[5]) : WQ;
+                boolean w = board[m[0]][m[1]] > 0;
+                int[][] ep = new int[1][]; boolean[] cf = {wCK,wCQ,bCK,bCQ};
+                m[4] = SP_NORMAL;
+                applyOn(board, m, cf, ep);
+                board[m[2]][m[3]] = w ? promoType : -promoType;
+                wCK=cf[0];wCQ=cf[1];bCK=cf[2];bCQ=cf[3]; epTarget=ep[0]!=null?ep[0]:null;
+                lastFrom=new int[]{m[0],m[1]}; lastTo=new int[]{m[2],m[3]};
+                whiteTurn=!whiteTurn; selected=null; validMoves.clear();
+                inCheck=kingInCheck(board,whiteTurn);
+                if (Minecraft.getInstance().player!=null)
+                    Minecraft.getInstance().player.playSound(SoundEvents.WOOD_PLACE,0.5f,1.2f);
+                checkEnd(); // 升变完成后再判定终局（修正原时机错误）
+                return;
+            }
+            applyMove(m, true);
             checkEnd(); } catch (Exception ignored) {}
     }
 
@@ -102,7 +155,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         whiteTurn=true; selected=null; validMoves.clear();
         wCK=wCQ=bCK=bCQ=true; epTarget=null; lastFrom=lastTo=null;
         resultMsg=""; particles.clear(); aiThinking=false; inCheck=false;
-        promoPending=false; state=S.PLAYING;
+        promoPending=false; pendingLanPromote=null; state=S.PLAYING;
     }
 
     // ══════════════ TICK ══════════════
@@ -244,6 +297,11 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         promoPending=false; whiteTurn=!whiteTurn; inCheck=kingInCheck(board,whiteTurn);
         if (Minecraft.getInstance().player!=null)
             Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,0.5f,1.5f);
+        // LAN：本地选完升变子后才发送走法报文，并把最终子力类型编码进报文（双端对称）
+        if (pendingLanPromote != null) {
+            sendMove(pendingLanPromote + "," + t);
+            pendingLanPromote = null;
+        }
         checkEnd();
     }
     private void checkEnd() {
@@ -347,7 +405,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     // ══════════════ 输入 ══════════════
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = S.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); state = S.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state==S.MENU) {
             if (lanMode!=LAN_NONE) return true;
             int cx=width/2, cy=height/2;
@@ -358,7 +416,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         if (state==S.OVER) {
             int cx2=width/2, cy2=height/2;
             if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) { initBoard(); return true; }
-            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+44&&my<=cy2+62) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+44&&my<=cy2+62) { sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             return super.mouseClicked(mx,my,btn);
         }
         if (promoPending) { handlePromoClick((int)mx,(int)my); return true; }
@@ -372,8 +430,19 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         // 尝试走子
         if (selected!=null) {
             for (int[] m : validMoves) if (m[2]==row&&m[3]==col) {
+                // 修复：先组装联机报文再 applyMove —— 升变走法的 m[4] 会在 applyMove 内被改写为 SP_NORMAL，
+                // 若发送在改写之后，对端将永远收不到升变标记
+                int lanSp = m[4];
+                String lanData = lanMode != LAN_NONE ? (m[0]+","+m[1]+","+m[2]+","+m[3]+","+m[4]) : null;
                 applyMove(m,true);
-                if (lanMode!=LAN_NONE) sendMove(m[0]+","+m[1]+","+m[2]+","+m[3]+","+m[4]);
+                if (lanData != null) {
+                    if (lanSp == SP_PROMOTE) {
+                        // 升变走法延迟到本地选完升变子后再发送（见 completePromo），报文携带最终子力类型
+                        pendingLanPromote = lanData;
+                    } else {
+                        sendMove(lanData);
+                    }
+                }
                 if (!promoPending) checkEnd();
                 return true;
             }
@@ -392,18 +461,19 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         return true;
     }
     private void handlePromoClick(int mx, int my) {
-        boolean w=(promoRow==0); int cx=width/2, cy=height/2;
+        int cx=width/2, cy=height/2;
         int pw=cellSize*4+20, px=cx-pw/2, py=cy-30;
         int[] types={WQ,WR,WB,WN};
         for (int i=0;i<4;i++) { int sx=px+10+i*(cellSize+4), sy=py+22;
-            if (mx>=sx&&mx<sx+cellSize&&my>=sy&&my<sy+cellSize) { completePromo(w?types[i]:-types[i]); return; }
+            // 修复：不再在此处取反颜色，completePromo 会根据 promoRow 决定正负号（原两处各取反一次，黑兵升变会变成白子）
+            if (mx>=sx&&mx<sx+cellSize&&my>=sy&&my<sy+cellSize) { completePromo(types[i]); return; }
         }
     }
     @Override
     public boolean keyPressed(int k, int sc, int mod) {
         if (k==GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
-            if (lanMode!=LAN_NONE||state==S.MENU) Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            if (lanMode!=LAN_NONE||state==S.MENU) { sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); }
             else showExitConfirm = true;
             return true;
         }

@@ -11,9 +11,12 @@ import net.minecraft.util.Mth;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @OnlyIn(Dist.CLIENT)
 public class GoGameScreen extends Screen implements LanMultiplayerScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GoGameScreen.class);
     boolean showExitConfirm = false;
     private static final int BOARD_SIZE = 19;
     private static final int[][] DIRS = {{1,0},{-1,0},{0,1},{0,-1}};
@@ -36,6 +39,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private java.util.UUID remotePeer = null;
     /** LAN HOST=黑棋先手，CLIENT=白棋后手 */
     private boolean myTurn = true; // 单机或 HOST 默认先手
+    /** 防重复发送 LEAVE_GAME 标志 */
+    private boolean lanLeaveSent = false;
 
     /** 单机 / AI 构造 */
     public GoGameScreen(GoGame game) {
@@ -57,6 +62,32 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     // ── LanMultiplayerScreen 接口 ──────────────────────────────
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId() { return "go"; }
+
+    /**
+     * 来源校验：仅接受已配对对端（服务端盖章 UUID）发来的走法，
+     * 防止在线第三方伪造报文注入走法。
+     */
+    @Override
+    public void onRemoteMove(java.util.UUID senderUuid, String data) {
+        if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[围棋] 丢弃来源非法的联机走法: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
+        }
+        this.onRemoteMove(data);
+    }
+
+    /** 退出对局时向对端发送 LEAVE_GAME（带防重复标志，避免重复发包） */
+    private void sendLeaveGameOnce() {
+        if (lanMode == LAN_NONE || lanLeaveSent || remotePeer == null) return;
+        lanLeaveSent = true;
+        sendLeaveGame();
+    }
+
+    @Override
+    public void onClose() {
+        sendLeaveGameOnce();
+        super.onClose();
+    }
 
     @Override
     public void onRemoteMove(String data) {
@@ -111,8 +142,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         int whiteTerritory = territory[1];
 
         // 黑棋活子 - 贴目3.75（× 4 放大避免小数）
-        double blackScore = blackTerritory + game.getBlackCaptured();
-        double whiteScore = whiteTerritory + game.getWhiteCaptured() + 3.75;
+        // 修复：提子数方向反了——黑方应加黑方提掉的白子数(getWhiteCaptured)，
+        // 白方应加白方提掉的黑子数(getBlackCaptured)，原代码把己方被提子加给了己方
+        double blackScore = blackTerritory + game.getWhiteCaptured();
+        double whiteScore = whiteTerritory + game.getBlackCaptured() + 3.75;
 
         boolean blackWins = blackScore > whiteScore;
 
@@ -341,7 +374,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state == State.MENU) {
             int cx = width/2, cy = height/2;
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) {
