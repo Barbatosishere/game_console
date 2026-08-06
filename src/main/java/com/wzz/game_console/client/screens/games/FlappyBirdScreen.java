@@ -51,7 +51,8 @@ public class FlappyBirdScreen extends Screen {
 
         // 生成管道
         if (tickCounter % 50 == 0) {
-            int gapY = 60 + random.nextInt(height - 140);
+            // 窗口高度过小时保护nextInt参数，避免IllegalArgumentException
+            int gapY = 60 + random.nextInt(Math.max(1, height - 140));
             pipes.add(new int[]{width + 20, gapY});
         }
 
@@ -69,7 +70,9 @@ public class FlappyBirdScreen extends Screen {
                     return;
                 }
             }
-            if (p[0] + PIPE_WIDTH == bx) score++;
+            // 穿越判定：本帧右边缘已越过小鸟，且上一帧(移动前3px)还在其右侧，
+            // 恰好在移动那一tick得分一次(替代整数精确相等，避免窗口宽度不满足模3时永远无法得分)
+            if (p[0] + PIPE_WIDTH <= bx && p[0] + PIPE_WIDTH + 3 > bx) score++;
         }
 
         if (birdY > height || birdY < 0) state = State.GAME_OVER;

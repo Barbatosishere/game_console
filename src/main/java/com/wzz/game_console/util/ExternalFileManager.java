@@ -1,6 +1,8 @@
 package com.wzz.game_console.util;
 
 import net.neoforged.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +23,9 @@ import java.util.stream.Stream;
  *   └── data/     (其他数据文件)
  */
 public class ExternalFileManager {
+
+    /** 日志记录器 */
+    private static final Logger LOGGER = LoggerFactory.getLogger("GameConsole");
 
     /** 根文件夹名称 */
     public static final String ROOT_FOLDER = "game_console";
@@ -50,10 +55,9 @@ public class ExternalFileManager {
             Files.createDirectories(rootDir.resolve(DATA_FOLDER));
 
             initialized = true;
-            System.out.println("[GameConsole] 外部文件夹已创建: " + rootDir.toAbsolutePath());
+            LOGGER.info("外部文件夹已创建: {}", rootDir.toAbsolutePath());
         } catch (IOException e) {
-            System.err.println("[GameConsole] 创建外部文件夹失败: " + e.getMessage());
-            e.printStackTrace();
+            LOGGER.error("创建外部文件夹失败", e);
         }
     }
 
@@ -116,7 +120,7 @@ public class ExternalFileManager {
                     .sorted()
                     .collect(Collectors.toList());
         } catch (IOException e) {
-            System.err.println("[GameConsole] 列出文件失败: " + e.getMessage());
+            LOGGER.error("列出文件失败", e);
             return Collections.emptyList();
         }
     }
@@ -143,7 +147,7 @@ public class ExternalFileManager {
                     .sorted()
                     .collect(Collectors.toList());
         } catch (IOException e) {
-            System.err.println("[GameConsole] 列出子文件夹失败: " + e.getMessage());
+            LOGGER.error("列出子文件夹失败", e);
             return Collections.emptyList();
         }
     }
@@ -161,7 +165,7 @@ public class ExternalFileManager {
         try {
             return Files.readString(file, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            System.err.println("[GameConsole] 读取文件失败: " + file + " - " + e.getMessage());
+            LOGGER.error("读取文件失败: {}", file, e);
             return null;
         }
     }
@@ -179,7 +183,7 @@ public class ExternalFileManager {
         try {
             return Files.readAllBytes(file);
         } catch (IOException e) {
-            System.err.println("[GameConsole] 读取文件失败: " + file + " - " + e.getMessage());
+            LOGGER.error("读取文件失败: {}", file, e);
             return null;
         }
     }
@@ -199,7 +203,7 @@ public class ExternalFileManager {
             Files.writeString(file, content, StandardCharsets.UTF_8);
             return true;
         } catch (IOException e) {
-            System.err.println("[GameConsole] 写入文件失败: " + file + " - " + e.getMessage());
+            LOGGER.error("写入文件失败: {}", file, e);
             return false;
         }
     }
@@ -219,7 +223,7 @@ public class ExternalFileManager {
             Files.write(file, data);
             return true;
         } catch (IOException e) {
-            System.err.println("[GameConsole] 写入文件失败: " + file + " - " + e.getMessage());
+            LOGGER.error("写入文件失败: {}", file, e);
             return false;
         }
     }
@@ -252,7 +256,7 @@ public class ExternalFileManager {
         try {
             Files.createDirectories(rootDir.resolve(subFolder));
         } catch (IOException e) {
-            System.err.println("[GameConsole] 创建子文件夹失败: " + subFolder + " - " + e.getMessage());
+            LOGGER.error("创建子文件夹失败: {}", subFolder, e);
         }
     }
 }

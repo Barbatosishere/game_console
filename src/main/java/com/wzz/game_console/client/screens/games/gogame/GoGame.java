@@ -19,10 +19,11 @@ public class GoGame {
         this.board = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
         this.moveHistory = new ArrayList<>();
         this.ai = new GoAI();
+        // reset() 已声明为 final，避免构造器调用可覆写方法的 this-escape 风险
         reset();
     }
     
-    public void reset() {
+    public final void reset() {
         // 初始化棋盘
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {

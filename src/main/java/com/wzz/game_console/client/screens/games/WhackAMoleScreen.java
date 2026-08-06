@@ -232,6 +232,8 @@ public class WhackAMoleScreen extends Screen {
                     totalHits++;
                     score += (combo + 1) * 10; // 连击加分
                     combo++;
+                    // 实时更新最高连击，避免整局最高连击未被记录
+                    maxCombo = Math.max(maxCombo, combo);
 
                     // 播放击中音效
                     if (minecraft != null && minecraft.level != null && minecraft.player != null) {
@@ -245,8 +247,11 @@ public class WhackAMoleScreen extends Screen {
                 }
             }
 
-            // 如果没打中，重置连击
-            combo = 0;
+            // 如果没打中，重置连击（仅在点击落在游戏区域内时，避免点击"返回"等UI按钮也重置连击）
+            if (mouseX >= gameAreaX && mouseX <= gameAreaX + gameAreaWidth &&
+                    mouseY >= gameAreaY && mouseY <= gameAreaY + gameAreaHeight) {
+                combo = 0;
+            }
         }
 
         return super.mouseClicked(mouseX, mouseY, button);

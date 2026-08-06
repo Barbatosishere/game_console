@@ -152,8 +152,8 @@ public class SokobanScreen extends Screen {
 
         levels.add(new char[][]{
                 {'#','#','#','#','#','#','#','#'},
-                {'#',' ',' ','#',' ',' ',' ','.'},
-                {'#',' ',' ','$',' ',' ',' ','#'},
+                {'#',' ',' ','#',' ',' ',' ','#'}, // 修复：末列原为'.'缺右墙，导致关卡不可解
+                {'#',' ','.','$',' ',' ',' ','#'}, // 同步补目标点：左上封闭区的箱子只能推到此格，保证2箱2目标可通关
                 {'#',' ','#',' ','#',' ','#','#'},
                 {'#',' ',' ','@',' ',' ','#','#'},
                 {'#',' ','$','#',' ',' ',' ','#'},
@@ -221,6 +221,13 @@ public class SokobanScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        // ESC 开关退出确认弹窗
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            showExitConfirm = !showExitConfirm;
+            return true;
+        }
+        // 弹窗打开期间拦截移动/切关等全部游戏输入
+        if (showExitConfirm) return true;
         // WASD控制移动
         switch (keyCode) {
             case GLFW.GLFW_KEY_W -> movePlayer(0, -1);
@@ -229,10 +236,8 @@ public class SokobanScreen extends Screen {
             case GLFW.GLFW_KEY_D -> movePlayer(1, 0);
             case GLFW.GLFW_KEY_R -> loadLevel(currentLevel);
             case GLFW.GLFW_KEY_N -> loadLevel(currentLevel + 1);
-            case GLFW.GLFW_KEY_ESCAPE -> { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } }
             default -> {
-                if (showExitConfirm) return true;
-        return super.keyPressed(keyCode, scanCode, modifiers);
+                return super.keyPressed(keyCode, scanCode, modifiers);
             }
         }
         return true;

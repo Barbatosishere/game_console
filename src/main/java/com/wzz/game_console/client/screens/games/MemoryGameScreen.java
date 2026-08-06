@@ -55,6 +55,9 @@ public class MemoryGameScreen extends Screen {
     private static final long HIGHLIGHT_DURATION = 800; // 高亮持续时间（毫秒）
     private long sequenceDelay = 1200; // 序列间隔时间（毫秒）
     private static final long MIN_SEQUENCE_DELAY = 400; // 最小间隔时间
+    // 用tick时间戳驱动的延迟状态机(替代裸线程+sleep)
+    private long nextSequenceItemTime = 0; // SHOWING_SEQUENCE状态下展示下一序列项的时间点
+    private long nextRoundTime = 0; // SUCCESS状态下进入下一回合的时间点
     
     // 网格位置
     private int gridStartX;
@@ -199,15 +202,9 @@ public class MemoryGameScreen extends Screen {
                 score += level * 10;
                 level++;
                 gameState = GameState.SUCCESS;
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(1000);
-                        addNextSequenceItem();
-                        startShowingSequence();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }).start();
+                highlightedCell = -1;
+                // 改用tick时间戳驱动：1秒后进入下一回合(不再新建线程)
+                nextRoundTime = System.currentTimeMillis() + 1000;
             }
         } else {
             gameState = GameState.GAME_OVER;
@@ -230,6 +227,11 @@ public class MemoryGameScreen extends Screen {
         gameState = GameState.WAITING_START;
         highlightedCell = -1;
         sequenceDelay = 1200;
+        // 清除所有挂起的延迟时间点，防止旧定时逻辑干扰新局
+        nextSequenceItemTime = 0;
+        nextRoundTime = 0;
+        lastSequenceTime = 0;
+        highlightStartTime = 0;
     }
     
     private void addNextSequenceItem() {
@@ -255,21 +257,8 @@ public class MemoryGameScreen extends Screen {
             
             currentSequenceIndex++;
             
-            // 安排下一个序列项
-            new Thread(() -> {
-                try {
-                    Thread.sleep(sequenceDelay);
-                    if (currentSequenceIndex < sequence.size()) {
-                        showNextSequenceItem();
-                    } else {
-                        // 序列显示完毕，等待玩家输入
-                        gameState = GameState.WAITING_INPUT;
-                        highlightedCell = -1;
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }).start();
+            // 改用tick时间戳调度下一个序列项(不再新建线程)
+            nextSequenceItemTime = System.currentTimeMillis() + sequenceDelay;
         }
     }
     
@@ -294,13 +283,32 @@ public class MemoryGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        long currentTime = System.currentTimeMillis();
         if (highlightedCell != -1) {
-            long currentTime = System.currentTimeMillis();
             if (currentTime - highlightStartTime >= HIGHLIGHT_DURATION) {
                 if (gameState == GameState.SHOWING_SEQUENCE) {
                     highlightedCell = -1;
                 }
             }
+        }
+        // 序列展示状态机：到点后展示下一序列项或转入等待输入
+        if (gameState == GameState.SHOWING_SEQUENCE && nextSequenceItemTime > 0
+                && currentTime >= nextSequenceItemTime) {
+            nextSequenceItemTime = 0;
+            if (currentSequenceIndex < sequence.size()) {
+                showNextSequenceItem();
+            } else {
+                // 序列显示完毕，等待玩家输入
+                gameState = GameState.WAITING_INPUT;
+                highlightedCell = -1;
+            }
+        }
+        // 回合切换状态机：答对本轮后到点追加序列项并开始展示
+        if (gameState == GameState.SUCCESS && nextRoundTime > 0
+                && currentTime >= nextRoundTime) {
+            nextRoundTime = 0;
+            addNextSequenceItem();
+            startShowingSequence();
         }
     }
     

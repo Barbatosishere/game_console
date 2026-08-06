@@ -30,6 +30,7 @@ public class DiceGuessingScreen extends Screen {
     private int totalGames;
     private int winCount;
     private int totalRewards;
+    private int consecutiveWins; // 真实连胜计数：赢+1，输清零
     private int currentBet;    // 当前下注金额
 
     // GUI组件
@@ -55,6 +56,7 @@ public class DiceGuessingScreen extends Screen {
         this.totalGames = 0;
         this.winCount = 0;
         this.totalRewards = 0;
+        this.consecutiveWins = 0;
         this.currentBet = 1;
         this.animationTick = 0;
         this.isRolling = false;
@@ -342,7 +344,8 @@ public class DiceGuessingScreen extends Screen {
         bet3Button.active = (amount != 3);
         bet5Button.active = (amount != 5);
 
-        Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.5f, 1.0f);
+        if (Minecraft.getInstance().player != null)
+            Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.5f, 1.0f);
     }
 
     private void makeGuess(String guess) {
@@ -354,7 +357,8 @@ public class DiceGuessingScreen extends Screen {
         this.animationTick = 0;
 
         updateButtons();
-        Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 0.8f);
+        if (Minecraft.getInstance().player != null)
+            Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 0.8f);
     }
 
     private void finishRolling() {
@@ -376,15 +380,22 @@ public class DiceGuessingScreen extends Screen {
 
         if (isWin) {
             winCount++;
+            consecutiveWins++; // 连胜+1
             giveReward();
+        } else {
+            consecutiveWins = 0; // 输局连胜清零
+            // 按规则扣除下注金额，下限为0不扣成负数
+            totalRewards = Math.max(0, totalRewards - currentBet);
         }
         updateButtons();
 
         // 播放结果音效
-        if (isWin) {
-            Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0f, 1.2f);
-        } else {
-            Minecraft.getInstance().player.playSound(SoundEvents.ITEM_BREAK, 1.0f, 0.8f);
+        if (Minecraft.getInstance().player != null) {
+            if (isWin) {
+                Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0f, 1.2f);
+            } else {
+                Minecraft.getInstance().player.playSound(SoundEvents.ITEM_BREAK, 1.0f, 0.8f);
+            }
         }
     }
 
@@ -406,9 +417,8 @@ public class DiceGuessingScreen extends Screen {
     }
 
     private int getConsecutiveWins() {
-        // 简化实现：基于当前胜率估算连胜
-        if (totalGames < 3) return winCount;
-        return Math.min(winCount, 5); // 最多计算5连胜
+        // 真实连胜计数：赢局+1，输局清零（在 finishRolling 中维护）
+        return consecutiveWins;
     }
 
     private void startNewGame() {
@@ -417,7 +427,8 @@ public class DiceGuessingScreen extends Screen {
         resetDice();
         updateButtons();
 
-        Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.8f, 1.0f);
+        if (Minecraft.getInstance().player != null)
+            Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 0.8f, 1.0f);
     }
 
     private void resetDice() {
@@ -431,8 +442,10 @@ public class DiceGuessingScreen extends Screen {
         totalGames = 0;
         winCount = 0;
         totalRewards = 0;
+        consecutiveWins = 0;
 
-        Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 1.0f, 1.0f);
+        if (Minecraft.getInstance().player != null)
+            Minecraft.getInstance().player.playSound(SoundEvents.UI_BUTTON_CLICK.value(), 1.0f, 1.0f);
     }
 
     private int getWinRateColor(int winRate) {

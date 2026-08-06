@@ -1,5 +1,7 @@
 package com.wzz.game_console.client.screens.games.landlord;
 
+import java.util.Objects;
+
 public class Card implements Comparable<Card> {
     public enum Suit {
         SPADES, HEARTS, DIAMONDS, CLUBS, JOKER
@@ -30,6 +32,20 @@ public class Card implements Comparable<Card> {
     @Override
     public int compareTo(Card other) {
         return Integer.compare(this.getValue(), other.getValue());
+    }
+
+    // 基于花色与点数的值相等：LAN 联机中远端反序列化出的 Card 是新对象，
+    // 若无 equals 则 contains/remove 按引用比较恒为 false，导致联机出牌全被拒
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof Card other)) return false;
+        return suit == other.suit && rank == other.rank;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(suit, rank);
     }
 
     @Override

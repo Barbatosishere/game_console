@@ -37,6 +37,9 @@ public class GameSelectorScreen extends Screen {
 
     // 分类
     private static final String[] CATEGORIES = {"全部", "棋牌", "动作", "益智", "休闲"};
+    // 分类按钮统一的水平内边距与按钮间距（宽度累加与绘制必须使用同一数值）
+    private static final int CATEGORY_PADDING = 16;
+    private static final int CATEGORY_GAP = 4;
     private int selectedCategoryIndex = 0;
 
     public GameSelectorScreen() {
@@ -47,7 +50,8 @@ public class GameSelectorScreen extends Screen {
     @Override
     public void onClose() {
         super.onClose();
-        Minecraft.getInstance().getSoundManager().stop();
+        // 本界面自身没有播放任何声音，不需要停止声音
+        // （原先的 getSoundManager().stop() 会误停唱片、环境音等所有声音，已移除）
     }
 
     private void initializeGames() {
@@ -131,15 +135,15 @@ public class GameSelectorScreen extends Screen {
         // ─── 分类标签 ───
         int catY = 48;
         int catTotalW = 0;
-        for (String cat : CATEGORIES) catTotalW += font.width(cat) + 16;
+        for (String cat : CATEGORIES) catTotalW += font.width(cat) + CATEGORY_PADDING + CATEGORY_GAP;
         // 联机大厅按钮宽度
-        int lobbyW = font.width("🌐 联机大厅") + 16;
-        int totalBarW = catTotalW + lobbyW + 12;
+        int lobbyW = font.width("🌐 联机大厅") + CATEGORY_PADDING;
+        int totalBarW = catTotalW + 8 + lobbyW;
         int catX = cx - totalBarW / 2;
 
         for (int i = 0; i < CATEGORIES.length; i++) {
             String cat = CATEGORIES[i];
-            int tw = font.width(cat) + 12;
+            int tw = font.width(cat) + CATEGORY_PADDING;
             boolean isSelected = i == selectedCategoryIndex;
             boolean isHover = mouseX >= catX && mouseX <= catX + tw && mouseY >= catY && mouseY <= catY + 14;
 
@@ -150,7 +154,7 @@ public class GameSelectorScreen extends Screen {
                 g.fill(catX, catY, catX + tw, catY + 14, 0x44FFFFFF);
             }
             g.drawString(font, cat, catX + 6, catY + 3, isSelected ? 0xFFFFFF : 0x888888);
-            catX += tw + 4;
+            catX += tw + CATEGORY_GAP;
         }
 
         // ─── 联机大厅按钮 ───
@@ -244,23 +248,23 @@ public class GameSelectorScreen extends Screen {
     public boolean mouseClicked(double mx, double my, int btn) {
         int cx = width / 2;
 
-        // ─── 分类标签点击 ───
+        // ─── 分类标签点击（与渲染逻辑使用同一套宽度常量） ───
         int catY = 48;
         int catTotalW = 0;
-        for (String cat : CATEGORIES) catTotalW += font.width(cat) + 16;
-        int lobbyW = font.width("🌐 联机大厅") + 16;
-        int totalBarW = catTotalW + lobbyW + 12;
+        for (String cat : CATEGORIES) catTotalW += font.width(cat) + CATEGORY_PADDING + CATEGORY_GAP;
+        int lobbyW = font.width("🌐 联机大厅") + CATEGORY_PADDING;
+        int totalBarW = catTotalW + 8 + lobbyW;
         int catX = cx - totalBarW / 2;
 
         for (int i = 0; i < CATEGORIES.length; i++) {
-            int tw = font.width(CATEGORIES[i]) + 12;
+            int tw = font.width(CATEGORIES[i]) + CATEGORY_PADDING;
             if (mx >= catX && mx <= catX + tw && my >= catY && my <= catY + 14) {
                 selectedCategoryIndex = i;
                 filterCategory = CATEGORIES[i];
                 currentPage = 0;
                 return true;
             }
-            catX += tw + 4;
+            catX += tw + CATEGORY_GAP;
         }
 
         // ─── 联机大厅点击（保持与渲染相同的间距计算） ───

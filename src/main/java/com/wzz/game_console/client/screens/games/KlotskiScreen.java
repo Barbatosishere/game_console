@@ -178,9 +178,10 @@ public class KlotskiScreen extends Screen {
     @Override public boolean mouseClicked(double mx, double my, int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (won) {
-            // 下一关按钮
+            // 下一关按钮（修复：点击区与 drawWin 中的绘制区统一，cay=cy-ch/2=cy-50，按钮在 cay+52..cay+74）
             int cx = width/2, cy = height/2;
-            if (mx >= cx-60 && mx <= cx+60 && my >= cy+32 && my <= cy+54) {
+            int cay = cy - 50;
+            if (mx >= cx-60 && mx <= cx+60 && my >= cay+52 && my <= cay+74) {
                 if (currentLevel < LEVELS.length) { currentLevel++; loadLevel(currentLevel); }
                 else loadLevel(1);
                 return true;

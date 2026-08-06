@@ -164,22 +164,20 @@ public class Match3GameScreen extends Screen {
     }
     
     private void renderAnimations(GuiGraphics guiGraphics) {
-        animations.removeIf(anim -> {
-            anim.timer--;
+        // 修复：timer 递减已移到 tick() 固定频率执行，此处只负责绘制，避免动画速度随 FPS 变化
+        for (AnimationEffect anim : animations) {
             if (anim.timer > 0) {
                 int screenX = GRID_START_X + anim.x * CELL_SIZE;
                 int screenY = GRID_START_Y + anim.y * CELL_SIZE;
-                
+
                 if (anim.isMatch) {
                     // 匹配消除动画 - 闪烁效果
                     int alpha = (anim.timer % 4 < 2) ? 0x88 : 0xFF;
-                    guiGraphics.fill(screenX, screenY, screenX + CELL_SIZE, screenY + CELL_SIZE, 
+                    guiGraphics.fill(screenX, screenY, screenX + CELL_SIZE, screenY + CELL_SIZE,
                                    (alpha << 24) | 0xFFFF00);
                 }
-                return false;
             }
-            return true;
-        });
+        }
     }
     
     private boolean isMouseOver(int mouseX, int mouseY, int x, int y) {
@@ -361,6 +359,8 @@ public class Match3GameScreen extends Screen {
     public void tick() {
         super.tick();
         calcDynamicLayout();
+        // 修复：动画计时在 tick() 中递减（固定 20次/秒），不再依赖渲染帧率
+        animations.removeIf(anim -> --anim.timer <= 0);
     }
     
     @Override

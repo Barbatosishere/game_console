@@ -63,7 +63,8 @@ public class FruitNinjaScreen extends Screen {
             float[] f = it.next();
             f[0] += f[2]; f[1] += f[3]; f[3] += 0.3f; // gravity
             if (f[1] > height + 50) {
-                if (f[5] == 0) { lives--; if (lives <= 0) state = State.GAME_OVER; }
+                // 只有未被切开的普通水果掉出屏幕才扣命（f[4]==-1为炸弹，f[5]==0为未切开）
+                if (f[5] == 0 && f[4] != -1) { lives--; if (lives <= 0) state = State.GAME_OVER; }
                 it.remove();
             }
         }

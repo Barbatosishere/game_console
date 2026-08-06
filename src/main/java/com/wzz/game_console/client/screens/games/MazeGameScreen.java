@@ -266,6 +266,9 @@ public class MazeGameScreen extends Screen {
                 if (Minecraft.getInstance().player != null) {
                     Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
                 }
+            } else if (playerX == ghostX && playerY == ghostY) {
+                // 玩家主动走上鬼魂格子同样会被抓（原来只在鬼魂移动后检查）
+                gameOver = true;
             }
 
             return true;
@@ -338,16 +341,21 @@ public class MazeGameScreen extends Screen {
                 if (nx >= 0 && nx < MAZE_WIDTH && ny >= 0 && ny < MAZE_HEIGHT && maze[ny][nx] != '#') {
                     String key = nx + "," + ny;
                     double newGScore = current.gScore + 1;
-                    Node neighbor = allNodes.getOrDefault(key, new Node(nx, ny));
+                    Node neighbor = allNodes.get(key);
+                    if (neighbor == null) {
+                        neighbor = new Node(nx, ny);
+                        allNodes.put(key, neighbor);
+                    }
 
                     if (newGScore < neighbor.gScore) {
                         neighbor.parent = current;
                         neighbor.gScore = newGScore;
                         neighbor.fScore = newGScore + heuristic(nx, ny, targetX, targetY);
 
-                        if (!openSet.contains(neighbor)) {
-                            openSet.add(neighbor);
-                        }
+                        // 发现更优路径时先移除旧节点再重新入队，
+                        // 避免原地修改已在堆中的fScore破坏堆序
+                        openSet.remove(neighbor);
+                        openSet.add(neighbor);
                     }
                 }
             }

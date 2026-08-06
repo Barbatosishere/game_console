@@ -148,13 +148,14 @@ public class PipePuzzleScreen extends Screen {
             if (mx>=cx-60&&mx<=cx+60&&my>=cy+48&&my<=cy+70) { state=State.PLAYING; initPuzzle(); return true; }
             return true;
         }
-        if (mx>=startX && mx<=startX+gridSize*tileSize && my>=startY && my<=startY+gridSize*tileSize) {
-            int gx=(int)((mx-startX)/tileSize), gy=(int)((my-startY)/tileSize);
-            if (gx>=0&&gx<gridSize&&gy>=0&&gy<gridSize) { rotatePipe(gx,gy); return true; }
-        }
+        // 胜利状态优先判定“再来一局”按钮，避免被棋盘区域拦截导致不可达
         if (gameWon) {
             int cx=width/2, cardY=height/2-55;
             if (mx>=cx-60&&mx<=cx+60&&my>=cardY+70&&my<=cardY+92) { initPuzzle(); return true; }
+        }
+        if (mx>=startX && mx<=startX+gridSize*tileSize && my>=startY && my<=startY+gridSize*tileSize) {
+            int gx=(int)((mx-startX)/tileSize), gy=(int)((my-startY)/tileSize);
+            if (gx>=0&&gx<gridSize&&gy>=0&&gy<gridSize) { rotatePipe(gx,gy); return true; }
         }
         return false;
     }

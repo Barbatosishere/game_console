@@ -52,6 +52,9 @@ public class TowerDefenseScreen extends Screen {
     
     // 选中的塔类型
     private TowerType selectedTowerType = null;
+
+    // 记录最近一帧的鼠标屏幕坐标（供 getMouseGridPos 使用）
+    private int lastMouseX = 0, lastMouseY = 0;
     
     // 路径点（敌人行走路径）
     private final List<GridPos> path = Arrays.asList(
@@ -113,6 +116,9 @@ public class TowerDefenseScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        // 记录鼠标位置，供悬停射程显示等逻辑使用
+        lastMouseX = mouseX;
+        lastMouseY = mouseY;
         GameRenderHelper.fillDarkBackground(graphics, width, height);
         
         // 绘制游戏网格
@@ -212,7 +218,7 @@ public class TowerDefenseScreen extends Screen {
                 int barY = y - 8;
                 
                 graphics.fill(barX, barY, barX + barWidth, barY + barHeight, 0xFF800000);
-                int healthWidth = (int)(barWidth * enemy.health / enemy.maxHealth);
+                int healthWidth = barWidth * enemy.health / enemy.maxHealth;
                 graphics.fill(barX, barY, barX + healthWidth, barY + barHeight, 0xFF00FF00);
             }
         }
@@ -293,13 +299,15 @@ public class TowerDefenseScreen extends Screen {
                 coins -= selectedTowerType.cost;
                 selectedTowerType = null;
                 
-                // 播放放置音效
-                Minecraft.getInstance().level.playLocalSound(
-                    Minecraft.getInstance().player.getX(),
-                    Minecraft.getInstance().player.getY(),
-                    Minecraft.getInstance().player.getZ(),
-                    SoundEvents.STONE_PLACE, SoundSource.BLOCKS, 0.5f, 1.0f, false
-                );
+                // 播放放置音效（判空保护）
+                if (Minecraft.getInstance().level != null && Minecraft.getInstance().player != null) {
+                    Minecraft.getInstance().level.playLocalSound(
+                        Minecraft.getInstance().player.getX(),
+                        Minecraft.getInstance().player.getY(),
+                        Minecraft.getInstance().player.getZ(),
+                        SoundEvents.STONE_PLACE, SoundSource.BLOCKS, 0.5f, 1.0f, false
+                    );
+                }
                 return true;
             }
         }
@@ -466,8 +474,8 @@ public class TowerDefenseScreen extends Screen {
     }
     
     private GridPos getMouseGridPos() {
-        // 这里需要获取当前鼠标位置，简化处理
-        return new GridPos(0, 0);
+        // 使用 render 中记录的鼠标屏幕坐标转换为格子坐标
+        return screenToGrid(lastMouseX, lastMouseY);
     }
     
     private boolean canPlaceTower(int gridX, int gridY) {
@@ -475,9 +483,13 @@ public class TowerDefenseScreen extends Screen {
             return false;
         }
         
-        // 检查路径
-        for (GridPos pathPoint : path) {
-            if (pathPoint.x == gridX && pathPoint.y == gridY) {
+        // 检查路径：逐段检查相邻 waypoint 之间路径段上的所有格子
+        for (int i = 0; i < path.size() - 1; i++) {
+            GridPos a = path.get(i);
+            GridPos b = path.get(i + 1);
+            int minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+            int minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+            if (gridX >= minX && gridX <= maxX && gridY >= minY && gridY <= maxY) {
                 return false;
             }
         }

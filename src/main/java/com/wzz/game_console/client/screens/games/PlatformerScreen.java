@@ -17,6 +17,7 @@ import java.util.*;
 public class PlatformerScreen extends Screen {
     boolean showExitConfirm = false;
     private static final int PS = 16, GRAVITY = 1, JUMP_FORCE = -12, MOVE_SPEED = 4;
+    private static final int PLATFORM_THICKNESS = 12; // 平台实际厚度(与渲染一致)，撞底判定不能用宽度
 
     private enum State { MENU, PLAYING, GAME_OVER }
     private State state = State.MENU;
@@ -76,8 +77,8 @@ public class PlatformerScreen extends Screen {
                         && playerY + PS >= p[1] && playerY + PS <= p[1] + PS && velY >= 0) {
                     playerY = p[1] - PS; velY = 0; onGround = true; remainY = 0;
                 } else if (playerX + PS > px && playerX < px + p[2]
-                        && playerY <= p[1] + p[2] && playerY >= p[1] && velY < 0) {
-                    velY = 0; remainY = 0; // 撞到底部
+                        && playerY <= p[1] + PLATFORM_THICKNESS && playerY >= p[1] && velY < 0) {
+                    velY = 0; remainY = 0; // 撞到底部(使用平台实际厚度而非宽度p[2])
                 }
             }
         }
@@ -99,7 +100,8 @@ public class PlatformerScreen extends Screen {
     }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
-        keys[Math.min(key, 511)] = true;
+        // 过滤无效键码(如GLFW_KEY_UNKNOWN=-1)，避免数组越界
+        if (key >= 0 && key < keys.length) keys[key] = true;
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (state != State.MENU) { showExitConfirm = true; return true; }
@@ -113,7 +115,8 @@ public class PlatformerScreen extends Screen {
     }
 
     @Override public boolean keyReleased(int key, int scan, int mods) {
-        keys[Math.min(key, 511)] = false;
+        // 同样过滤无效键码，避免数组越界
+        if (key >= 0 && key < keys.length) keys[key] = false;
         return true;
     }
 

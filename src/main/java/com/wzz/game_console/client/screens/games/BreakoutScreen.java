@@ -71,20 +71,27 @@ public class BreakoutScreen extends Screen {
             if (lives <= 0) state = State.GAME_OVER;
             else { ballX = paddleX + paddleW/2f; ballY = gameTop + gameH * 0.7f; ballDX = 3; ballDY = -3; }
         }
-        // 砖块碰撞
-        for (int r = 0; r < BRICK_ROWS; r++)
-            for (int c = 0; c < BRICK_COLS; c++)
+        // 砖块碰撞：根据撞击面反弹（左右侧面反转ballDX，上下反转ballDY），同一tick只处理一块砖，防止多次反转导致穿墙
+        boolean brickHit = false;
+        for (int r = 0; r < BRICK_ROWS && !brickHit; r++)
+            for (int c = 0; c < BRICK_COLS && !brickHit; c++)
                 if (bricks[r][c]) {
                     int bx = gameLeft + c * brickW, by = gameTop + 20 + r * (brickH + 2);
                     if (ballX + ballS > bx && ballX < bx + brickW && ballY + ballS > by && ballY < by + brickH) {
-                        bricks[r][c] = false; ballDY = -ballDY; score += 10;
+                        bricks[r][c] = false; score += 10;
+                        brickHit = true;
+                        // 穿透量较小的一侧即为撞击面
+                        float overlapX = Math.min(ballX + ballS - bx, bx + brickW - ballX);
+                        float overlapY = Math.min(ballY + ballS - by, by + brickH - ballY);
+                        if (overlapX < overlapY) ballDX = -ballDX; else ballDY = -ballDY;
                         GameRenderHelper.spawnParticles(particles, bx + brickW/2f, by + brickH/2f, 6, BRICK_COLORS[r]);
                         if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.NOTE_BLOCK_BELL.value(), 0.3F, 1.5F);
                     }
                 }
-        // 全部清除
+        // 全部清除（用标签跳出全部循环，原break只跳出内层循环）
         boolean allClear = true;
-        for (boolean[] row : bricks) for (boolean b : row) if (b) { allClear = false; break; }
+        outer:
+        for (boolean[] row : bricks) for (boolean b : row) if (b) { allClear = false; break outer; }
         if (allClear) state = State.GAME_OVER;
     }
 

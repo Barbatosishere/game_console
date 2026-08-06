@@ -174,7 +174,8 @@ public class JumpGameScreen extends Screen {
     @Override
     public void init() {
         super.init();
-        startGame();
+        // 修复：窗口缩放会重复调用 init()，仅首次进入时初始化，避免游戏进行中丢进度
+        if (platforms.isEmpty()) startGame();
     }
 
     void startGame() {
@@ -293,12 +294,7 @@ public class JumpGameScreen extends Screen {
     }
 
     void checkLanding() {
-        Platform next = platforms.get(currentPlatIdx + 1);
         Platform cur  = platforms.get(currentPlatIdx);
-
-        float dx = player.wx - next.wx;
-        float dz = player.wz - next.wz;
-        float dist = (float)Math.sqrt(dx*dx+dz*dz);
 
         // 落回当前平台：重置到当前平台中心，不扣分不 game over
         float dxCur = player.wx - cur.wx;
@@ -314,8 +310,26 @@ public class JumpGameScreen extends Screen {
             return;
         }
 
-        // 是否落在目标平台上
-        if (dist <= next.hw) {
+        // 修复：落点可能跳过下一个平台落在更远的平台上，扫描全部平台判定落点所在平台
+        Platform landed = null;
+        int landedIdx = -1;
+        float dist = 0f;
+        for (int i = 0; i < platforms.size(); i++) {
+            if (i == currentPlatIdx) continue;
+            Platform p = platforms.get(i);
+            float dxi = player.wx - p.wx;
+            float dzi = player.wz - p.wz;
+            float di = (float)Math.sqrt(dxi*dxi+dzi*dzi);
+            if (di <= p.hw) {
+                landed = p;
+                landedIdx = i;
+                dist = di;
+                break;
+            }
+        }
+
+        // 是否落在某个平台上
+        if (landed != null) {
             // 成功落地
             player.onGround = true;
             player.vy = 0; player.vx = 0; player.vz = 0;
@@ -323,22 +337,22 @@ public class JumpGameScreen extends Screen {
             player.landBounce = 0.25f;
             // 落地时清空蓄力，防止之前按键残留状态导致自动蓄力
             charging = false; charge = 0; predictWX = null; predictWZ = null; predictWY = null;
-            currentPlatIdx++;
+            currentPlatIdx = landedIdx;
 
             // 是否 Perfect（中心）
-            boolean perfect = dist <= next.hw * CENTER_RADIUS;
+            boolean perfect = dist <= landed.hw * CENTER_RADIUS;
             int pts;
             if (perfect) {
                 combo++;
                 pts = (int)(BASE_SCORE * PERFECT_BONUS) + (combo > 1 ? combo * 5 : 0);
-                spawnLandParticles(next, true);
+                spawnLandParticles(landed, true);
                 particles.add(new Particle(player.wx, player.wy, player.wz,
                     combo>1?"PERFECT  x"+combo+" 连击！":"PERFECT！",
                     combo>3?0xFFFF4444:0xFFFFDD00));
             } else {
                 combo = 0;
                 pts = BASE_SCORE;
-                spawnLandParticles(next, false);
+                spawnLandParticles(landed, false);
                 particles.add(new Particle(player.wx, player.wy, player.wz,
                     "+"+pts, 0xFFFFFFFF));
             }

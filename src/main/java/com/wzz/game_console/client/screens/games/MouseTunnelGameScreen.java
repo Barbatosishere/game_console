@@ -60,6 +60,8 @@ public class MouseTunnelGameScreen extends Screen {
     private Random random = new Random();
     private int difficulty = 1;
     private long lastDifficultyIncrease = 0;
+    private long outOfTunnelSince = 0; // 鼠标离开通道的时间戳(宽限计时，替代碰墙新建线程)
+    private static final long GRACE_MILLIS = 500; // 碰墙后0.5秒宽限时间
 
     // UI组件
     private Button startButton;
@@ -96,8 +98,12 @@ public class MouseTunnelGameScreen extends Screen {
     @Override
     public void init() {
         super.init();
-        playerX = 100;
-        playerY = this.height / 2;
+        boolean playing = gameState == GameState.PLAYING;
+        if (!playing) {
+            // 窗口缩放时重置玩家位置，避免覆盖已进行游戏的鼠标位置
+            playerX = 100;
+            playerY = this.height / 2;
+        }
 
         // 计算需要的通道段数量，确保覆盖屏幕宽度 + 额外缓冲
         tunnelSegmentCount = (this.width / SEGMENT_WIDTH) + 20; // 额外20段作为缓冲
@@ -111,7 +117,20 @@ public class MouseTunnelGameScreen extends Screen {
                 .bounds(this.width / 2 - 50, this.height / 2 + 80, 100, 20)
                 .build();
         this.addRenderableWidget(this.exitButton);
-        generateInitialTunnel();
+        if (playing) {
+            // 游戏进行中：保留现有通道与进度，仅在段数不足时补充新段以覆盖新窗口宽度
+            while (tunnelSegments.size() < tunnelSegmentCount) {
+                TunnelSegment lastSegment = tunnelSegments.get(tunnelSegments.size() - 1);
+                int newCenterY = Mth.clamp(lastSegment.centerY + random.nextInt(31) - 15,
+                        MAX_TUNNEL_HEIGHT / 2, this.height - MAX_TUNNEL_HEIGHT / 2);
+                int newHeight = Mth.clamp(lastSegment.height + random.nextInt(21) - 10,
+                        Math.max(MIN_TUNNEL_HEIGHT - difficulty * 5, 30),
+                        MAX_TUNNEL_HEIGHT - difficulty * 5);
+                tunnelSegments.add(new TunnelSegment(newCenterY, newHeight));
+            }
+        } else {
+            generateInitialTunnel();
+        }
     }
 
     private void generateInitialTunnel() {
@@ -141,6 +160,9 @@ public class MouseTunnelGameScreen extends Screen {
         difficulty = 1;
         scrollOffset = 0;
         mouseInTunnel = true;
+        // 重置难度计时基准与宽限计时，避免开局瞬间触发难度提升或误判游戏结束
+        lastDifficultyIncrease = System.currentTimeMillis();
+        outOfTunnelSince = 0;
 
         generateInitialTunnel();
 
@@ -280,21 +302,13 @@ public class MouseTunnelGameScreen extends Screen {
             // 检查是否在通道内
             if (playerY < segment.topY || playerY > segment.bottomY) {
                 if (mouseInTunnel) {
-                    // 第一次碰墙
+                    // 第一次碰墙：记录离开时间，给予短暂宽限期(不再新建线程)
                     mouseInTunnel = false;
+                    outOfTunnelSince = System.currentTimeMillis();
                     playWarningSound();
-
-                    // 给玩家短暂时间返回通道
-                    new Thread(() -> {
-                        try {
-                            Thread.sleep(500); // 0.5秒宽限时间
-                            if (!mouseInTunnel) {
-                                gameOver();
-                            }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }).start();
+                } else if (System.currentTimeMillis() - outOfTunnelSince > GRACE_MILLIS) {
+                    // 连续超出宽限期仍未返回通道，判定失败
+                    gameOver();
                 }
             } else {
                 // 重新进入通道

@@ -18,10 +18,11 @@ public class TicTacToeGame {
     
     public TicTacToeGame(GameMode mode) {
         this.gameMode = mode;
+        // resetGame() 已声明为 final，避免构造器调用可覆写方法的 this-escape 风险
         resetGame();
     }
     
-    public void resetGame() {
+    public final void resetGame() {
         board = new Player[3][3];
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
@@ -41,7 +42,7 @@ public class TicTacToeGame {
         
         board[row][col] = currentPlayer;
         
-        if (checkWin()) {
+        if (checkWin(currentPlayer)) {
             winner = currentPlayer;
             gameOver = true;
         } else if (isBoardFull()) {
@@ -114,7 +115,8 @@ public class TicTacToeGame {
             for (int j = 0; j < 3; j++) {
                 if (board[i][j] == Player.NONE) {
                     board[i][j] = player;
-                    if (checkWin()) {
+                    // 修复：用试落子的玩家颜色判胜，原来用 currentPlayer 字段导致检测对手威胁永远失效
+                    if (checkWin(player)) {
                         board[i][j] = Player.NONE;
                         return new int[]{i, j};
                     }
@@ -125,28 +127,28 @@ public class TicTacToeGame {
         return null;
     }
     
-    private boolean checkWin() {
+    private boolean checkWin(Player player) {
         // 检查行
         for (int i = 0; i < 3; i++) {
-            if (board[i][0] == currentPlayer && 
-                board[i][1] == currentPlayer && 
-                board[i][2] == currentPlayer) {
+            if (board[i][0] == player && 
+                board[i][1] == player && 
+                board[i][2] == player) {
                 return true;
             }
         }
         
         // 检查列
         for (int j = 0; j < 3; j++) {
-            if (board[0][j] == currentPlayer && 
-                board[1][j] == currentPlayer && 
-                board[2][j] == currentPlayer) {
+            if (board[0][j] == player && 
+                board[1][j] == player && 
+                board[2][j] == player) {
                 return true;
             }
         }
         
         // 检查对角线
-        if ((board[0][0] == currentPlayer && board[1][1] == currentPlayer && board[2][2] == currentPlayer) ||
-            (board[0][2] == currentPlayer && board[1][1] == currentPlayer && board[2][0] == currentPlayer)) {
+        if ((board[0][0] == player && board[1][1] == player && board[2][2] == player) ||
+            (board[0][2] == player && board[1][1] == player && board[2][0] == player)) {
             return true;
         }
         

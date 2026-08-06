@@ -131,17 +131,21 @@ public class ResourceUtil {
         }
     }
 
+    /**
+     * 查找指定名称的静态方法；找不到时抛出明确异常，
+     * 由调用方的 catch 分支回退到构造器方式，避免传入 null 方法句柄导致后续 NPE。
+     */
     private static MethodHandle tryFindStaticMethod(MethodHandles.Lookup lookup,
                                                     Class<ResourceLocation> clazz,
                                                     MethodType methodType,
-                                                    List<String> methodNames) {
+                                                    List<String> methodNames) throws NoSuchMethodException {
         for (String methodName : methodNames) {
             try {
                 return lookup.findStatic(clazz, methodName, methodType);
             } catch (NoSuchMethodException | IllegalAccessException ignored) {
             }
         }
-        return null;
+        throw new NoSuchMethodException("未找到候选静态方法: " + methodNames);
     }
 
     /**

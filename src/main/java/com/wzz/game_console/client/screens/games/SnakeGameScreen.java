@@ -43,6 +43,8 @@ public class SnakeGameScreen extends Screen {
     }
 
     private void spawnFood() {
+        // 棋盘已被蛇填满时无处生成食物，直接退出避免死循环
+        if (snake.size() >= GRID_W * GRID_H) { food = null; return; }
         do { food = new int[]{random.nextInt(GRID_W), random.nextInt(GRID_H)}; }
         while (snake.stream().anyMatch(s -> s[0] == food[0] && s[1] == food[1]));
     }
@@ -64,11 +66,13 @@ public class SnakeGameScreen extends Screen {
             return;
         }
         snake.add(0, new int[]{nx, ny});
-        if (nx == food[0] && ny == food[1]) {
+        if (food != null && nx == food[0] && ny == food[1]) {
             score++;
+            // 先记录旧食物坐标，粒子应生成在被吃掉的位置而非新食物位置
+            int oldFx = food[0], oldFy = food[1];
             spawnFood();
             if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0F, 1.5F);
-            GameRenderHelper.spawnParticles(particles, offsetX + food[0] * cellSize + cellSize / 2f, offsetY + food[1] * cellSize + cellSize / 2f, 8, 0x44FF44);
+            GameRenderHelper.spawnParticles(particles, offsetX + oldFx * cellSize + cellSize / 2f, offsetY + oldFy * cellSize + cellSize / 2f, 8, 0x44FF44);
             floats.add(new GameRenderHelper.FloatingText("+1", offsetX + nx * cellSize, offsetY + ny * cellSize - 10, 0x44FF44, 30));
         } else {
             snake.remove(snake.size() - 1);

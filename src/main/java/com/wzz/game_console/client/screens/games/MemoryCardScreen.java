@@ -34,6 +34,9 @@ public class MemoryCardScreen extends Screen {
     private int moves;
     private long startTime;
     private boolean waitingForFlipBack; // 新增: 标记是否正在等待翻回卡片
+    private int flipBackDelay; // 翻回前的剩余等待tick数(替代tell+sleep，避免冻结主线程)
+    private Card pendingFirst; // 等待翻回的第一张卡
+    private Card pendingSecond; // 等待翻回的第二张卡
 
     // 卡片状态
     private enum CardState {
@@ -83,6 +86,9 @@ public class MemoryCardScreen extends Screen {
         gameWon = false;
         moves = 0;
         waitingForFlipBack = false;
+        flipBackDelay = 0;
+        pendingFirst = null;
+        pendingSecond = null;
         startTime = System.currentTimeMillis();
 
         // 计算绘制起始位置，使网格居中
@@ -266,25 +272,31 @@ public class MemoryCardScreen extends Screen {
                 // 匹配失败，设置等待翻回状态
                 waitingForFlipBack = true;
 
-                // 使用Minecraft的定时器而不是新建线程
-                Minecraft.getInstance().tell(() -> {
-                    try {
-                        Thread.sleep(1000); // 等待1秒
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                // 改用tick计数器实现1秒延迟(约20tick)，不再阻塞渲染主线程
+                pendingFirst = firstSelected;
+                pendingSecond = card;
+                firstSelected = null;
+                flipBackDelay = 20;
+            }
+        }
+    }
 
-                    Minecraft.getInstance().execute(() -> {
-                        if (firstSelected.state == CardState.REVEALED) {
-                            firstSelected.state = CardState.HIDDEN;
-                        }
-                        if (card.state == CardState.REVEALED) {
-                            card.state = CardState.HIDDEN;
-                        }
-                        firstSelected = null;
-                        waitingForFlipBack = false;
-                    });
-                });
+    @Override
+    public void tick() {
+        super.tick();
+        // 延迟倒计时结束后将两张未匹配的卡片翻回
+        if (waitingForFlipBack && flipBackDelay > 0) {
+            flipBackDelay--;
+            if (flipBackDelay <= 0) {
+                if (pendingFirst != null && pendingFirst.state == CardState.REVEALED) {
+                    pendingFirst.state = CardState.HIDDEN;
+                }
+                if (pendingSecond != null && pendingSecond.state == CardState.REVEALED) {
+                    pendingSecond.state = CardState.HIDDEN;
+                }
+                pendingFirst = null;
+                pendingSecond = null;
+                waitingForFlipBack = false;
             }
         }
     }

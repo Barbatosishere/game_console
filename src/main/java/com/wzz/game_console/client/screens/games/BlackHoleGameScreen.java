@@ -17,6 +17,7 @@ import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 
@@ -43,6 +44,8 @@ public class BlackHoleGameScreen extends Screen {
     }
     
     private void initGame() {
+        // 修复：重开游戏时清理按键状态，避免残留按键导致角色自动移动
+        Arrays.fill(keys, false);
         // 初始化玩家 (屏幕中心)
         this.player = new Player(0, 0, 0, 20);
         
@@ -191,7 +194,8 @@ public class BlackHoleGameScreen extends Screen {
 
             float speed = 0.5f;
 
-            if (distance < 200) {
+            if (distance > 0 && distance < 200) {
+                // 修复：distance==0 时除零会产生 NaN 导致敌人坐标崩坏
                 dx /= distance;
                 dy /= distance;
 

@@ -117,10 +117,23 @@ public class PuzzleGameScreen extends Screen {
     }
 
     private void shufflePuzzle() {
-        // 执行随机移动100次以确保拼图可解
+        // 修复：先定位真实空格位置（原代码打乱时 emptyX/emptyY 还是默认值0,0，而真实空格在右下角）
+        for (int y = 0; y < PUZZLE_ROWS; y++) {
+            for (int x = 0; x < PUZZLE_COLS; x++) {
+                if (puzzleGrid[y][x].isBlank) {
+                    emptyX = x;
+                    emptyY = y;
+                }
+            }
+        }
+        // 执行200次合法的"空格-邻块"滑动，保证拼图必然可解；避免立即回退上一步以提高打乱效率
+        int[] last = {-1, -1}; // 上一步空格位置（数组引用不变，便于 lambda 捕获）
         for (int i = 0; i < 200; i++) {
             List<int[]> possibleMoves = getPossibleMoves(emptyX, emptyY);
+            possibleMoves.removeIf(m -> m[0] == last[0] && m[1] == last[1]);
             int[] move = possibleMoves.get(random.nextInt(possibleMoves.size()));
+            last[0] = emptyX;
+            last[1] = emptyY;
             swapPieces(emptyX, emptyY, move[0], move[1]);
             emptyX = move[0];
             emptyY = move[1];
