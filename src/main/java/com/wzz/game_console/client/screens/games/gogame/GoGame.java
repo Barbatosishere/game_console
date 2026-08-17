@@ -14,6 +14,10 @@ public class GoGame {
     private int consecutivePasses;
     private List<GoMove> moveHistory;
     private GoAI ai;
+    /** 历史局面哈希：劫争判定（禁止全局同型，中国规则），新局面不得与任何历史局面重复 */
+    private final Set<Long> positionHistory = new HashSet<>();
+    /** 调试开关：为 true 时输出劫争判定的详细追踪信息（默认关闭，正常对局不刷屏） */
+    private static final boolean DEBUG_KO = false;
     
     public GoGame() {
         this.board = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
@@ -30,32 +34,38 @@ public class GoGame {
                 board[x][y] = GoPlayer.NONE;
             }
         }
-        
+
         currentPlayer = GoPlayer.BLACK;
         gameOver = false;
         blackCaptured = 0;
         whiteCaptured = 0;
         consecutivePasses = 0;
         moveHistory.clear();
+        // 空棋盘作为初始历史局面（用于劫争的同型判定）
+        positionHistory.clear();
+        positionHistory.add(boardHash());
     }
-    
+
     public boolean placeStone(int x, int y) {
         if (!canPlaceStone(x, y)) {
             return false;
         }
-        
+
+        // 备份当前局面：自杀或劫争判定失败时整体回滚
+        GoPlayer[][] backup = copyBoardInternal();
+
         // 放置棋子
         board[x][y] = currentPlayer;
-        
+
         // 检查并移除被吃掉的对方棋子
         GoPlayer opponent = currentPlayer == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         int capturedStones = 0;
-        
+
         // 检查四个方向的相邻棋子群
         for (int[] dir : DIRS) {
             int nx = x + dir[0];
             int ny = y + dir[1];
-            
+
             if (isValidPosition(nx, ny) && board[nx][ny] == opponent) {
                 Set<int[]> group = getGroup(nx, ny);
                 if (!hasLiberty(group)) {
@@ -67,29 +77,65 @@ public class GoGame {
                 }
             }
         }
-        
+
+// 劫争规则（禁止全局同型）：新局面与任何历史局面重复则非法，
+        // 可防住单子提劫、双劫/长生等一切循环局面
+        long newHash = boardHash();
+
+        if (DEBUG_KO) {
+            System.out.println("DEBUG: Move #" + (moveHistory.size() + 1) + " at (" + x + "," + y + ") by " + currentPlayer);
+            System.out.println("DEBUG: New hash = " + newHash);
+            System.out.println("DEBUG: Position history contains hash: " + positionHistory.contains(newHash));
+            System.out.println("DEBUG: Captured stones: " + capturedStones);
+        }
+
+        // 全局同型：任何历史局面都不得再次出现，包括单子提劫的立即回提
+        if (positionHistory.contains(newHash)) {
+            if (DEBUG_KO) {
+                System.out.println("DEBUG: MOVE REJECTED - Ko violation detected");
+            }
+            restoreBoard(backup);
+            return false;
+        }
+
         // 检查自杀规则 - 如果当前放置的棋子群无气且没有吃掉对方棋子，则为非法移动
         Set<int[]> currentGroup = getGroup(x, y);
         if (!hasLiberty(currentGroup) && capturedStones == 0) {
-            board[x][y] = GoPlayer.NONE; // 撤销移动
+            restoreBoard(backup);
             return false;
         }
-        
+
         // 更新捕获计数
         if (currentPlayer == GoPlayer.BLACK) {
             whiteCaptured += capturedStones;
         } else {
             blackCaptured += capturedStones;
         }
-        
-        // 记录移动
-        moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
-        
+
         // 切换玩家
         switchPlayer();
+
+        // 记录移动与局面（记录切换后的玩家状态）
+        moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
+        positionHistory.add(newHash);
         consecutivePasses = 0;
-        
+
         return true;
+    }
+
+    /** 当前局面的确定性哈希（同型局面必同哈希） */
+    private long boardHash() {
+        return Arrays.deepHashCode(board);
+    }
+
+    private GoPlayer[][] copyBoardInternal() {
+        GoPlayer[][] copy = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
+        for (int i = 0; i < BOARD_SIZE; i++) copy[i] = board[i].clone();
+        return copy;
+    }
+
+    private void restoreBoard(GoPlayer[][] backup) {
+        for (int i = 0; i < BOARD_SIZE; i++) board[i] = backup[i].clone();
     }
     
     public boolean canPlaceStone(int x, int y) {
@@ -103,15 +149,16 @@ public class GoGame {
     
     public void pass() {
         if (gameOver) return;
-        
+
+        // 先按当前玩家记录弃权（原先在switchPlayer之后记录，会把弃权记到对手名下）
+        moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
+
         consecutivePasses++;
         if (consecutivePasses >= 2) {
             endGame();
         } else {
             switchPlayer();
         }
-        
-        moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
     }
     
     public void resign() {
@@ -123,11 +170,10 @@ public class GoGame {
         if (!aiMode || gameOver || currentPlayer == GoPlayer.BLACK) {
             return;
         }
-        
+
         int[] move = ai.getBestMove(this);
-        if (move != null) {
-            placeStone(move[0], move[1]);
-        } else {
+        // 落子失败（劫争/自杀等非法点）时改为弃权，避免AI回合反复尝试同一非法点导致卡死
+        if (move == null || !placeStone(move[0], move[1])) {
             pass();
         }
     }
@@ -207,7 +253,7 @@ public class GoGame {
     public boolean isAiMode() { return aiMode; }
     public void setAiMode(boolean aiMode) { this.aiMode = aiMode; }
     public int getBoardSize() { return BOARD_SIZE; }
-    
+
     // 获取棋盘副本供AI使用
     public GoPlayer[][] getBoardCopy() {
         GoPlayer[][] copy = new GoPlayer[BOARD_SIZE][BOARD_SIZE];

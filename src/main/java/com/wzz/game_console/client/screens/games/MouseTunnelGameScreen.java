@@ -339,7 +339,7 @@ public class MouseTunnelGameScreen extends Screen {
     public void tick() {
         super.tick();
 
-        if (gameState == GameState.PLAYING && mouseInTunnel) {
+        if (gameState == GameState.PLAYING && mouseInTunnel && !showExitConfirm) { // 弹窗期间暂停滚动与计时
             // 更新生存时间
             long currentTime = System.currentTimeMillis();
             survivalTime = currentTime - gameStartTime;
@@ -411,16 +411,35 @@ public class MouseTunnelGameScreen extends Screen {
         }
     }
 
+    /** 弹窗打开时刻：关闭弹窗时平移墙上时钟基准，避免暂停期间计入生存时间/难度计时 */
+    private long exitDialogOpenedAtMs = 0;
+
+    private void openExitDialog() {
+        showExitConfirm = true;
+        if (gameState == GameState.PLAYING) exitDialogOpenedAtMs = System.currentTimeMillis();
+    }
+
+    private void closeExitDialog() {
+        showExitConfirm = false;
+        if (gameState == GameState.PLAYING && exitDialogOpenedAtMs > 0) {
+            long paused = System.currentTimeMillis() - exitDialogOpenedAtMs;
+            gameStartTime += paused;
+            lastDifficultyIncrease += paused;
+            if (outOfTunnelSince > 0) outOfTunnelSince += paused;
+        }
+        exitDialogOpenedAtMs = 0;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
+        if (keyCode == 256) { if (showExitConfirm) { closeExitDialog(); } else { openExitDialog(); } return true; }
         if (showExitConfirm) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { closeExitDialog(); return true; } return true; }
         return super.mouseClicked(mx, my, btn);
     }
 

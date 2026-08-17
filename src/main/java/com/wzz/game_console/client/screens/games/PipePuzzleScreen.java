@@ -137,7 +137,7 @@ public class PipePuzzleScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state == State.MENU) {
             int cx=width/2, cy=height/2;
             Difficulty[] dvs = Difficulty.values();

@@ -213,14 +213,20 @@ public class Minecraft2DScreen extends Screen {
         }
         velX*=0.85f;
 
-        // 垂直
-        float ny=playerY+velY*dt;
-        if(velY>0){ // 向下
-            if(solidFeet(playerX,ny)){playerY=(float)Math.floor(ny);velY=0;onGround=true;}
-            else{playerY=ny;onGround=false;}
-        } else if(velY<0){ // 向上
-            if(solidHead(playerX,ny)){int hr=(int)Math.floor(ny-PH);playerY=hr+1+PH;velY=0;}
-            else playerY=ny;
+        // 垂直：分步移动，单步不超过0.9格——极限下落速度25*0.05=1.25格/tick，
+        // 整步移动会跳过1格厚的薄地板（穿透），分步后每步都做碰撞检测
+        float remainY=velY*dt;
+        while(Math.abs(remainY)>1e-4f){
+            float step=Math.max(-0.9f,Math.min(0.9f,remainY));
+            remainY-=step;
+            float ny=playerY+step;
+            if(step>0){ // 向下
+                if(solidFeet(playerX,ny)){playerY=(float)Math.floor(ny);velY=0;onGround=true;break;}
+                playerY=ny;onGround=false;
+            }else{ // 向上
+                if(solidHead(playerX,ny)){int hr=(int)Math.floor(ny-PH);playerY=hr+1+PH;velY=0;break;}
+                playerY=ny;
+            }
         }
         // 重新检测地面
         onGround=solidFeet(playerX,playerY);
@@ -540,7 +546,7 @@ public class Minecraft2DScreen extends Screen {
         return super.mouseClicked(mx,my,btn);
     }
     @Override public boolean mouseReleased(double mx,double my,int btn){if(btn==0){holdBreak=false;breakProg=0;}return super.mouseReleased(mx,my,btn);}
-    @Override public boolean mouseScrolled(double mx, double my, double scrollDeltaX, double d){if(started){slot=(slot+(d>0?-1:1)+9)%9;return true;}return super.mouseScrolled(mx, my, scrollDeltaX, d);}
+    @Override public boolean mouseScrolled(double mx, double my, double scrollDeltaX, double d){if(started&&!showExitConfirm){slot=(slot+(d>0?-1:1)+9)%9;return true;}return super.mouseScrolled(mx, my, scrollDeltaX, d);}
 
     // ══════════════ 光照 ══════════════
     private void updateLight(int cx,int cy){for(int x=Math.max(0,cx-12);x<=Math.min(W-1,cx+12);x++)calcLight(x);}

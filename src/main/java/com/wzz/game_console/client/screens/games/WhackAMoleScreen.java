@@ -159,7 +159,7 @@ public class WhackAMoleScreen extends Screen {
     public void tick() {
         super.tick();
 
-        if (gameState == GameState.PLAYING) {
+        if (gameState == GameState.PLAYING && !showExitConfirm) { // 弹窗期间暂停游戏（地鼠不再生成/超时）
             long currentTime = System.currentTimeMillis();
 
             // 检查是否漏掉太多地鼠
@@ -423,7 +423,12 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
+        if (keyCode == 256) {
+            if (showExitConfirm) { showExitConfirm = false; }
+            else if (gameState == GameState.MENU) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); } // 菜单态ESC直接退出，与其他游戏一致
+            else { showExitConfirm = true; }
+            return true;
+        }
         if (showExitConfirm) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
     }

@@ -284,7 +284,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         if (lanMode == LAN_CLIENT) {
             // CLIENT：仅发送P2按键输入，游戏逻辑全部由HOST驱动；
             // 直接 return，本地 processHeldKeys/updateGame 等逻辑在联机CLIENT端不会执行
-            if (gameMode != GameMode.MENU && gameRunning && !gameOver) {
+            if (gameMode != GameMode.MENU && gameRunning && !gameOver && !showExitConfirm) {
                 int u = heldKeys.contains(GLFW.GLFW_KEY_UP)    ? 1 : 0;
                 int d = heldKeys.contains(GLFW.GLFW_KEY_DOWN)  ? 1 : 0;
                 int l = heldKeys.contains(GLFW.GLFW_KEY_LEFT)  ? 1 : 0;
@@ -293,7 +293,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             }
             return;
         }
-        if (gameMode != GameMode.MENU && gameRunning && !gameOver) {
+        if (gameMode != GameMode.MENU && gameRunning && !gameOver && !showExitConfirm) { // 弹窗期间暂停游戏
             processHeldKeys();
             updateGame();
             if (lanMode == LAN_HOST) sendState(buildColorChaseState()); // 广播状态给CLIENT
@@ -758,7 +758,8 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     // ══════════════════════════════════════
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        heldKeys.add(key);
+        // 修复：弹窗打开时不注册按键（此前add在拦截检查之前，导致弹窗期间仍能移动）
+        if (key != GLFW.GLFW_KEY_ESCAPE && showExitConfirm) return true;
 
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
@@ -769,10 +770,12 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
                 gameMode = GameMode.MENU; gameRunning = false;
             } else {
                 showExitConfirm = true;
+                heldKeys.clear(); // 清空已按住的键，防止弹窗前按住的WASD继续移动
             }
             return true;
         }
-        if (showExitConfirm) return true;
+
+        heldKeys.add(key);
 
         if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
 
@@ -796,7 +799,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); gameMode = GameMode.MENU; gameRunning = false; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (gameMode == GameMode.MENU) {
             int cx = this.width/2, cy = this.height/2;
             if (mx>=cx-155&&mx<=cx-15&&my>=cy-54&&my<=cy-28) { initGame(false); return true; }

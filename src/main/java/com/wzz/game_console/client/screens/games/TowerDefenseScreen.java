@@ -318,8 +318,8 @@ public class TowerDefenseScreen extends Screen {
     public void tick() {
         super.tick();
         
-        if (!gameStarted || gameOver) return;
-        
+        if (!gameStarted || gameOver || showExitConfirm) return; // 弹窗期间暂停游戏
+
         // 生成敌人
         spawnEnemies();
         

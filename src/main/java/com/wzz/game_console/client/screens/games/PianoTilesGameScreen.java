@@ -692,13 +692,15 @@ public class PianoTilesGameScreen extends Screen {
         try {
             Path musicDir = ExternalFileManager.getMusicDir();
             if (Files.exists(musicDir)) {
-                Files.list(musicDir)
-                        .filter(path -> path.toString().endsWith(".pts"))
-                        .forEach(path -> {
-                            String fileName = path.getFileName().toString();
-                            String songName = fileName.substring(0, fileName.lastIndexOf('.'));
-                            availableSongs.add(songName);
-                        });
+                // try-with-resources 关闭目录流：Files.list 打开的句柄不关会在 Windows 上泄漏
+                try (var paths = Files.list(musicDir)) {
+                    paths.filter(path -> path.toString().endsWith(".pts"))
+                            .forEach(path -> {
+                                String fileName = path.getFileName().toString();
+                                String songName = fileName.substring(0, fileName.lastIndexOf('.'));
+                                availableSongs.add(songName);
+                            });
+                }
             }
         } catch (Exception e) {
             // 静默处理错误
@@ -731,9 +733,31 @@ public class PianoTilesGameScreen extends Screen {
         currentSong.notes.sort(Comparator.comparingLong(n -> n.timestamp));
     }
 
+    /** 弹窗期间自动暂停的标记：取消弹窗时恢复，避免误恢复玩家手动暂停 */
+    private boolean pausedByExitDialog = false;
+
+    /** 打开退出确认弹窗：进行中的对局自动暂停（含音频），防止弹窗期间音符继续下落被判Miss */
+    private void openExitConfirmDialog() {
+        showExitConfirm = true;
+        leftMouseDown = false; // 防止弹窗前按住的鼠标继续自动击打
+        if (!songSelectMode && gameActive && !gamePaused && !gameOver) {
+            togglePause();
+            pausedByExitDialog = true;
+        }
+    }
+
+    /** 关闭退出确认弹窗：恢复由弹窗触发的自动暂停 */
+    private void closeExitConfirmDialog() {
+        showExitConfirm = false;
+        if (pausedByExitDialog) {
+            pausedByExitDialog = false;
+            if (!songSelectMode && gameActive && gamePaused && !gameOver) togglePause();
+        }
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { if (showExitConfirm) { closeExitConfirmDialog(); } else { openExitConfirmDialog(); } return true; }
         if (showExitConfirm) return true;
         // 如果在歌曲选择模式，使用默认的键盘处理
         if (songSelectMode) {
@@ -922,7 +946,7 @@ public class PianoTilesGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown) {
+        if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown && !showExitConfirm) {
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastClickTime > 100) { // 每100ms最多触发一次
                 double mouseX = minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth() / minecraft.getWindow().getScreenWidth();
@@ -936,7 +960,7 @@ public class PianoTilesGameScreen extends Screen {
                 }
             }
         }
-        if (songSelectMode || !gameActive || gamePaused || gameOver) {
+        if (songSelectMode || !gameActive || gamePaused || gameOver || showExitConfirm) { // 弹窗期间暂停判定与下落
             return;
         }
         currentGameTime = System.currentTimeMillis() - gameStartTime;
@@ -1391,7 +1415,7 @@ public class PianoTilesGameScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { closeExitConfirmDialog(); return true; } return true; }
         if (songSelectMode || !gameActive || gamePaused || gameOver || button != 0) {
             return super.mouseClicked(mouseX, mouseY, button);
         }

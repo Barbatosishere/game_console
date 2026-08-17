@@ -180,25 +180,25 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     /** 完整合法走法（过滤走后王被将的情况） */
     private List<int[]> legalMoves(int[][] b, boolean fw) {
         List<int[]> result = new ArrayList<>();
-        for (int[] mv : pseudoMoves(b, fw)) {
+        for (int[] mv : pseudoMoves(b, fw, epTarget)) {
             int[][] nb = copy(b); applyOn(nb, mv, null, null);
             if (!kingInCheck(nb, fw)) result.add(mv);
         }
         return result;
     }
-    /** 伪合法走法（不检查走后将军） */
-    private List<int[]> pseudoMoves(int[][] b, boolean fw) {
+    /** 伪合法走法（不检查走后将军）。ep 为该局面的吃过路兵目标格（AI搜索时传节点自身的目标，不能读字段） */
+    private List<int[]> pseudoMoves(int[][] b, boolean fw, int[] ep) {
         List<int[]> m = new ArrayList<>();
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) {
             int p = b[r][c];
             if (p==E || (fw ? p<0 : p>0)) continue;
-            addMoves(b, r, c, fw, m);
+            addMoves(b, r, c, fw, m, ep);
         }
         return m;
     }
-    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
+    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
         switch (Math.abs(b[r][c])) {
-            case 1 -> pawnMoves(b,r,c,w,o);
+            case 1 -> pawnMoves(b,r,c,w,o,ep);
             case 2 -> knightMoves(b,r,c,w,o);
             case 3 -> slideMoves(b,r,c,w,o,DIR_BISHOP);
             case 4 -> slideMoves(b,r,c,w,o,DIR_ROOK);
@@ -206,7 +206,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             case 6 -> { kingMoves(b,r,c,w,o); castleMoves(b,r,c,w,o); }
         }
     }
-    private void pawnMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
+    private void pawnMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
         int d=w?-1:1, sr=w?6:1, pr=w?0:7, nr=r+d;
         if (ok(nr,c) && b[nr][c]==E) {
             o.add(mv(r,c,nr,c,nr==pr?SP_PROMOTE:SP_NORMAL));
@@ -215,7 +215,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         for (int dc : new int[]{-1,1}) { int nc=c+dc;
             if (!ok(nr,nc)) continue;
             if (w?b[nr][nc]<0:b[nr][nc]>0) o.add(mv(r,c,nr,nc,nr==pr?SP_PROMOTE:SP_NORMAL));
-            if (epTarget!=null && epTarget[0]==nr && epTarget[1]==nc) o.add(mv(r,c,nr,nc,SP_EN_PASSANT));
+            if (ep!=null && ep[0]==nr && ep[1]==nc) o.add(mv(r,c,nr,nc,SP_EN_PASSANT));
         }
     }
     private void knightMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
@@ -373,7 +373,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     private int alphaBeta(int[][] b, int depth, int alpha, int beta, boolean max, boolean[] cf, int[] ep) {
         if (System.currentTimeMillis()-aiT0 > AI_MS) return evalBoard(b);
         if (depth == 0) return evalBoard(b);
-        List<int[]> moves = pseudoMoves(b, max); // ← 伪合法，快
+        List<int[]> moves = pseudoMoves(b, max, ep); // ← 伪合法，快；ep用搜索节点自身的目标
         if (moves.isEmpty()) return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
         // 简单排序：吃子优先
         moves.sort((a,bb) -> Integer.compare(PIECE_VALUE[Math.abs(b[bb[2]][bb[3]])], PIECE_VALUE[Math.abs(b[a[2]][a[3]])]));
@@ -405,7 +405,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     // ══════════════ 输入 ══════════════
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); state = S.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state==S.MENU) {
             if (lanMode!=LAN_NONE) return true;
             int cx=width/2, cy=height/2;

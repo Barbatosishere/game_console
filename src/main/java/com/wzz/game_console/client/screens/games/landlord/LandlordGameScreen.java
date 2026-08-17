@@ -62,6 +62,8 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     public LandlordGameScreen(){
         super(Component.literal("斗地主"));
         game=new LandlordGame(); ai1=new AIPlayer(); ai2=new AIPlayer();
+        // 让AI使用完整牌型分析（否则只走findSimpleBeat，无炸弹时不会应对顺子/连对等）
+        ai1.setGameReference(game); ai2.setGameReference(game);
     }
     public LandlordGameScreen(boolean isHost, UUID hostSelf, UUID p1, UUID p2){
         super(Component.literal("斗地主"));
@@ -305,7 +307,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         List<Card> hand=game.getPlayerHand(myPlayerIdx);
         if(hand.isEmpty())return;
         if(cardSelected.length!=hand.size())cardSelected=new boolean[hand.size()];
-        boolean myT=game.getCurrentPlayer()==myPlayerIdx&&lanMode!=LAN_HOST;
+        boolean myT=game.getCurrentPlayer()==myPlayerIdx&&(lanMode!=LAN_HOST||myPlayerIdx==0); // 与drawActionBar一致：HOST(座位0)也可操作
         int sx=Math.max(10,width/2-hand.size()*CARD_SP/2);
         int cy=height-CARD_H-52;
         for(int i=0;i<hand.size();i++){
@@ -428,7 +430,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         return super.mouseClicked(mx,my,btn);
     }
     @Override public boolean keyPressed(int k,int sc,int m){
-        if(k==GLFW.GLFW_KEY_ESCAPE){if(showExitConfirm){showExitConfirm=false;exitWithLeave();}else{showExitConfirm=true;}return true;}
+        if(k==GLFW.GLFW_KEY_ESCAPE){if(showExitConfirm){showExitConfirm=false;}else{showExitConfirm=true;}return true;} // 再按ESC仅取消弹窗，与弹窗文案一致
         if(showExitConfirm) return true;
         return super.keyPressed(k,sc,m);
     }

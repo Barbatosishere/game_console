@@ -217,8 +217,9 @@ public class MazeGameScreen extends Screen {
     public void tick() {
         super.tick();
 
-        // 定期移动鬼魂
-        if (!gameOver && !gameWon && System.currentTimeMillis() - lastGhostMoveTime > ghostMoveInterval) {
+        // 定期移动鬼魂（退出弹窗期间暂停，避免弹窗时被鬼抓住）
+        if (!gameOver && !gameWon && !showExitConfirm
+                && System.currentTimeMillis() - lastGhostMoveTime > ghostMoveInterval) {
             moveGhost();
             lastGhostMoveTime = System.currentTimeMillis();
 

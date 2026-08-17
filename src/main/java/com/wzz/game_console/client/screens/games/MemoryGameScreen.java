@@ -283,6 +283,7 @@ public class MemoryGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (showExitConfirm) return; // 弹窗期间暂停序列展示，避免玩家无法输入时序列空转
         long currentTime = System.currentTimeMillis();
         if (highlightedCell != -1) {
             if (currentTime - highlightStartTime >= HIGHLIGHT_DURATION) {

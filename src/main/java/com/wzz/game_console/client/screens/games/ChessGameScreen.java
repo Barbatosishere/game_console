@@ -666,9 +666,10 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         if(showExitConfirm){
             int cx=width/2, cy=height/2;
             if(inBtn((int)mx,(int)my,cx-105,cy+10,96,24)){
-                showExitConfirm=false; gameMode=GameMode.MENU;
+                showExitConfirm=false;
                 sendLeaveGameOnce(); // 联机退出对局时通知对端，避免对方无限等待
                 if(aiThread!=null)aiThread.interrupt(); aiThinking.set(false);
+                Minecraft.getInstance().setScreen(new GameSelectorScreen());
                 return true;
             }
             if(inBtn((int)mx,(int)my,cx+9,cy+10,96,24)){
@@ -732,6 +733,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         }
         if(showExitConfirm) return true;
         if(key==GLFW.GLFW_KEY_R){
+            // 联机模式：悔棋只回退本地棋盘不同步（会造成双方回合错乱死锁），禁用；
+            // 结算后重开仅限HOST并广播RESTART，CLIENT不能单方面重开
+            if(lanMode!=LAN_NONE){
+                if(lanMode==LAN_CLIENT||!gameOver) return true;
+                resetBoard(); sendMove("RESTART"); return true;
+            }
             if(gameOver){ resetBoard(); return true; }
             undoMove(); return true;
         }

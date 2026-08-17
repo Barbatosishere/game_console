@@ -446,17 +446,17 @@ public class SudokuGameScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (gameCompleted) {
-            return super.keyPressed(keyCode, scanCode, modifiers);
-        }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            // 修复：ESC 打开/关闭退出确认弹窗，而不是直接退出（与其他游戏保持一致）
+            // 修复：通关后 ESC 也走确认弹窗，与其他游戏保持一致（原先会绕过弹窗直接退出）
             showExitConfirm = !showExitConfirm;
             return true;
         }
         // 弹窗打开期间拦截所有游戏按键输入（仅 ESC 除外）
         if (showExitConfirm) {
             return true;
+        }
+        if (gameCompleted) {
+            return super.keyPressed(keyCode, scanCode, modifiers);
         }
         if (keyCode >= GLFW.GLFW_KEY_1 && keyCode <= GLFW.GLFW_KEY_9) {
             int number = keyCode - GLFW.GLFW_KEY_0;

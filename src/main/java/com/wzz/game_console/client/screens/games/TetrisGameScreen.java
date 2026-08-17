@@ -100,7 +100,7 @@ public class TetrisGameScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        if (state != State.PLAYING) return;
+        if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
         tickCounter++;
         int speed = Math.max(1, 10 - level);
         if (tickCounter >= speed) {
@@ -224,7 +224,7 @@ public class TetrisGameScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width / 2, cy = height / 2;
         if (state == State.MENU && mx >= cx - 60 && mx <= cx + 60 && my >= cy + 48 && my <= cy + 70) { startGame(); return true; }
         if (state == State.GAME_OVER) {

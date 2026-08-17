@@ -55,7 +55,7 @@ public class PlatformerScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        if (state != State.PLAYING) return;
+        if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
         // 输入
         if (keys[GLFW.GLFW_KEY_A] || keys[GLFW.GLFW_KEY_LEFT]) velX = -MOVE_SPEED;
         else if (keys[GLFW.GLFW_KEY_D] || keys[GLFW.GLFW_KEY_RIGHT]) velX = MOVE_SPEED;
@@ -183,7 +183,7 @@ public class PlatformerScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (state == State.MENU && mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) { startGame(); return true; }
         if (state == State.GAME_OVER) {

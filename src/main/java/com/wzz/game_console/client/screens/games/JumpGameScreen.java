@@ -237,6 +237,7 @@ public class JumpGameScreen extends Screen {
     @Override
     public void tick() {
         tick++;
+        if (showExitConfirm) return; // 弹窗期间暂停游戏（含物理/蓄力/粒子）
 
         // ── 物理更新（gameOver 时也继续，保证掉落动画正常播放）──
         if (!player.onGround) {

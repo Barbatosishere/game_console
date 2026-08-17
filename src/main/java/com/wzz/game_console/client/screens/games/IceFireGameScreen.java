@@ -375,7 +375,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             receivedState = null;
         }
 
-        if (session == null || gameState != GameState.PLAYING) return;
+        if (session == null || gameState != GameState.PLAYING || showExitConfirm) return; // 弹窗期间暂停本地模拟
 
         switch (lanMode) {
             case LAN_NONE -> {
@@ -539,16 +539,18 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     // ──────────────── 输入处理 ────────────────
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        heldKeys.add(key);
+        // 修复：弹窗打开时不注册按键（此前add在拦截检查之前，导致弹窗期间仍能移动）
+        if (key != GLFW.GLFW_KEY_ESCAPE && showExitConfirm) return true;
 
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (gameState == GameState.DIFFICULTY) { gameState = GameState.MENU; return true; }
             if (gameState == GameState.GAME_OVER) { sendLeaveGameOnce(); gameState = GameState.MENU; session = null; return true; }
-            if (gameState != GameState.MENU) { showExitConfirm = true; return true; }
+            if (gameState != GameState.MENU) { showExitConfirm = true; heldKeys.clear(); return true; }
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
-        if (showExitConfirm) return true;
+
+        heldKeys.add(key);
 
         switch (gameState) {
             case PLAYING -> {
@@ -577,7 +579,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); gameState = GameState.MENU; session = null; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (gameState == GameState.MENU && lanMode == LAN_NONE) {
             if (mx >= cx-80 && mx <= cx+80 && my >= cy+54 && my <= cy+76) {

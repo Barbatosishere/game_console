@@ -141,11 +141,12 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         int blackTerritory = territory[0];
         int whiteTerritory = territory[1];
 
-        // 黑棋活子 - 贴目3.75（× 4 放大避免小数）
-        // 修复：提子数方向反了——黑方应加黑方提掉的白子数(getWhiteCaptured)，
-        // 白方应加白方提掉的黑子数(getBlackCaptured)，原代码把己方被提子加给了己方
-        double blackScore = blackTerritory + game.getWhiteCaptured();
-        double whiteScore = whiteTerritory + game.getBlackCaptured() + 3.75;
+        // 中国规则数子法（区域计分）：得分 = 棋盘活子数 + 单独围空。
+        // 修复：不再把提子数加进总分——提掉的子已从对方区域中消失，
+        // 区域计分天然包含了提子收益，再加一次属于双重计分。
+        // 黑棋贴3.75子（等价于贴目7.5）。
+        double blackScore = blackTerritory;
+        double whiteScore = whiteTerritory + 3.75;
 
         boolean blackWins = blackScore > whiteScore;
 
@@ -236,7 +237,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
         if (showExitConfirm) return true;
-        if (key == GLFW.GLFW_KEY_N) { resetGame(); state = State.PLAYING; return true; }
+        if (key == GLFW.GLFW_KEY_N) {
+            // LAN：CLIENT 不能单方面重开；HOST 重开需广播 RESTART 同步对端，否则双方棋盘永久分叉
+            if (lanMode == LAN_CLIENT) return true;
+            resetGame(); state = State.PLAYING;
+            if (lanMode == LAN_HOST) sendLanMove("RESTART");
+            return true;
+        }
         if (key == GLFW.GLFW_KEY_P && state == State.PLAYING && !game.isGameOver()) {
             if (lanMode == LAN_NONE) {
                 game.pass();
@@ -374,7 +381,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); state = State.MENU; return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state == State.MENU) {
             int cx = width/2, cy = height/2;
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) {

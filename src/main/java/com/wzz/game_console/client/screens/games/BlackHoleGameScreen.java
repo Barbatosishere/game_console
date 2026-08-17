@@ -88,7 +88,7 @@ public class BlackHoleGameScreen extends Screen {
         super.tick();
         gameTime++;
         
-        if (gameState == GameState.PLAYING) {
+        if (gameState == GameState.PLAYING && !showExitConfirm) { // 弹窗期间暂停游戏
             updateGame();
         }
     }
