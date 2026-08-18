@@ -4,11 +4,12 @@ import com.wzz.game_console.ModMain;
 import com.wzz.game_console.network.GameSelectorPacket;
 import com.wzz.game_console.network.MultiplayerGamePacket;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 /**
- * 网络包注册中心（公共注册）
- * 客户端专用注册在 ClientPayloadHandler 中。
+ * 网络包注册中心
+ * 客户端处理器通过 Class.forName 反射加载，避免服务端引用客户端类。
  */
 public class ModNetworks {
 
@@ -18,20 +19,45 @@ public class ModNetworks {
     public static void register(final RegisterPayloadHandlersEvent event) {
         final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.1.0");
 
-        // GameSelectorPacket: 注册类型和编解码，服务端用无操作处理器
-        // （客户端处理器由 ClientPayloadHandler 注册）
+        // GameSelectorPacket: 服务端→客户端（打开游戏选择器）
+        // 处理器通过反射调用 ClientPayloadHandler，避免服务端加载客户端类
         registrar.playToClient(
                 GameSelectorPacket.TYPE,
                 GameSelectorPacket.STREAM_CODEC,
-                GameSelectorPacket::handle
+                (packet, context) -> {
+                    context.enqueueWork(() -> {
+                        try {
+                            Class.forName("com.wzz.game_console.network.ClientPayloadHandler")
+                                    .getMethod("handleGameSelector", GameSelectorPacket.class, IPayloadContext.class)
+                                    .invoke(null, packet, context);
+                        } catch (Exception ignored) {
+                            // 服务端无操作
+                        }
+                    });
+                }
         );
 
-        // MultiplayerGamePacket: 服务端接收处理
-        // （客户端接收处理由 ClientPayloadHandler 注册）
-        registrar.playToServer(
+        // MultiplayerGamePacket: 双向
+        registrar.playBidirectional(
                 MultiplayerGamePacket.TYPE,
                 MultiplayerGamePacket.STREAM_CODEC,
-                (packet, context) -> MultiplayerGamePacket.handleServer(packet, context)
+                (packet, context) -> {
+                    if (!context.flow().isClientbound()) {
+                        // 服务端接收处理
+                        MultiplayerGamePacket.handleServer(packet, context);
+                    } else {
+                        // 客户端接收处理：通过反射调用 ClientPayloadHandler
+                        context.enqueueWork(() -> {
+                            try {
+                                Class.forName("com.wzz.game_console.network.ClientPayloadHandler")
+                                        .getMethod("handleMultiplayerClient", MultiplayerGamePacket.class, IPayloadContext.class)
+                                        .invoke(null, packet, context);
+                            } catch (Exception ignored) {
+                                // 服务端无操作
+                            }
+                        });
+                    }
+                }
         );
     }
 
