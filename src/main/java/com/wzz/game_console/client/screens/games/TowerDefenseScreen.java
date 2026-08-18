@@ -42,6 +42,7 @@ public class TowerDefenseScreen extends Screen {
     private int health = 20;
     private int coins = 100;
     private int wave = 1;
+    private static final int MAX_WAVE = 10; // 最大波次，超过即胜利
     private boolean gameStarted = false;
     private boolean gameOver = false;
     
@@ -454,6 +455,10 @@ public class TowerDefenseScreen extends Screen {
     
     private void checkGameOver() {
         if (health <= 0) {
+            gameOver = true;
+            gameStarted = false;
+        } else if (wave > MAX_WAVE && enemies.isEmpty() && enemiesSpawned >= (wave - 1) * 10) {
+            // 超过最大波次且所有敌人已消灭 → 胜利
             gameOver = true;
             gameStarted = false;
         }

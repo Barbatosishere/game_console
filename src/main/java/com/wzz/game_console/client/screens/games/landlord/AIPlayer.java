@@ -229,17 +229,65 @@ public class AIPlayer {
     }
     
     private List<Card> findMinimalStraight(List<Card> hand, int targetValue, int length) {
-        // 简化实现：不处理顺子，尝试用炸弹
+        Map<Integer, List<Card>> groups = groupByValue(hand);
+        List<Integer> values = new ArrayList<>();
+        for (int v : groups.keySet())
+            if (v >= 3 && v <= 14) values.add(v);
+        Collections.sort(values);
+        for (int i = 0; i <= values.size() - length; i++) {
+            boolean consecutive = true;
+            for (int j = 1; j < length; j++) {
+                if (values.get(i + j) != values.get(i) + j) { consecutive = false; break; }
+            }
+            if (consecutive && values.get(i) >= targetValue) {
+                List<Card> result = new ArrayList<>();
+                for (int j = 0; j < length; j++)
+                    result.add(groups.get(values.get(i + j)).get(0));
+                return result;
+            }
+        }
         return findAnyBomb(hand);
     }
     
     private List<Card> findMinimalPairStraight(List<Card> hand, int targetValue, int length) {
-        // 简化实现：不处理连对，尝试用炸弹
+        Map<Integer, List<Card>> groups = groupByValue(hand);
+        List<Integer> pairValues = new ArrayList<>();
+        for (int v : groups.keySet())
+            if (v >= 3 && v <= 14 && groups.get(v).size() >= 2) pairValues.add(v);
+        Collections.sort(pairValues);
+        for (int i = 0; i <= pairValues.size() - length; i++) {
+            boolean consecutive = true;
+            for (int j = 1; j < length; j++) {
+                if (pairValues.get(i + j) != pairValues.get(i) + j) { consecutive = false; break; }
+            }
+            if (consecutive && pairValues.get(i) >= targetValue) {
+                List<Card> result = new ArrayList<>();
+                for (int j = 0; j < length; j++)
+                    result.addAll(groups.get(pairValues.get(i + j)).subList(0, 2));
+                return result;
+            }
+        }
         return findAnyBomb(hand);
     }
     
     private List<Card> findMinimalTripleStraight(List<Card> hand, int targetValue, int length) {
-        // 简化实现：不处理飞机，尝试用炸弹
+        Map<Integer, List<Card>> groups = groupByValue(hand);
+        List<Integer> tripleValues = new ArrayList<>();
+        for (int v : groups.keySet())
+            if (v >= 3 && v <= 14 && groups.get(v).size() >= 3) tripleValues.add(v);
+        Collections.sort(tripleValues);
+        for (int i = 0; i <= tripleValues.size() - length; i++) {
+            boolean consecutive = true;
+            for (int j = 1; j < length; j++) {
+                if (tripleValues.get(i + j) != tripleValues.get(i) + j) { consecutive = false; break; }
+            }
+            if (consecutive && tripleValues.get(i) >= targetValue) {
+                List<Card> result = new ArrayList<>();
+                for (int j = 0; j < length; j++)
+                    result.addAll(groups.get(tripleValues.get(i + j)).subList(0, 3));
+                return result;
+            }
+        }
         return findAnyBomb(hand);
     }
     

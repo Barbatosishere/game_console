@@ -18,6 +18,19 @@ public class GoGame {
     private final Set<Long> positionHistory = new HashSet<>();
     /** 调试开关：为 true 时输出劫争判定的详细追踪信息（默认关闭，正常对局不刷屏） */
     private static final boolean DEBUG_KO = false;
+
+    // ── Zobrist 哈希表 ──────────────────────────────────────────
+    // 64 位随机值，为每个 (x, y, 棋子颜色) 分配一个独立哈希，
+    // 局面哈希 = 所有棋子的 Zobrist 值异或和。碰撞概率极低（2^-64），
+    // 且增量更新可 O(1) 计算，替代原 Arrays.deepHashCode 的 32 位 int 碰撞风险。
+    private static final long[][][] ZOBRIST_TABLE = new long[BOARD_SIZE][BOARD_SIZE][3];
+    private static final java.util.Random ZOBRIST_RND = new java.util.Random(0xDEADBEEF);
+    static {
+        for (int x = 0; x < BOARD_SIZE; x++)
+            for (int y = 0; y < BOARD_SIZE; y++)
+                for (int p = 0; p < 3; p++)
+                    ZOBRIST_TABLE[x][y][p] = ZOBRIST_RND.nextLong();
+    }
     
     public GoGame() {
         this.board = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
@@ -123,9 +136,14 @@ public class GoGame {
         return true;
     }
 
-    /** 当前局面的确定性哈希（同型局面必同哈希） */
+    /** 当前局面的 Zobrist 哈希（64 位，碰撞概率极低） */
     private long boardHash() {
-        return Arrays.deepHashCode(board);
+        long hash = 0;
+        for (int x = 0; x < BOARD_SIZE; x++)
+            for (int y = 0; y < BOARD_SIZE; y++)
+                if (board[x][y] != GoPlayer.NONE)
+                    hash ^= ZOBRIST_TABLE[x][y][board[x][y].ordinal()];
+        return hash;
     }
 
     private GoPlayer[][] copyBoardInternal() {
