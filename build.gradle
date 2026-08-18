@@ -17,6 +17,14 @@ base {
     archivesName = mod_id
 }
 
+// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>.jar
+var loaderName = "NeoForge"
+tasks.named('jar') {
+    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}"
+    archiveVersion = ''
+    archiveClassifier = ''
+}
+
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
 // 统一源文件编码为 UTF-8
