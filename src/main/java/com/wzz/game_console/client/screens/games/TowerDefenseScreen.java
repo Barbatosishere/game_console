@@ -398,10 +398,11 @@ public class TowerDefenseScreen extends Screen {
 
                     if (Minecraft.getInstance().level != null) {
                         if (Minecraft.getInstance().player != null) {
+                            var player = Minecraft.getInstance().player;
                             Minecraft.getInstance().level.playLocalSound(
-                                    tower.gridX * GRID_SIZE + 16,
-                                    tower.gridY * GRID_SIZE + 16,
-                                    Minecraft.getInstance().player.getZ(),
+                                    player.getX(),
+                                    player.getY(),
+                                    player.getZ(),
                                     shootSound,
                                     SoundSource.BLOCKS,
                                     0.8f, 1.0f, false
@@ -417,6 +418,11 @@ public class TowerDefenseScreen extends Screen {
         Iterator<Projectile> it = projectiles.iterator();
         while (it.hasNext()) {
             Projectile proj = it.next();
+            // 目标已从敌人列表中移除（到达终点）时，弹射物也一并移除，避免悬空追踪
+            if (proj.target == null || proj.target.health <= 0 || !enemies.contains(proj.target)) {
+                it.remove();
+                continue;
+            }
             proj.update();
             
             if (proj.hitTarget()) {
@@ -634,7 +640,9 @@ public class TowerDefenseScreen extends Screen {
             float dx = targetX - x;
             float dy = targetY - y;
             float distance = (float)Math.sqrt(dx * dx + dy * dy);
-            
+
+            if (distance < 0.001f) { pathIndex++; return; } // 零距离保护，避免除零
+
             if (distance < speed) {
                 pathIndex++;
                 if (pathIndex < path.size()) {

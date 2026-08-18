@@ -32,7 +32,9 @@ public class ModNetworks {
                 MultiplayerGamePacket.TYPE,
                 MultiplayerGamePacket.STREAM_CODEC,
                 (packet, context) -> {
-                    if (context.player().level().isClientSide()) {
+                    var p = context.player();
+                    if (p == null) return;
+                    if (p.level().isClientSide()) {
                         MultiplayerGamePacket.handleClient(packet, context);
                     } else {
                         MultiplayerGamePacket.handleServer(packet, context);

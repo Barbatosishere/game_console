@@ -45,6 +45,8 @@ public class AIPlayer {
     
     private List<Card> chooseActivePlay(List<Card> hand) {
         Map<Integer, List<Card>> groups = groupByValue(hand);
+        // 创建副本排序，避免修改原始手牌顺序
+        hand = new ArrayList<>(hand);
         Collections.sort(hand);
         
         // 优先出三带一或三带二

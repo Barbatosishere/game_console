@@ -89,6 +89,7 @@ public class LandlordGame {
             landlordPlayer = player;
             playerHands.get(player).addAll(landlordCards);
             Collections.sort(playerHands.get(player));
+            landlordCards.clear(); // 底牌已分配给地主，清理集合避免联机同步语义不一致
             gameState = GameState.PLAYING;
             currentPlayer = player;
             return true;
@@ -284,7 +285,8 @@ public class LandlordGame {
                 }
                 
                 // 飞机带单牌
-                if (size == expectedSize + tripleCount && countToValues.containsKey(1)) {
+                if (size == expectedSize + tripleCount && countToValues.containsKey(1)
+                        && countToValues.get(1).size() == tripleCount) {
                     return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
                 }
                 

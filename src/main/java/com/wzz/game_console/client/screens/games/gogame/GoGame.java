@@ -172,10 +172,16 @@ public class GoGame {
         }
 
         int[] move = ai.getBestMove(this);
-        // 落子失败（劫争/自杀等非法点）时改为弃权，避免AI回合反复尝试同一非法点导致卡死
-        if (move == null || !placeStone(move[0], move[1])) {
-            pass();
+        // 最优落子非法（劫争/自杀）时，扫描棋盘找第一个合法点，避免直接弃权
+        if (move != null && placeStone(move[0], move[1])) {
+            return;
         }
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                if (placeStone(x, y)) return;
+            }
+        }
+        pass();
     }
     
     private void switchPlayer() {

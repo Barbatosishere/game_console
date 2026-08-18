@@ -36,7 +36,7 @@ public class ExternalFileManager {
 
     private static Path gameDir;
     private static Path rootDir;
-    private static boolean initialized = false;
+    private static volatile boolean initialized = false;
 
     /**
      * 初始化：创建所有必要的文件夹。
@@ -44,10 +44,9 @@ public class ExternalFileManager {
      */
     public static void init() {
         if (initialized) return;
+        gameDir = FMLPaths.GAMEDIR.get();
+        rootDir = gameDir.resolve(ROOT_FOLDER);
         try {
-            gameDir = FMLPaths.GAMEDIR.get();
-            rootDir = gameDir.resolve(ROOT_FOLDER);
-
             // 创建根目录和子目录
             Files.createDirectories(rootDir);
             Files.createDirectories(rootDir.resolve(MUSIC_FOLDER));

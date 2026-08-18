@@ -358,6 +358,7 @@ public class Match3GameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (showExitConfirm) return; // 弹窗期间冻结动画
         calcDynamicLayout();
         // 修复：动画计时在 tick() 中递减（固定 20次/秒），不再依赖渲染帧率
         animations.removeIf(anim -> --anim.timer <= 0);

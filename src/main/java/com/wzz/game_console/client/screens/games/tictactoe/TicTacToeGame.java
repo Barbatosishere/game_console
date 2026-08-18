@@ -70,7 +70,12 @@ public class TicTacToeGame {
         // 简单的AI逻辑：优先获胜，其次阻止玩家获胜，最后随机下棋
         int[] move = getBestMove();
         if (move != null) {
-            makeMove(move[0], move[1]);
+            // 若 getBestMove 返回的合法点被 makeMove 拒绝（未来扩展），扫描棋盘兜底
+            if (!makeMove(move[0], move[1])) {
+                scanFallback:
+                for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+                    if (makeMove(i, j)) break scanFallback;
+            }
         }
     }
     

@@ -153,6 +153,7 @@ public record MultiplayerGamePacket(
     public static void handleServer(MultiplayerGamePacket packet, IPayloadContext context) {
         context.enqueueWork(() -> {
             var sender = context.player();
+            if (sender == null) return; // 断线保护
             var server = sender.getServer();
             if (server == null) return;
 
