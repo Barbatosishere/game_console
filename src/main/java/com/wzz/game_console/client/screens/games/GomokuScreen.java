@@ -732,7 +732,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         int cx = this.width / 2;
         int cy = this.height / 2;
         GameRenderHelper.renderDecorativeLines(g, this.width, this.height, this.tickCount, 2236928);
-        GameRenderHelper.drawShadowedCenteredText(g, this.font, "§f五 §r§8子 §r§f棋", cx, cy - 60, 16777215, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, this.font, "五 子 棋", cx, cy - 60, 16777215, 2);
         g.drawCenteredString(this.font, "Gomoku", cx, cy - 42, 5592405);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, -7829368, -12303292);
         g.drawCenteredString(this.font, "鼠标点击落子  黑棋先行", cx, cy - 10, 11184810);
@@ -745,7 +745,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         GameRenderHelper.drawPrimaryButton(g, this.font, "开始游戏", cx - 60, cy + 45, 120, 22, mx, my);
-        String hellLabel = this.hellMode ? "§c地狱模式: 开 [H]" : "§7地狱模式: 关 [H]";
+        String hellLabel = this.hellMode ? "地狱模式: 开 [H]" : "地狱模式: 关 [H]";
         GameRenderHelper.drawSecondaryButton(g, this.font, hellLabel, cx - 60, cy + 73, 120, 18, mx, my);
     }
 
@@ -803,14 +803,14 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         GameRenderHelper.tickAndRenderParticles(g, this.particles);
         GameRenderHelper.drawTopHUD(g, this.width, this.height);
-        String modeTag = this.hellMode ? " §c[地狱]" : " §7[普通]";
+        String modeTag = this.hellMode ? " [地狱]" : " [普通]";
         String turnText;
         if (this.lanMode == 0) {
-            turnText = this.playerTurn ? "§f⚫ 你的回合 - 黑棋" : "§f⚪ AI思考中...";
+            turnText = this.playerTurn ? "⚫ 你的回合 - 黑棋" : "⚪ AI思考中...";
         } else {
             boolean mine = this.isMyTurn;
-            String myColor = this.lanMode == 1 ? "§f⚫ 黑棋" : "§f⚪ 白棋";
-            String oppColor = this.lanMode == 1 ? "§f⚪ 白棋(对方)" : "§f⚫ 黑棋(对方)";
+            String myColor = this.lanMode == 1 ? "⚫ 黑棋" : "⚪ 白棋";
+            String oppColor = this.lanMode == 1 ? "⚪ 白棋(对方)" : "⚫ 黑棋(对方)";
             turnText = mine ? myColor + " - 你的回合" : oppColor + " - 等待对方...";
         }
 

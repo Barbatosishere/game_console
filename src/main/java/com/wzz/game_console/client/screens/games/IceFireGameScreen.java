@@ -167,7 +167,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         }
 
         // 标题
-        drawShadowedCenteredText(g, "§b冰 §r§e& §r§c火 §r双人冒险", cx, cy - 90, 0xFFFFFF, 2);
+        drawShadowedCenteredText(g, "冰 & 火 双人冒险", cx, cy - 90, 0xFFFFFF, 2);
         g.drawCenteredString(font, "Ice & Fire Platformer", cx, cy - 72, 0x556688);
 
         // 分割线
@@ -176,20 +176,20 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
         // 冰人预览
         drawPlayerPreview(g, cx - 90, cy - 44, PlayerRole.ICE, tickCount);
-        g.drawCenteredString(font, "§b冰人", cx - 80, cy - 20, 0x44AAFF);
+        g.drawCenteredString(font, "冰人", cx - 80, cy - 20, 0x44AAFF);
         g.drawCenteredString(font, "W/A/D 移动", cx - 80, cy - 10, 0x7799CC);
 
         // 火人预览
         drawPlayerPreview(g, cx + 66, cy - 44, PlayerRole.FIRE, tickCount);
-        g.drawCenteredString(font, "§c火人", cx + 76, cy - 20, 0xFF5533);
+        g.drawCenteredString(font, "火人", cx + 76, cy - 20, 0xFF5533);
         g.drawCenteredString(font, "↑/←/→ 移动", cx + 76, cy - 10, 0xCC7755);
 
         // VS
-        g.drawCenteredString(font, "§eVS", cx, cy - 30, 0xFFFF00);
+        g.drawCenteredString(font, "VS", cx, cy - 30, 0xFFFF00);
 
         // 说明
         g.drawCenteredString(font, "收集全部钻石即可过关！共 3 关", cx, cy + 10, 0xCCCCCC);
-        g.drawCenteredString(font, "§b冰人§r不能碰熔岩   §c火人§r不能碰水", cx, cy + 25, 0xFFFF99);
+        g.drawCenteredString(font, "冰人不能碰熔岩   火人不能碰水", cx, cy + 25, 0xFFFF99);
         g.drawCenteredString(font, "两人可以互相踩头！", cx, cy + 38, 0x88FF88);
 
         // 开始按钮
@@ -198,7 +198,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(bx, by, bx + bw, by + bh, hover ? 0xFF446622 : 0xFF2A3D14);
         g.fill(bx, by, bx + bw, by + 1, 0xFF88CC44);
         g.fill(bx, by + bh - 1, bx + bw, by + bh, 0xFF223308);
-        g.drawCenteredString(font, hover ? "§a► 开始游戏 ◄" : "► 开始游戏", cx, by + 7, hover ? 0xAAFF66 : 0x88CC44);
+        g.drawCenteredString(font, hover ? "► 开始游戏 ◄" : "► 开始游戏", cx, by + 7, hover ? 0xAAFF66 : 0x88CC44);
     }
 
     // ──────────────── 难度选择画面 ────────────────
@@ -220,7 +220,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(cx - 100, cy - 52, cx + 100, cy - 51, 0xFFDDAA22);
 
         // 三个难度按钮
-        String[] names  = {"§a简单", "§e普通", "§c困难"};
+        String[] names  = {"简单", "普通", "困难"};
         String[] descs  = {"平台更宽·间距更短·钻石更少", "标准体验·原汁原味", "平台更窄·间距更远·钻石更多"};
         int[]    colors = {0xFF225522, 0xFF444422, 0xFF552222};
         int[]    hovers = {0xFF338833, 0xFF666633, 0xFF883333};
@@ -234,7 +234,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             g.fill(bx, by, bx + bw, by + 1, tops[i]);
             g.fill(bx, by + bh - 1, bx + bw, by + bh, 0x44000000);
             g.drawCenteredString(font, (hover ? "► " : "") + names[i] + (hover ? " ◄" : ""), cx, by + 5, hover ? 0xFFFFFF : texts[i]);
-            g.drawCenteredString(font, "§7" + descs[i], cx, by + 18, 0x999999);
+            g.drawCenteredString(font, descs[i], cx, by + 18, 0x999999);
         }
 
         // 底部提示
@@ -281,7 +281,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         // 冰人标志
         g.fill(6,  4, 18, 16, 0xFF3388FF);
         g.fill(6,  4, 18,  5, 0xFF88CCFF);
-        g.drawString(font, "§b冰人 WASD", 22, 7, 0x88CCFF);
+        g.drawString(font, "冰人 WASD", 22, 7, 0x88CCFF);
 
         // 钻石进度（中央）
         String prog = "💎 " + session.getDiamonds() + " / " + session.getTotalDiamonds()
@@ -292,7 +292,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(width - 18, 4, width - 6, 16, 0xFFFF4411);
         g.fill(width - 18, 4, width - 6,  5, 0xFFFF8866);
         int fw = font.width("火人 ←↑→");
-        g.drawString(font, "§c火人 ←↑→", width - fw - 22, 7, 0xFF8866);
+        g.drawString(font, "火人 ←↑→", width - fw - 22, 7, 0xFF8866);
 
         // 底部提示
         g.fill(0, height - 14, width, height, 0xCC000000);
@@ -375,7 +375,12 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             receivedState = null;
         }
 
-        if (session == null || gameState != GameState.PLAYING || showExitConfirm) return; // 弹窗期间暂停本地模拟
+        if (session == null || gameState != GameState.PLAYING) return;
+        if (showExitConfirm) {
+            // 弹窗期间暂停本地模拟，但 HOST 仍须向 CLIENT 广播最新状态，避免 CLIENT 卡在过期状态
+            if (lanMode == LAN_HOST) sendStateToClient();
+            return;
+        }
 
         switch (lanMode) {
             case LAN_NONE -> {
@@ -514,6 +519,9 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 gameState = GameState.GAME_OVER;
             } else if (gameState == GameState.GAME_OVER) {
                 // HOST 已重开（gameOver=0），CLIENT 跟随恢复 PLAYING
+                // 必须重载地图（即使同关），否则之前收集的钻石格子仍保持 AIR 不回生
+                session.level = lv;
+                session.map.load(lv, session.difficulty);
                 session.gameOver = false;
                 session.victory  = false;
                 gameState = GameState.PLAYING;
@@ -560,9 +568,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 // 火人跳
                 if (lanMode == LAN_NONE && key == GLFW.GLFW_KEY_UP && session != null)
                     session.fireAction(Action.JUMP);
-                // CLIENT 发送跳跃给 HOST
-                if (lanMode == LAN_CLIENT && key == GLFW.GLFW_KEY_UP)
-                    sendInput("4");
+                // CLIENT 的跳跃由 sendFireInputToHost 掩码 bit2 每 tick 持续发送，无需此处一次性包
             }
             case GAME_OVER -> {
                 if (key == GLFW.GLFW_KEY_R && lanMode != LAN_CLIENT) { restart(); return true; }
@@ -647,12 +653,15 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     //  游戏会话
     // ══════════════════════════════════════
     static class GameSession {
+        /** 最终关卡，通关后展示胜利画面 */
+        static final int MAX_LEVEL = 3;
         GamePlayer ice, fire;
         GameMap map;
         public int level = 1;
         public boolean gameOver, victory;
         final List<Particle> particles = new ArrayList<>();
         private final Random rand = new Random();
+        private int updateFrame;
         final int difficulty; // 0=简单 1=普通 2=困难
 
         GameSession(int difficulty) { this.difficulty = difficulty; }
@@ -667,8 +676,14 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
         void update() {
             if (gameOver) return;
-            ice.update(map, fire, particles);
-            fire.update(map, ice, particles);
+            // 每帧交替更新顺序，避免某一方始终获得一帧坐标优势（碰撞/推动不对称）
+            if (++updateFrame % 2 == 0) {
+                ice.update(map, fire, particles);
+                fire.update(map, ice, particles);
+            } else {
+                fire.update(map, ice, particles);
+                ice.update(map, fire, particles);
+            }
             particles.removeIf(p -> !p.alive);
             for (Particle p : particles) p.update();
 
@@ -681,10 +696,16 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             collectDiamonds(ice);
             collectDiamonds(fire);
 
-            // 过关
+            // 过关（3关上限，通关后展示胜利画面）
             if (map.allCollected()) {
+                if (level >= MAX_LEVEL) {
+                    victory = true;
+                    gameOver = true;
+                    particles.clear();
+                    return;
+                }
                 level++;
-                nextLevel(); // 无限关卡，永不结束
+                nextLevel();
             }
         }
 
@@ -954,7 +975,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             }
 
             // 玩家标签（头顶）
-            String label = role==PlayerRole.ICE ? "§bW" : "§c↑";
+            String label = role==PlayerRole.ICE ? "W" : "↑";
             g.drawString(Minecraft.getInstance().font, label, lx-1, ly-10,
                     role==PlayerRole.ICE ? 0xFF88CCFF : 0xFFFF8866);
 
@@ -1097,7 +1118,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                     Tile liquid = waterTurn ? Tile.WATER : Tile.LAVA;
                     waterTurn = !waterTurn;
                     for (int lx = gapStart; lx <= gapEnd; lx++)
-                        set(lx, groundTop, liquid);
+                        for (int ly = groundTop; ly <= groundY; ly++) // 填满整列，形成致命深池
+                            set(lx, ly, liquid);
                     gapStart = -1;
                 }
             }

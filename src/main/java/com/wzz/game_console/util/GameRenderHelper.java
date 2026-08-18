@@ -87,7 +87,7 @@ public class GameRenderHelper {
         g.fill(x, y, x + w, y + 1, borderColor);
         g.fill(x, y + h - 1, x + w, y + h, darken(bg, 0.5f));
         int textColor = hover ? 0xAAFF66 : brightenInt(borderColor, 1.2f);
-        String displayText = hover ? "§a► " + text + " ◄" : text;
+        String displayText = hover ? "► " + text + " ◄" : text;
         g.drawCenteredString(font, displayText, x + w / 2, y + (h - 8) / 2, textColor);
         return hover;
     }

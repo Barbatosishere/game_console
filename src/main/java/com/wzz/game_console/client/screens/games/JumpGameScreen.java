@@ -892,6 +892,7 @@ public class JumpGameScreen extends Screen {
     }
     @Override
     public boolean mouseReleased(double mx,double my,int btn) {
+        if (showExitConfirm) return true;
         if (btn==0 && charging) releaseJump();
         return true;
     }
@@ -911,6 +912,7 @@ public class JumpGameScreen extends Screen {
     }
     @Override
     public boolean keyReleased(int key,int scan,int mods) {
+        if (showExitConfirm) return true;
         if (key==GLFW.GLFW_KEY_SPACE && charging) { releaseJump(); return true; }
         return super.keyReleased(key,scan,mods);
     }

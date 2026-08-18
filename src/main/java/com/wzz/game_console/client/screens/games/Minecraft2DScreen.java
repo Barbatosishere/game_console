@@ -195,6 +195,7 @@ public class Minecraft2DScreen extends Screen {
     // ══════════════ TICK ══════════════
     @Override public void tick(){
         super.tick();if(!started)return;
+        if(showExitConfirm)return; // 弹窗期间冻结物理/挖矿/饥饿
         tick++;dayTick=(dayTick+1)%2400;
         if(dead){if(System.currentTimeMillis()-deadAt>3000)respawn();return;}
         float dt=.05f;
@@ -436,12 +437,12 @@ public class Minecraft2DScreen extends Screen {
     private void renderUI(GuiGraphics g,int mx,int my){
         renderHotbar(g);
         renderHp(g);renderHunger(g);
-        g.drawString(font,String.format("§7X:%.1f Y:%.1f",playerX,playerY),8,8,0xFFFFFF);
-        float t=dayTick/2400f;String ts=t<.25f?"§8深夜":t<.5f?"§e白天":t<.75f?"§6傍晚":"§8夜晚";
+        g.drawString(font,String.format("X:%.1f Y:%.1f",playerX,playerY),8,8,0xFFFFFF);
+        float t=dayTick/2400f;String ts=t<.25f?"深夜":t<.5f?"白天":t<.75f?"傍晚":"夜晚";
         g.drawString(font,ts,width-40,8,0xFFFFFF);
-        if(sprinting)g.drawString(font,"§e⚡疾跑",8,19,0xFFFFFF);
+        if(sprinting)g.drawString(font,"⚡疾跑",8,19,0xFFFFFF);
         int hbx=(camPX+mx)/BS,hby=(camPY+my)/BS;
-        if(inW(hbx,hby)&&world[hbx][hby]!=null)g.drawCenteredString(font,"§7["+bname(world[hbx][hby])+"]",width/2,height/2+20,0xAAAAAA);
+        if(inW(hbx,hby)&&world[hbx][hby]!=null)g.drawCenteredString(font,"["+bname(world[hbx][hby])+"]",width/2,height/2+20,0xAAAAAA);
         int cw=width/2,ch=height/2;
         g.fill(cw-5,ch-1,cw+5,ch+1,0x88FFFFFF);g.fill(cw-1,ch-5,cw+1,ch+5,0x88FFFFFF);
     }
@@ -488,15 +489,15 @@ public class Minecraft2DScreen extends Screen {
             // ★ 背包里也用 renderItem
             if(hotbarItem[i]!=null&&hotbarCount[i]>0)g.renderItem(hotbarItem[i],sx+2,sy+2);
         }
-        g.drawString(font,"§7石头→鹅卵石  草地→泥土  叶→5%木头",px+8,py+55,0xFFFFFF);
-        g.drawString(font,"§7右键放置  左键按住挖矿  Ctrl疾跑",px+8,py+67,0xFFFFFF);
-        g.drawString(font,"§7挖到的方块自动进入快捷栏",px+8,py+79,0xFFFFFF);
+        g.drawString(font,"石头→鹅卵石  草地→泥土  叶→5%木头",px+8,py+55,0xFFFFFF);
+        g.drawString(font,"右键放置  左键按住挖矿  Ctrl疾跑",px+8,py+67,0xFFFFFF);
+        g.drawString(font,"挖到的方块自动进入快捷栏",px+8,py+79,0xFFFFFF);
     }
     private void renderDeath(GuiGraphics g){
         g.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xAA660000);
         drawSh(g,"你死了！",width/2,height/2-16,0xFF4444,2);
-        g.drawCenteredString(font,"§73秒后自动重生...",width/2,height/2+6,0xAAAAAA);
+        g.drawCenteredString(font,"3秒后自动重生...",width/2,height/2+6,0xAAAAAA);
     }
     private String bname(Block b){
         if(b==Blocks.GRASS_BLOCK)return "草方块";if(b==Blocks.DIRT)return "泥土";

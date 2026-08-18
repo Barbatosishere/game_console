@@ -100,14 +100,14 @@ public class PlatformerScreen extends Screen {
     }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
-        // 过滤无效键码(如GLFW_KEY_UNKNOWN=-1)，避免数组越界
-        if (key >= 0 && key < keys.length) keys[key] = true;
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (state != State.MENU) { showExitConfirm = true; return true; }
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
         if (showExitConfirm) return true;
+        // 过滤无效键码(如GLFW_KEY_UNKNOWN=-1)，避免数组越界；先拦弹窗再记录按键，防止关窗后漂移
+        if (key >= 0 && key < keys.length) keys[key] = true;
         if (key == GLFW.GLFW_KEY_R) { startGame(); return true; }
         if (state == State.PLAYING && (key == GLFW.GLFW_KEY_W || key == GLFW.GLFW_KEY_UP || key == GLFW.GLFW_KEY_SPACE) && onGround)
             velY = JUMP_FORCE;
@@ -133,7 +133,7 @@ public class PlatformerScreen extends Screen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width/2, cy = height/2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x002200);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§a平台跳跃", cx, cy - 60, 0x44FF44, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "平台跳跃", cx, cy - 60, 0x44FF44, 2);
         g.drawCenteredString(font, "Platformer", cx, cy - 42, 0x336633);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFF44AA44, 0xFF225522);
         g.drawCenteredString(font, "A/D 移动  W/空格 跳跃", cx, cy - 10, 0xAAAAAA);
@@ -169,7 +169,7 @@ public class PlatformerScreen extends Screen {
 
         GameRenderHelper.tickAndRenderParticles(g, particles);
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§e🪙 " + score, 8, 7, 0xFFDD44);
+        g.drawString(font, "🪙 " + score, 8, 7, 0xFFDD44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "A/D 移动  W/空格 跳  ESC 菜单  R 重开");
     }
 

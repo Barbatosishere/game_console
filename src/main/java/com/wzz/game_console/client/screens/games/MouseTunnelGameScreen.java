@@ -185,8 +185,8 @@ public class MouseTunnelGameScreen extends Screen {
             playerX = mouseX;
             playerY = mouseY;
 
-            // 检查碰撞
-            checkCollision();
+            // 检查碰撞（弹窗期间暂停判定，否则宽限计时会持续走完导致暂停中被判失败）
+            if (!showExitConfirm) checkCollision();
 
             // 渲染游戏
             renderGame(graphics);

@@ -86,7 +86,7 @@ public class FruitNinjaScreen extends Screen {
     }
 
     @Override public boolean mouseDragged(double mx, double my, int btn, double dx, double dy) {
-        if (state == State.PLAYING) {
+        if (state == State.PLAYING && !showExitConfirm) {
             mouseTrail.add(new int[]{(int)mx, (int)my, (int)tickCount});
             // 切水果检测
             for (float[] f : fruits) {
@@ -127,7 +127,7 @@ public class FruitNinjaScreen extends Screen {
         int cx = width/2, cy = height/2;
         GameRenderHelper.fillGradientBackground(g, width, height, 0xFF1A0A0A, 0xFF2A1A0A);
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x331100);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§c水 §r§e果 §r§a忍 §r§b者", cx, cy - 60, 0xFF4444, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "水果忍者", cx, cy - 60, 0xFF4444, 2);
         g.drawCenteredString(font, "Fruit Ninja", cx, cy - 42, 0x553322);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFFF4444, 0xFF882222);
         g.drawCenteredString(font, "按住鼠标左键滑动切水果", cx, cy - 10, 0xAAAAAA);
@@ -178,10 +178,10 @@ public class FruitNinjaScreen extends Screen {
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§c🍉 分数: §f" + score, 8, 7, 0xFF4444);
-        String livesStr = "§c" + "❤".repeat(Math.max(0, lives));
+        g.drawString(font, "🍉 分数: " + score, 8, 7, 0xFF4444);
+        String livesStr = "❤".repeat(Math.max(0, lives));
         g.drawString(font, livesStr, width - font.width(livesStr) - 8, 7, 0xFF4444);
-        if (comboCount >= 3) g.drawCenteredString(font, "§6✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
+        if (comboCount >= 3) g.drawCenteredString(font, "✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
         GameRenderHelper.drawBottomBar(g, font, width, height, "按住鼠标滑动切水果  ESC 菜单  R 重开");
     }
 

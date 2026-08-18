@@ -143,17 +143,19 @@ public class PianoTilesGameScreen extends Screen {
                     return false;
                 }
                 debugLog("开始创建音频输入流...");
-                javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(audioFile);
-                debugLog("音频流创建成功");
-                debugLog("开始创建音频剪辑...");
-                backgroundClip = javax.sound.sampled.AudioSystem.getClip();
-                backgroundClip.open(audioStream);
-                debugLog("音频剪辑创建成功");
-                audioLength = backgroundClip.getMicrosecondLength();
-                isLoaded = true;
-                debugLog("音频加载成功，长度: " + (audioLength / 1000000) + " 秒");
-                setVolume(volume);
-                return true;
+                try (java.io.BufferedInputStream bis = new java.io.BufferedInputStream(new java.io.FileInputStream(audioFile));
+                     javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bis)) {
+                    debugLog("音频流创建成功");
+                    debugLog("开始创建音频剪辑...");
+                    backgroundClip = javax.sound.sampled.AudioSystem.getClip();
+                    backgroundClip.open(audioStream);
+                    debugLog("音频剪辑创建成功");
+                    audioLength = backgroundClip.getMicrosecondLength();
+                    isLoaded = true;
+                    debugLog("音频加载成功，长度: " + (audioLength / 1000000) + " 秒");
+                    setVolume(volume);
+                    return true;
+                }
             } catch (Exception e) {
                 debugLog("音频加载失败: " + e.getMessage());
                 e.printStackTrace();
@@ -170,18 +172,18 @@ public class PianoTilesGameScreen extends Screen {
                     debugLog("音频数据为空");
                     return false;
                 }
-                ByteArrayInputStream bais = new ByteArrayInputStream(audioData);
-                debugLog("字节数组输入流创建成功");
-                javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bais);
-                debugLog("音频输入流创建成功");
-                backgroundClip = javax.sound.sampled.AudioSystem.getClip();
-                backgroundClip.open(audioStream);
-                debugLog("音频剪辑创建成功");
-                audioLength = backgroundClip.getMicrosecondLength();
-                isLoaded = true;
-                debugLog("直接从内存加载音频成功，长度: " + (audioLength / 1000000) + " 秒");
-                setVolume(volume);
-                return true;
+                try (ByteArrayInputStream bais = new ByteArrayInputStream(audioData);
+                     javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bais)) {
+                    debugLog("音频输入流创建成功");
+                    backgroundClip = javax.sound.sampled.AudioSystem.getClip();
+                    backgroundClip.open(audioStream);
+                    debugLog("音频剪辑创建成功");
+                    audioLength = backgroundClip.getMicrosecondLength();
+                    isLoaded = true;
+                    debugLog("直接从内存加载音频成功，长度: " + (audioLength / 1000000) + " 秒");
+                    setVolume(volume);
+                    return true;
+                }
 
             } catch (Exception e) {
                 debugLog("从内存加载音频失败: " + e.getMessage());
@@ -485,6 +487,10 @@ public class PianoTilesGameScreen extends Screen {
                         } else if (currentSong.audioFile != null && !currentSong.audioFile.isEmpty()) {
                             // 兼容旧格式，使用路径加载
                             audioPlayer.loadBackgroundMusic(currentSong.audioFile);
+                        } else {
+                            // 无音频数据：释放旧 clip（closeAudio 置 isLoaded=false 并真正关闭），
+                            // 否则 startGame().play() 会播上一首歌的音频配新谱面
+                            audioPlayer.closeAudio();
                         }
                     } else {
                         loadDefaultSong();
@@ -934,13 +940,6 @@ public class PianoTilesGameScreen extends Screen {
         gameOver = true;
         audioPlayer.stop();
         playSound(SoundEvents.VILLAGER_NO);
-        int totalNotes = perfectHits + greatHits + goodHits + missedHits;
-        if (totalNotes > 0) {
-            float accuracy = (float)(perfectHits + greatHits + goodHits) / totalNotes;
-            int baseReward = Math.min(200, score / 50);
-            int accuracyBonus = (int)(baseReward * accuracy * 0.5f);
-            int comboBonus = Math.min(50, maxCombo / 10);
-        }
     }
 
     @Override
@@ -1056,7 +1055,7 @@ public class PianoTilesGameScreen extends Screen {
         if (songSelectMode) {
             renderSongSelection(guiGraphics);
         } else {
-            renderGameArea(guiGraphics);
+            renderGameArea(guiGraphics, partialTick);
             renderGameUI(guiGraphics);
 
             if (gameOver) {
@@ -1068,7 +1067,7 @@ public class PianoTilesGameScreen extends Screen {
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
     }
 
-    private void renderGameArea(GuiGraphics guiGraphics) {
+    private void renderGameArea(GuiGraphics guiGraphics, float partialTick) {
         // 各轨道渐变背景
         for (int i = 0; i < LANE_COUNT; i++) {
             int lx = gameStartX + i * laneWidth;
@@ -1082,7 +1081,7 @@ public class PianoTilesGameScreen extends Screen {
         }
 
         renderHitZone(guiGraphics);
-        renderTiles(guiGraphics);
+        renderTiles(guiGraphics, partialTick);
         renderEffects(guiGraphics);
 
         // 底部按键标签（白色钢琴键）
@@ -1123,14 +1122,15 @@ public class PianoTilesGameScreen extends Screen {
         }
     }
 
-    private void renderTiles(GuiGraphics guiGraphics) {
+    private void renderTiles(GuiGraphics guiGraphics, float partialTick) {
         for (Note tile : activeTiles) {
             if (tile.hit) {
                 continue;
             }
 
-            // 计算音符块的Y位置
-            long timeDiff = currentGameTime - tile.timestamp;
+            // partialTick 插值：1.0=当前 tick 完整位置，0.0=上一 tick 位置
+            long renderTime = currentGameTime + (long)(partialTick * 16.67f);
+            long timeDiff = renderTime - tile.timestamp;
             float y = hitZoneY + HIT_ZONE_HEIGHT / 2 + timeDiff * fallSpeed;
 
             int x = gameStartX + tile.lane * laneWidth;
@@ -1195,7 +1195,7 @@ public class PianoTilesGameScreen extends Screen {
             // 绘制光圈效果
             if (effect.result != HitResult.MISS) {
                 int radius = (int)(30 * (1.0f - effect.alpha));
-                guiGraphics.fill(x - radius, y - radius, x + radius, y + radius, (alpha / 4 << 24) | (color & 0xFFFFFF));
+                guiGraphics.fill(x - radius, y - radius, x + radius, y + radius, (Math.max(1, alpha / 4) << 24) | (color & 0xFFFFFF));
             }
         }
 

@@ -158,7 +158,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                 resultMsg = String.format("%s 胜！黑%.1f 白%.1f",
                         blackWins ? "玩家（黑）" : "AI（白）", blackScore, whiteScore);
             } else {
-                myWin = false;
+                // 双人模式：本地双人
+                myWin = blackWins;
                 resultMsg = String.format("%s 胜！黑%.1f 白%.1f",
                         blackWins ? "黑方" : "白方", blackScore, whiteScore);
             }
@@ -277,7 +278,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x112200);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§f围 §r§8棋", cx, cy - 60, 0xFFFFFF, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "围 棋", cx, cy - 60, 0xFFFFFF, 2);
         g.drawCenteredString(font, "Go Game", cx, cy - 42, 0x555555);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFD2B48C, 0xFF8B7355);
         g.drawCenteredString(font, "鼠标点击落子  N新游戏  P弃权", cx, cy - 10, 0xAAAAAA);
@@ -335,25 +336,25 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         int infoY = boardStartY;
         GameRenderHelper.drawPanel(g, infoX, infoY, 100, 140, GameRenderHelper.BG_PANEL, 0xFF334455);
 
-        String curColor = game.getCurrentPlayer() == GoPlayer.BLACK ? "§0黑棋" : "§f白棋";
-        g.drawString(font, "§f当前: " + curColor, infoX + 5, infoY + 8, 0xFFFFFF);
+        String curColor = game.getCurrentPlayer() == GoPlayer.BLACK ? "黑棋" : "白棋";
+        g.drawString(font, "当前: " + curColor, infoX + 5, infoY + 8, 0xFFFFFF);
 
         String turnHint;
         if (lanMode == LAN_NONE) {
-            turnHint = game.isAiMode() ? (game.getCurrentPlayer()==GoPlayer.BLACK ? "§a你的回合" : "§7AI思考中") : "§a进行中";
+            turnHint = game.isAiMode() ? (game.getCurrentPlayer()==GoPlayer.BLACK ? "你的回合" : "AI思考中") : "进行中";
         } else {
-            turnHint = myTurn ? "§a你的回合" : "§7等待对方";
+            turnHint = myTurn ? "你的回合" : "等待对方";
         }
         g.drawString(font, turnHint, infoX + 5, infoY + 24, 0xFFFFFF);
-        g.drawString(font, "§7黑捕: " + game.getBlackCaptured(), infoX + 5, infoY + 44, 0xCCCCCC);
-        g.drawString(font, "§7白捕: " + game.getWhiteCaptured(), infoX + 5, infoY + 58, 0xCCCCCC);
+        g.drawString(font, "黑捕: " + game.getBlackCaptured(), infoX + 5, infoY + 44, 0xCCCCCC);
+        g.drawString(font, "白捕: " + game.getWhiteCaptured(), infoX + 5, infoY + 58, 0xCCCCCC);
 
-        String modeStr = lanMode != LAN_NONE ? (lanMode==LAN_HOST ? "§b局域网(黑)" : "§b局域网(白)")
-                : (game.isAiMode() ? "§aAI模式" : "§e双人模式");
+        String modeStr = lanMode != LAN_NONE ? (lanMode==LAN_HOST ? "局域网(黑)" : "局域网(白)")
+                : (game.isAiMode() ? "AI模式" : "双人模式");
         g.drawString(font, modeStr, infoX + 5, infoY + 78, 0xCCCCCC);
 
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§f⚫⚪ 围棋", 8, 7, 0xFFFFFF);
+        g.drawString(font, "⚫⚪ 围棋", 8, 7, 0xFFFFFF);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  N 新游戏  P 弃权");
     }
 
@@ -367,10 +368,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(px - 2, py - 2, px + pw + 2, py + ph + 2, myWin ? 0xFF44FF44 : 0xFFFF4444);
         g.fill(px, py, px + pw, py + ph, 0xFF0A1A2A);
 
-        String headline = myWin ? "§a🎉 你赢了！" : "§c游戏结束";
+        String headline = myWin ? "🎉 你赢了！" : "游戏结束";
         g.drawCenteredString(font, headline, cx, py + 12, myWin ? 0x44FF44 : 0xFF4444);
         g.drawCenteredString(font, resultMsg, cx, py + 30, 0xFFFFFF);
-        g.drawCenteredString(font, "§7N - 再来一局  |  ESC - 返回", cx, py + 50, 0xAAAAAA);
+        g.drawCenteredString(font, "N - 再来一局  |  ESC - 返回", cx, py + 50, 0xAAAAAA);
     }
 
     private int[] getBoardPos(int mx, int my) {

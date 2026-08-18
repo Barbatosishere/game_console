@@ -406,7 +406,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             if (gameMode == GameMode.TWO_PLAYER) {
                 // 同一帧双死才算平局，否则先死的一方判负
                 winnerText = (p1Dead && p2Dead) ? "平局！两人同时落入危险！"
-                        : p1Dead ? "§c玩家2胜利！（P2）" : "§b玩家1胜利！（P1）";
+                        : p1Dead ? "玩家2胜利！（P2）" : "玩家1胜利！（P1）";
             }
             playGameOverSound();
         }
@@ -503,8 +503,8 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         int iy = cy - 18;
         g.fill(cx - 160, iy, cx + 160, iy + 1, 0xFF333355);
 
-        g.drawString(this.font, "§b单人§r  ·  WASD 移动，颜色变化时站到目标色格子", cx - 158, iy + 6, 0x88AACC);
-        g.drawString(this.font, "§b双人§r  ·  P1 用 WASD，P2 用 ←↑↓→ 方向键",        cx - 158, iy + 20, 0x88AACC);
+        g.drawString(this.font, "单人  ·  WASD 移动，颜色变化时站到目标色格子", cx - 158, iy + 6, 0x88AACC);
+        g.drawString(this.font, "双人  ·  P1 用 WASD，P2 用 ←↑↓→ 方向键",        cx - 158, iy + 20, 0x88AACC);
         g.drawString(this.font, "离开安全格超过 2 秒会死！双人模式先死者输。",          cx - 158, iy + 34, 0xFFCC44);
         g.drawString(this.font, "颜色变化越来越快，坚持越久分数越高！",                 cx - 158, iy + 48, 0xFF9988);
 
@@ -657,13 +657,13 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             // P1 框
             g.fill(gameStartX, uiY+38, gameStartX+GAME_WIDTH/2-4, uiY+52, 0x880A1A38);
             g.fill(gameStartX, uiY+38, gameStartX+GAME_WIDTH/2-4, uiY+39, 0xFF2196F3);
-            g.drawString(this.font, "§bP1: " + p1Score + (p1Dead?" ✘":""), gameStartX+4, uiY+42,
+            g.drawString(this.font, "P1: " + p1Score + (p1Dead?" ✘":""), gameStartX+4, uiY+42,
                     p1Dead ? 0xFF555566 : 0xFF88CCFF);
             // P2 框
             int rx = gameStartX + GAME_WIDTH/2 + 4;
             g.fill(rx, uiY+38, gameStartX+GAME_WIDTH, uiY+52, 0x88380A0A);
             g.fill(rx, uiY+38, gameStartX+GAME_WIDTH, uiY+39, 0xFFFF5722);
-            g.drawString(this.font, "§cP2: " + p2Score + (p2Dead?" ✘":""), rx+4, uiY+42,
+            g.drawString(this.font, "P2: " + p2Score + (p2Dead?" ✘":""), rx+4, uiY+42,
                     p2Dead ? 0xFF665555 : 0xFFFF9966);
         }
 
@@ -675,7 +675,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         if (gameMode == GameMode.SINGLE)
             g.drawString(this.font, "WASD 移动   ESC 返回菜单   R 重开", gameStartX, cy, 0xFF444466);
         else
-            g.drawString(this.font, "§bP1: WASD   §cP2: ←↑↓→   §rESC 返回菜单   R 重开",
+            g.drawString(this.font, "P1: WASD   P2: ←↑↓→   ESC 返回菜单   R 重开",
                     gameStartX, cy, 0xFF444466);
     }
 
@@ -687,14 +687,14 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         if (!p1Dead && grid[p1X][p1Y] != targetColor) {
             float dp = 1f - Math.min(1f, (float)(now - p1LastSafe) / DEATH_GRACE_PERIOD);
             renderDangerBar(g, gameStartX, barY, 150, dp,
-                    (tickCount%4<2 ? "§b" : "§c") + "P1 危险！", 0xFFFF5522);
+                    "P1 危险！", 0xFFFF5522);
         }
         // P2
         if (gameMode == GameMode.TWO_PLAYER && !p2Dead && grid[p2X][p2Y] != targetColor) {
             float dp = 1f - Math.min(1f, (float)(now - p2LastSafe) / DEATH_GRACE_PERIOD);
             int rx = gameStartX + GAME_WIDTH - 162;
             renderDangerBar(g, rx, barY, 150, dp,
-                    (tickCount%4<2 ? "§c" : "§e") + "P2 危险！", 0xFFFF2200);
+                    "P2 危险！", 0xFFFF2200);
         }
     }
 

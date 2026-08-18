@@ -107,7 +107,7 @@ public class BreakoutScreen extends Screen {
     }
 
     @Override public void mouseMoved(double mx, double my) {
-        if (state == State.PLAYING) paddleX = (float)Math.max(gameLeft, Math.min(mx - paddleW/2.0, gameLeft + gameW - paddleW));
+        if (state == State.PLAYING && !showExitConfirm) paddleX = (float)Math.max(gameLeft, Math.min(mx - paddleW/2.0, gameLeft + gameW - paddleW));
     }
 
     @Override public void render(GuiGraphics g, int mx, int my, float pt) {
@@ -124,7 +124,7 @@ public class BreakoutScreen extends Screen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width/2, cy = height/2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x220000);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§c打 §r§e砖 §r§a块", cx, cy - 60, 0xFF6644, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "打砖块", cx, cy - 60, 0xFF6644, 2);
         g.drawCenteredString(font, "Breakout", cx, cy - 42, 0x553322);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFFF4444, 0xFF882222);
         g.drawCenteredString(font, "鼠标移动控制挡板", cx, cy - 10, 0xAAAAAA);
@@ -154,8 +154,8 @@ public class BreakoutScreen extends Screen {
         GameRenderHelper.tickAndRenderParticles(g, particles);
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§c🧱 分数: §f" + score, 8, 7, 0xFF6644);
-        g.drawCenteredString(font, "§c❤ x " + lives, width / 2, 7, 0xFF4444);
+        g.drawString(font, "🧱 分数: " + score, 8, 7, 0xFF6644);
+        g.drawCenteredString(font, "❤ x " + lives, width / 2, 7, 0xFF4444);
         GameRenderHelper.drawBottomBar(g, font, width, height, "鼠标移动  ESC 菜单  R 重开");
     }
 

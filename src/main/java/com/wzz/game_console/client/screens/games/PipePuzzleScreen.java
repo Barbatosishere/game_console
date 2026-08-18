@@ -77,14 +77,18 @@ public class PipePuzzleScreen extends Screen {
         gameWon = false; moves = 0; winTick = -1;
         flowPath = new ArrayList<>(); flowProg = 0f;
         PipeType[] rots = {PipeType.STRAIGHT, PipeType.CORNER, PipeType.T_SHAPE};
-        for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
-            grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
-        grid[0][0] = new PipeTile(0,0,PipeType.START);
-        grid[gridSize-1][gridSize-1] = new PipeTile(gridSize-1,gridSize-1,PipeType.END);
-        for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++) {
-            PipeTile t=grid[y][x];
-            if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
-        }
+        // 生成棋盘直到存在至少一条可行通路，避免随机无解软锁
+        do {
+            grid = new PipeTile[gridSize][gridSize];
+            for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
+                grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
+            grid[0][0] = new PipeTile(0,0,PipeType.START);
+            grid[gridSize-1][gridSize-1] = new PipeTile(gridSize-1,gridSize-1,PipeType.END);
+            for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++) {
+                PipeTile t=grid[y][x];
+                if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
+            }
+        } while (findFlowPath().isEmpty());
         updateFlow();
     }
 
@@ -133,6 +137,7 @@ public class PipePuzzleScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
+        if (showExitConfirm) return; // 弹窗期间暂停流量动画
         if (!flowPath.isEmpty() && flowProg < 1f) flowProg = Math.min(1f, flowProg + 0.04f);
     }
 
@@ -189,10 +194,10 @@ public class PipePuzzleScreen extends Screen {
 
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx=width/2, cy=height/2;
-        GameRenderHelper.drawShadowedCenteredText(g,font,"§b接 水 管",cx,cy-75,0x00CCFF,2);
-        g.drawCenteredString(font,"§7点击旋转管道，将水从入口引至出口",cx,cy-52,0x446688);
+        GameRenderHelper.drawShadowedCenteredText(g,font,"接 水 管",cx,cy-75,0x00CCFF,2);
+        g.drawCenteredString(font,"点击旋转管道，将水从入口引至出口",cx,cy-52,0x446688);
         GameRenderHelper.drawDivider(g,cx-110,cy-38,220,0xFF1E4A7A,0xFF0D2A4A);
-        g.drawCenteredString(font,"§f选择难度",cx,cy-16,0xCCCCCC);
+        g.drawCenteredString(font,"选择难度",cx,cy-16,0xCCCCCC);
 
         Difficulty[] dvs=Difficulty.values();
         for (int i=0;i<dvs.length;i++) {
@@ -201,15 +206,15 @@ public class PipePuzzleScreen extends Screen {
             int bg=sel?0xFF1A5A9A:(hov?0xFF0D2A4A:0xFF071828);
             int bo=sel?0xFF00AAFF:(hov?0xFF1A5A9A:0xFF0D3050);
             g.fill(bx-1,by-1,bx+51,by+23,bo); g.fill(bx,by,bx+50,by+22,bg);
-            g.drawCenteredString(font,(sel?"§b":"§7")+dvs[i].label,bx+25,by+7,sel?0x00CCFF:0xAAAAAA);
+            g.drawCenteredString(font,(sel?"":"")+dvs[i].label,bx+25,by+7,sel?0x00CCFF:0xAAAAAA);
         }
-        g.drawCenteredString(font,"§8"+difficulty.size+"×"+difficulty.size+" 格",cx,cy+36,0x334455);
+        g.drawCenteredString(font,""+difficulty.size+"×"+difficulty.size+" 格",cx,cy+36,0x334455);
 
         boolean sh=mx>=cx-60&&mx<=cx+60&&my>=cy+48&&my<=cy+70;
         g.fill(cx-61,cy+47,cx+61,cy+71,sh?0xFF00AAFF:0xFF005588);
         g.fill(cx-60,cy+48,cx+60,cy+70,sh?0xFF0088CC:0xFF003355);
-        g.drawCenteredString(font,"§f▶  开始游戏",cx,cy+56,sh?0xFFFFFF:0x88CCFF);
-        g.drawCenteredString(font,"§8ESC 退出",cx,cy+86,0x334455);
+        g.drawCenteredString(font,"▶  开始游戏",cx,cy+56,sh?0xFFFFFF:0x88CCFF);
+        g.drawCenteredString(font,"ESC 退出",cx,cy+86,0x334455);
     }
 
     private void renderGame(GuiGraphics g, int mx, int my) {
@@ -254,8 +259,8 @@ public class PipePuzzleScreen extends Screen {
             case LEFT  -> g.fill(px+2,cy-hf,cx,cy+hf,pc);
             case RIGHT -> g.fill(cx,cy-hf,px+sz-2,cy+hf,pc);
         }
-        if (t.type==PipeType.START) g.drawCenteredString(font,"§a▶",cx-font.width("▶")/2+1,cy-4,START_C);
-        else if (t.type==PipeType.END) g.drawCenteredString(font,inF?"§a★":"§6★",cx-font.width("★")/2+1,cy-4,inF?WIN_C:END_C);
+        if (t.type==PipeType.START) g.drawCenteredString(font,"▶",cx-font.width("▶")/2+1,cy-4,START_C);
+        else if (t.type==PipeType.END) g.drawCenteredString(font,inF?"★":"★",cx-font.width("★")/2+1,cy-4,inF?WIN_C:END_C);
         if (hov&&t.type.isRotatable()) {
             g.fill(px,py,px+sz,py+1,0x8800CCFF); g.fill(px,py+sz-1,px+sz,py+sz,0x8800CCFF);
             g.fill(px,py,px+1,py+sz,0x8800CCFF); g.fill(px+sz-1,py,px+sz,py+sz,0x8800CCFF);
@@ -265,12 +270,12 @@ public class PipePuzzleScreen extends Screen {
     private void drawHUD(GuiGraphics g) {
         int cx=width/2;
         g.fill(0,0,width,24,0xCC060C1A); g.fill(0,24,width,25,BORDER);
-        g.drawString(font,"§b接水管",8,7,0x00CCFF);
-        g.drawCenteredString(font,"§7步数: §f"+moves,cx,7,0xCCCCCC);
-        String st=gameWon?"§a✔ 已连通":flowPath.isEmpty()?"§c✘ 未连通":"§e~ 部分连通";
+        g.drawString(font,"接水管",8,7,0x00CCFF);
+        g.drawCenteredString(font,"步数: "+moves,cx,7,0xCCCCCC);
+        String st=gameWon?"✔ 已连通":flowPath.isEmpty()?"✘ 未连通":"~ 部分连通";
         g.drawString(font,st,width-font.width(st.replaceAll("§.",""))-8,7,0xFFFFFF);
         g.fill(0,height-20,width,height,0xCC060C1A); g.fill(0,height-21,width,height-20,BORDER);
-        g.drawCenteredString(font,"§8点击旋转管道  R 重置  ESC 菜单",cx,height-14,0x334455);
+        g.drawCenteredString(font,"点击旋转管道  R 重置  ESC 菜单",cx,height-14,0x334455);
     }
 
     private void drawWin(GuiGraphics g, int mx, int my) {
@@ -282,12 +287,12 @@ public class PipePuzzleScreen extends Screen {
         int cw=280,ch=110,cax=cx-cw/2,cay=cy-ch/2;
         g.fill(cax-2,cay-2,cax+cw+2,cay+ch+2,wc);
         g.fill(cax,cay,cax+cw,cay+ch,0xFF071828);
-        g.drawCenteredString(font,"§a🎉  管道连通！  🎉",cx,cay+14,WIN_C);
-        g.drawCenteredString(font,"§f总步数: §b"+moves+" 步",cx,cay+32,0xFFFFFF);
-        g.drawCenteredString(font,"§7难度: §f"+difficulty.label+" ("+gridSize+"×"+gridSize+")",cx,cay+48,0xAAAAAA);
+        g.drawCenteredString(font,"管道连通！",cx,cay+14,WIN_C);
+        g.drawCenteredString(font,"总步数: "+moves+" 步",cx,cay+32,0xFFFFFF);
+        g.drawCenteredString(font,"难度: "+difficulty.label+" ("+gridSize+"×"+gridSize+")",cx,cay+48,0xAAAAAA);
         boolean bh=mx>=cx-60&&mx<=cx+60&&my>=cay+70&&my<=cay+92;
         g.fill(cax+60,cay+70,cax+cw-60,cay+92,bh?0xFF00AAFF:0xFF005588);
-        g.drawCenteredString(font,"§f↺  再来一局",cx,cay+77,bh?0xFFFFFF:0x88CCFF);
+        g.drawCenteredString(font,"↺  再来一局",cx,cay+77,bh?0xFFFFFF:0x88CCFF);
     }
 
     @Override public boolean isPauseScreen() { return false; }

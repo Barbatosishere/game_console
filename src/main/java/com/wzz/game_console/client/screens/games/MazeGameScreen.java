@@ -40,6 +40,9 @@ public class MazeGameScreen extends Screen {
 
     @Override
     public void init() {
+        // 窗口缩放时 Screen.resize 会重调 init，widget 需要先清理避免叠加
+        super.init();
+        this.clearWidgets();
         // 计算绘制起始位置，使迷宫居中
         TILE_SIZE = Math.max(8, Math.min((this.width - 40) / MAZE_WIDTH, (this.height - 80) / MAZE_HEIGHT));
         startX = (this.width - MAZE_WIDTH * TILE_SIZE) / 2;
@@ -97,8 +100,13 @@ public class MazeGameScreen extends Screen {
             }
         }
 
-        // 设置出口
-        maze[MAZE_HEIGHT-2][MAZE_WIDTH-2] = 'E';
+        // 设置出口：若出口格未被DFS打通（偶发），补挖到起点 (1,1) 的通路，保证可达
+        int ex = MAZE_WIDTH - 2, ey = MAZE_HEIGHT - 2;
+        if (maze[ey][ex] == '#') {
+            for (int x = ex; x >= 1; x--) maze[ey][x] = ' ';
+            for (int y = ey; y >= 1; y--) maze[y][1] = ' ';
+        }
+        maze[ey][ex] = 'E';
 
         // 在玩家后方生成鬼魂
         placeGhostBehindPlayer();

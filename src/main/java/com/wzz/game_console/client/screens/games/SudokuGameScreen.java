@@ -70,6 +70,7 @@ public class SudokuGameScreen extends Screen {
     @Override
     public void init() {
         super.init();
+        this.clearWidgets(); // 窗口缩放时 Screen.resize 会重调 init，避免按钮叠加
         gameStartX = (this.width - GAME_WIDTH) / 2;
         gameStartY = (this.height - GAME_HEIGHT) / 2 - 20;
 
@@ -253,12 +254,12 @@ public class SudokuGameScreen extends Screen {
             renderCompletionScreen(guiGraphics);
         }
 
-        // 修复：退出确认弹窗（与其他游戏保持一致）
+        super.render(guiGraphics, mouseX, mouseY, partialTick);
+
+        // 退出确认弹窗：必须在 super.render 之后绘制，避免按钮浮在遮罩上方
         if (showExitConfirm) {
             GameRenderHelper.drawExitConfirmOverlay(guiGraphics, font, width, height, mouseX, mouseY);
         }
-
-        super.render(guiGraphics, mouseX, mouseY, partialTick);
     }
 
     private void renderSudokuGrid(GuiGraphics guiGraphics) {

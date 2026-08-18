@@ -441,7 +441,7 @@ public class BlackHoleGameScreen extends Screen {
             showExitConfirm = true; return true;
         }
         if (showExitConfirm) return true;
-        keys[keyCode] = true;
+        if (keyCode >= 0 && keyCode < keys.length) keys[keyCode] = true;
         
         // R键重新开始
         if (keyCode == 82 && gameState == GameState.GAME_OVER) {
@@ -453,7 +453,7 @@ public class BlackHoleGameScreen extends Screen {
     
     @Override
     public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
-        keys[keyCode] = false;
+        if (keyCode >= 0 && keyCode < keys.length) keys[keyCode] = false;
         return super.keyReleased(keyCode, scanCode, modifiers);
     }
 

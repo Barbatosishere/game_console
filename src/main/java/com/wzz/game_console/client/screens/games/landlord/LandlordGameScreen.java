@@ -252,16 +252,16 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
 
     private void renderWait(GuiGraphics g){
         String dots=".".repeat((int)(tickCount/10%4));
-        g.drawCenteredString(font,"§b等待游戏开始"+dots,width/2,height/2,0x44AAFF);
+        g.drawCenteredString(font,"等待游戏开始"+dots,width/2,height/2,0x44AAFF);
     }
 
     private void drawHUD(GuiGraphics g){
         g.fill(0,0,width,22,0xBB060C18); g.fill(0,22,width,23,PBD);
-        g.drawCenteredString(font,"§b🃏 斗地主",width/2,6,0x44AAFF);
+        g.drawCenteredString(font,"🃏 斗地主",width/2,6,0x44AAFF);
         if(game.getLandlordPlayer()>=0)
-            g.drawString(font,"§c地主: §f"+name(game.getLandlordPlayer()),8,6,0xFFFFFF);
+            g.drawString(font,"地主: "+name(game.getLandlordPlayer()),8,6,0xFFFFFF);
         String cur=game.getGameState()==LandlordGame.GameState.BIDDING
-            ?"§e叫地主阶段":"§f轮到: §a"+name(game.getCurrentPlayer());
+            ?"叫地主阶段":"轮到: "+name(game.getCurrentPlayer());
         g.drawString(font,cur,width-font.width(cur.replaceAll("§.",""))-8,6,0xFFFFFF);
     }
 
@@ -276,8 +276,8 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(x-2,y-2,x+42,y+h2,bd); g.fill(x,y,x+40,y+h2-4,PBG);
         for(int i=0;i<Math.min(cnt,14);i++){g.fill(x+3,y+i*8+3,x+37,y+i*8+12,0xFF1A3055);g.fill(x+4,y+i*8+4,x+36,y+i*8+11,0xFF223366);}
         int ty=y+Math.min(cnt,14)*8+8;
-        g.drawCenteredString(font,(active?"§a":"§7")+nm,x+20,ty,active?0x44FF88:0xAAAAAA);
-        g.drawCenteredString(font,"§f"+cnt+"张",x+20,ty+10,0xCCCCCC);
+        g.drawCenteredString(font,(active?"":"")+nm,x+20,ty,active?0x44FF88:0xAAAAAA);
+        g.drawCenteredString(font,""+cnt+"张",x+20,ty+10,0xCCCCCC);
     }
 
     private void drawCenter(GuiGraphics g){
@@ -286,7 +286,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         List<Card> lc=game.getLandlordCards();
         boolean revealed=game.getLandlordPlayer()>=0;
         if(!lc.isEmpty()){
-            g.drawCenteredString(font,"§7底牌:",cx,cy-58,0x888888);
+            g.drawCenteredString(font,"底牌:",cx,cy-58,0x888888);
             int sx=cx-lc.size()*(CARD_W+4)/2;
             for(int i=0;i<lc.size();i++) drawCard(g,lc.get(i),sx+i*(CARD_W+4),cy-50,revealed,false);
         }
@@ -295,15 +295,16 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         if(!lp.isEmpty()){
             CardPattern pat=game.analyzeCards(lp);
             String pn=pat!=null?getPatternName(pat):"";
-            g.drawCenteredString(font,"§f"+name(game.getLastPlayer())+" §e"+pn,cx,cy-6,0xFFFFFF);
+            g.drawCenteredString(font,""+name(game.getLastPlayer())+" "+pn,cx,cy-6,0xFFFFFF);
             int sx=cx-lp.size()*CARD_SP/2;
             for(int i=0;i<lp.size();i++) drawCard(g,lp.get(i),sx+i*CARD_SP,cy+4,true,false);
         }else if(game.getGameState()==LandlordGame.GameState.PLAYING){
-            g.drawCenteredString(font,"§7桌面空，主动出牌",cx,cy+4,0x555566);
+            g.drawCenteredString(font,"桌面空，主动出牌",cx,cy+4,0x555566);
         }
     }
 
     private void drawMyHand(GuiGraphics g,int mx,int my){
+        if (myPlayerIdx < 0 || myPlayerIdx >= 3) return;
         List<Card> hand=game.getPlayerHand(myPlayerIdx);
         if(hand.isEmpty())return;
         if(cardSelected.length!=hand.size())cardSelected=new boolean[hand.size()];
@@ -315,13 +316,13 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
             boolean hov=myT&&mx>=cx2&&mx<=cx2+CARD_W&&my>=cy2-5&&my<=cy2+CARD_H+5;
             drawCard(g,hand.get(i),cx2,cy2,true,cardSelected[i]||hov);
         }
-        String label="§a"+name(myPlayerIdx);
-        if(game.getLandlordPlayer()==myPlayerIdx)label+=" §c[地主]";
+        String label=""+name(myPlayerIdx);
+        if(game.getLandlordPlayer()==myPlayerIdx)label+=" [地主]";
         g.drawString(font,label,sx,cy+CARD_H+6,0xFFFFFF);
         if(myT){
             int pulse=(int)(150+60*Math.sin(tickCount*0.2));
             g.fill(0,cy-16,width,cy-15,0xFF000000|(pulse<<8)|(pulse/3));
-            g.drawCenteredString(font,"§a▼ 你的回合",width/2,cy-12,0x44FF88);
+            g.drawCenteredString(font,"▼ 你的回合",width/2,cy-12,0x44FF88);
         }
     }
 
@@ -347,7 +348,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         int cx=width/2,cy=height/2-88;
         int tw=font.width(msg.replaceAll("§.",""));
         g.fill(cx-tw/2-6,cy-2,cx+tw/2+6,cy+13,0xAA000000);
-        g.drawCenteredString(font,"§e"+msg,cx,cy,0xFFFF88);
+        g.drawCenteredString(font,""+msg,cx,cy,0xFFFF88);
     }
 
     private void drawResult(GuiGraphics g,int mx,int my){
@@ -359,14 +360,14 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         int cw=300,ch=130,cax=cx-cw/2,cay=cy-ch/2;
         g.fill(cax-2,cay-2,cax+cw+2,cay+ch+2,win?0xFF44FF44:0xFFFF4444);
         g.fill(cax,cay,cax+cw,cay+ch,0xFF070F1E);
-        g.drawCenteredString(font,win?"§a🎉 你赢了！":"§c游戏结束",cx,cay+12,win?0x44FF44:0xFF4444);
+        g.drawCenteredString(font,win?"🎉 你赢了！":"游戏结束",cx,cay+12,win?0x44FF44:0xFF4444);
         int lp=game.getLandlordPlayer();
-        g.drawCenteredString(font,"§7地主: §f"+(lp>=0?name(lp):"?"),cx,cay+28,0xCCCCCC);
-        g.drawCenteredString(font,"§f积分 "+name(0)+":§e"+sc[0]+" "+name(1)+":§e"+sc[1]+" "+name(2)+":§e"+sc[2],cx,cay+44,0xCCCCCC);
+        g.drawCenteredString(font,"地主: "+(lp>=0?name(lp):"?"),cx,cay+28,0xCCCCCC);
+        g.drawCenteredString(font,"积分 "+name(0)+":"+sc[0]+" "+name(1)+":"+sc[1]+" "+name(2)+":"+sc[2],cx,cay+44,0xCCCCCC);
         boolean bh=mx>=cx-50&&mx<=cx+50&&my>=cay+72&&my<=cay+94;
         g.fill(cx-51,cay+71,cx+51,cay+95,bh?0xFF00AAFF:0xFF005588);
         g.fill(cx-50,cay+72,cx+50,cay+94,bh?0xFF0088CC:0xFF003355);
-        g.drawCenteredString(font,"§f↺ 再来一局",cx,cay+80,bh?0xFFFFFF:0x88CCFF);
+        g.drawCenteredString(font,"↺ 再来一局",cx,cay+80,bh?0xFFFFFF:0x88CCFF);
     }
 
     // ══ 卡牌渲染 ═════════════════════════════════════

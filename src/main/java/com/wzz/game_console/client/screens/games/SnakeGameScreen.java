@@ -60,13 +60,21 @@ public class SnakeGameScreen extends Screen {
 
         int[] head = snake.get(0);
         int nx = head[0] + dx, ny = head[1] + dy;
-        if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H || snake.stream().anyMatch(s -> s[0] == nx && s[1] == ny)) {
+        boolean eatingFood = food != null && nx == food[0] && ny == food[1];
+        // 未进食时尾格即将移除，碰撞尾格是安全的，故排除尾部
+        int bodyLen = snake.size() - (eatingFood ? 0 : 1);
+        boolean hitBody = false;
+        for (int i = 0; i < bodyLen; i++) {
+            int[] s = snake.get(i);
+            if (s[0] == nx && s[1] == ny) { hitBody = true; break; }
+        }
+        if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H || hitBody) {
             state = State.GAME_OVER;
             if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.GENERIC_EXPLODE.value(), 0.5F, 1.0F);
             return;
         }
         snake.add(0, new int[]{nx, ny});
-        if (food != null && nx == food[0] && ny == food[1]) {
+        if (eatingFood) {
             score++;
             // 先记录旧食物坐标，粒子应生成在被吃掉的位置而非新食物位置
             int oldFx = food[0], oldFy = food[1];
@@ -118,7 +126,7 @@ public class SnakeGameScreen extends Screen {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x003300);
 
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§a贪 §r§f吃 §r§a蛇", cx, cy - 60, 0x44FF44, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "贪吃蛇", cx, cy - 60, 0x44FF44, 2);
         g.drawCenteredString(font, "Snake Game", cx, cy - 42, 0x336633);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFF22AA22, 0xFF115511);
 
@@ -186,10 +194,10 @@ public class SnakeGameScreen extends Screen {
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§a🐍 分数: §f" + score, 8, 7, 0x44FF44);
-        g.drawString(font, "§7长度: §f" + snake.size(), width / 2 - 30, 7, 0xCCCCCC);
+        g.drawString(font, "🐍 分数: " + score, 8, 7, 0x44FF44);
+        g.drawString(font, "长度: " + snake.size(), width / 2 - 30, 7, 0xCCCCCC);
         int sw = font.width("ESC 菜单  R 重开");
-        g.drawString(font, "§7ESC 菜单  R 重开", width - sw - 8, 7, 0x666666);
+        g.drawString(font, "ESC 菜单  R 重开", width - sw - 8, 7, 0x666666);
     }
 
     private void renderGameOver(GuiGraphics g, int mx, int my) {

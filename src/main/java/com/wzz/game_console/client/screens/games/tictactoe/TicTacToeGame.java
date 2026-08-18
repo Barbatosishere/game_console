@@ -36,6 +36,7 @@ public class TicTacToeGame {
     }
     
     public boolean makeMove(int row, int col) {
+        if (row < 0 || row >= 3 || col < 0 || col >= 3) return false; // 联机数据防护
         if (gameOver || board[row][col] != Player.NONE) {
             return false;
         }

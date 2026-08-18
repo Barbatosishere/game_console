@@ -86,6 +86,7 @@ public class TetrisGameScreen extends Screen {
                 lines++; score += 100 * level;
                 if (lines % 10 == 0) level++;
                 if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_BOTTLE_THROW, 1.0F, 1.0F);
+                y--; // 下移后原 y+1 行进入 y 行，需重新检测（连续满行）
             }
         }
     }
@@ -146,7 +147,7 @@ public class TetrisGameScreen extends Screen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x001144);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§b俄罗斯方块", cx, cy - 60, 0x00FFFF, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "俄罗斯方块", cx, cy - 60, 0x00FFFF, 2);
         g.drawCenteredString(font, "Tetris", cx, cy - 42, 0x335566);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFF0088CC, 0xFF004466);
         g.drawCenteredString(font, "A/D 左右移动  W 旋转  S 加速  空格 硬降", cx, cy - 10, 0x88AACC);
@@ -200,8 +201,8 @@ public class TetrisGameScreen extends Screen {
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§b🟦 分数: §f" + score, 8, 7, 0x00FFFF);
-        g.drawCenteredString(font, "§e等级 " + level + "  §7消除 " + lines + " 行", width / 2, 7, 0xFFFF44);
+        g.drawString(font, "分数: " + score, 8, 7, 0x00FFFF);
+        g.drawCenteredString(font, "等级 " + level + "  消除 " + lines + " 行", width / 2, 7, 0xFFFF44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  R 重开  WASD 操作  空格 硬降");
     }
 

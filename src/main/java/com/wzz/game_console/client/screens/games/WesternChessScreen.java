@@ -308,7 +308,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         if (state!=S.PLAYING) return;
         if (legalMoves(board,whiteTurn).isEmpty()) {
             state=S.OVER;
-            resultMsg = kingInCheck(board,whiteTurn) ? (whiteTurn?"§c黑方胜利！将死":"§a白方胜利！将死") : "§e僵局！平局";
+            resultMsg = kingInCheck(board,whiteTurn) ? (whiteTurn?"黑方胜利！将死":"白方胜利！将死") : "僵局！平局";
             if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
         }
     }
@@ -372,9 +372,9 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
      */
     private int alphaBeta(int[][] b, int depth, int alpha, int beta, boolean max, boolean[] cf, int[] ep) {
         if (System.currentTimeMillis()-aiT0 > AI_MS) return evalBoard(b);
-        if (depth == 0) return evalBoard(b);
         List<int[]> moves = pseudoMoves(b, max, ep); // ← 伪合法，快；ep用搜索节点自身的目标
         if (moves.isEmpty()) return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
+        if (depth == 0) return evalBoard(b);
         // 简单排序：吃子优先
         moves.sort((a,bb) -> Integer.compare(PIECE_VALUE[Math.abs(b[bb[2]][bb[3]])], PIECE_VALUE[Math.abs(b[a[2]][a[3]])]));
         int best = max ? Integer.MIN_VALUE : Integer.MAX_VALUE;
@@ -501,7 +501,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx=width/2, cy=height/2;
         GameRenderHelper.renderDecorativeLines(g,width,height,tickN,0x220022);
-        GameRenderHelper.drawShadowedCenteredText(g,font,"§f国 §r§7际 §r§f象 §r§7棋",cx,cy-70,0xFFFFFF,2);
+        GameRenderHelper.drawShadowedCenteredText(g,font,"国 际 象 棋",cx,cy-70,0xFFFFFF,2);
         g.drawCenteredString(font,"Western Chess",cx,cy-50,0x555555);
         GameRenderHelper.drawDivider(g,cx-80,cy-38,160,0xFF888888,0xFF444444);
         g.drawCenteredString(font,"点击棋子选中，再点目标格走棋",cx,cy-18,0xAAAAAA);
@@ -531,11 +531,11 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         GameRenderHelper.tickAndRenderParticles(g,particles);
         GameRenderHelper.drawTopHUD(g,width,height);
-        String ts=whiteTurn?"§f♔ 白方走棋":"§8♚ 黑方走棋";
-        if (vsAI&&!whiteTurn&&aiThinking) ts="§7AI 思考中...";
+        String ts=whiteTurn?"♔ 白方走棋":"♚ 黑方走棋";
+        if (vsAI&&!whiteTurn&&aiThinking) ts="AI 思考中...";
         g.drawString(font,ts,8,7,0xFFFFFF);
-        g.drawString(font,vsAI?"§7AI对战":"§7本地双人",width-60,7,0x888888);
-        if (state==S.PLAYING&&inCheck) g.drawCenteredString(font,"§c⚠ 将军！",width/2,7,0xFF4444);
+        g.drawString(font,vsAI?"AI对战":"本地双人",width-60,7,0x888888);
+        if (state==S.PLAYING&&inCheck) g.drawCenteredString(font,"⚠ 将军！",width/2,7,0xFF4444);
         if (promoPending) renderPromoPanel(g,mx,my);
         GameRenderHelper.drawBottomBar(g,font,width,height,"ESC 菜单  R 重开  点击走棋");
     }

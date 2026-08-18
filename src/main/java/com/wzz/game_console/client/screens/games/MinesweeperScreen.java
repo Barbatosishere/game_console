@@ -141,7 +141,7 @@ public class MinesweeperScreen extends Screen {
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x222200);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§c💣 §f扫雷", cx, cy - 60, 0xFFAA00, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "扫雷", cx, cy - 60, 0xFFAA00, 2);
         g.drawCenteredString(font, "Minesweeper", cx, cy - 42, 0x665533);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFAA6600, 0xFF553300);
         g.drawCenteredString(font, "左键揭开  右键标旗  找出所有地雷", cx, cy - 10, 0xCCCCCC);
@@ -175,7 +175,7 @@ public class MinesweeperScreen extends Screen {
                     g.fill(sx, sy, sx + 1, sy + cellSize, GameRenderHelper.brighten(bg, 1.15f));
                     g.fill(sx + cellSize - 1, sy, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.7f));
                     g.fill(sx, sy + cellSize - 1, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.6f));
-                    if (c.flagged) g.drawCenteredString(font, "§c🚩", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFF4444);
+                    if (c.flagged) g.drawCenteredString(font, "🚩", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFF4444);
                 }
                 // 网格线
                 g.fill(sx + cellSize, sy, sx + cellSize + 1, sy + cellSize, 0x22FFFFFF);
@@ -185,8 +185,8 @@ public class MinesweeperScreen extends Screen {
 
         GameRenderHelper.tickAndRenderParticles(g, particles);
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§c💣 地雷: §f" + mineCount, 8, 7, 0xFF4444);
-        g.drawCenteredString(font, "§e🚩 标旗: §f" + flagCount + " / " + mineCount, width / 2, 7, 0xFFFF44);
+        g.drawString(font, "地雷: " + mineCount, 8, 7, 0xFF4444);
+        g.drawCenteredString(font, "标旗: " + flagCount + " / " + mineCount, width / 2, 7, 0xFFFF44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  左键揭开  右键标旗");
     }
 

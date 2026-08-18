@@ -326,6 +326,7 @@ public class DiceGuessingScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (showExitConfirm) return; // 弹窗期间冻结骰子动画与结算
 
         if (isRolling) {
             animationTick++;

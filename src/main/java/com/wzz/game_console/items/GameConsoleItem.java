@@ -2,6 +2,7 @@ package com.wzz.game_console.items;
 
 import com.wzz.game_console.network.GameSelectorPacket;
 import com.wzz.game_console.util.NetworkHandler;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -23,8 +24,8 @@ public class GameConsoleItem extends Item {
     @Override
     public void appendHoverText(ItemStack p_41421_, Item.TooltipContext p_41422_, List<Component> p_41423_, TooltipFlag p_41424_) {
         super.appendHoverText(p_41421_, p_41422_, p_41423_, p_41424_);
-        p_41423_.add(Component.literal("§7§o游戏~游戏~我想玩游戏~"));
-        p_41423_.add(Component.literal("§8§o右键Play给木~"));
+        p_41423_.add(Component.literal("游戏~游戏~我想玩游戏~").withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC));
+        p_41423_.add(Component.literal("右键Play给木~").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.ITALIC));
     }
 
     @Override

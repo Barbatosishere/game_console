@@ -112,7 +112,7 @@ public class MultiplayerLobbyScreen extends Screen {
                     mc.execute(() -> {
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
-                                    Component.literal("§e[游戏机] §f" + inviterName + " §a邀请你玩 §f" + packet.getGameId() + " §7(打开游戏机查看)"),
+                                    Component.literal("[游戏机] " + inviterName + " 邀请你玩 " + packet.getGameId() + " (打开游戏机查看)"),
                                     false
                             );
                         }
@@ -143,13 +143,18 @@ public class MultiplayerLobbyScreen extends Screen {
                     }
                     if (mc.player != null) {
                         mc.player.displayClientMessage(
-                                Component.literal("§e[游戏机] §c邀请已取消/超时"), false);
+                                Component.literal("[游戏机] 邀请已取消/超时"), false);
                     }
                 });
             }
             case DECLINE_INVITE -> {
                 mc.execute(() -> {
                     if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
+                        // 安全：仅接受被邀请者本人发来的拒绝，防止第三方伪造包误取消邀请
+                        if (lobby.invitedPlayer == null || !lobby.invitedPlayer.equals(packet.getSenderUuid())) {
+                            LOGGER.warn("[游戏机联机] 忽略非受邀玩家的拒绝消息 sender={}", packet.getSenderUuid());
+                            return;
+                        }
                         lobby.state = LobbyState.MODE_SELECT;
                         lobby.waitingMessage = "对方拒绝了邀请";
                         lobby.resetLanWaitState();
@@ -204,7 +209,7 @@ public class MultiplayerLobbyScreen extends Screen {
                         s.onRemoteLeave(name);
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
-                                    Component.literal("§e[游戏机] §f" + name + " §c已退出对局"), false);
+                                    Component.literal("[游戏机] " + name + " 已退出对局"), false);
                         }
                         mc.setScreen(null);
                     }
@@ -375,7 +380,7 @@ public class MultiplayerLobbyScreen extends Screen {
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x003355);
 
         // 标题
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§b联机大厅", cx, 10, 0x44CCFF, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "联机大厅", cx, 10, 0x44CCFF, 2);
         GameRenderHelper.drawDivider(g, cx - 100, 30, 200, 0xFF2266AA, 0xFF224488);
 
         // 收到邀请时，挂起其他内容，全屏显示邀请弹窗
@@ -395,7 +400,7 @@ public class MultiplayerLobbyScreen extends Screen {
 
     private void renderGameSelect(GuiGraphics g, int mx, int my) {
         int cx = width / 2;
-        g.drawCenteredString(font, "§f选择多人游戏", cx, 38, 0xCCCCCC);
+        g.drawCenteredString(font, "选择多人游戏", cx, 38, 0xCCCCCC);
 
         int startY = 55;
         int cardW = 220;
@@ -421,9 +426,9 @@ public class MultiplayerLobbyScreen extends Screen {
 
             // 支持模式标签
             StringBuilder modes = new StringBuilder();
-            if (game.supportsAI) modes.append("§aAI ");
-            if (game.supportsLocal) modes.append("§e本地 ");
-            if (game.supportsLAN) modes.append("§b联机");
+            if (game.supportsAI) modes.append("AI ");
+            if (game.supportsLocal) modes.append("本地 ");
+            if (game.supportsLAN) modes.append("联机");
             int mw = font.width(modes.toString());
             g.drawString(font, modes.toString(), cardX + cardW - mw - 5, cardY + 8, 0x888888);
         }
@@ -435,7 +440,7 @@ public class MultiplayerLobbyScreen extends Screen {
         g.drawCenteredString(font, game.icon + " " + game.name + " - 选择模式", cx, 38, 0xFFFFFF);
 
         if (!waitingMessage.isEmpty()) {
-            g.drawCenteredString(font, "§e" + waitingMessage, cx, 52, 0xFFFF44);
+            g.drawCenteredString(font, waitingMessage, cx, 52, 0xFFFF44);
         }
 
         int startY = 68;
@@ -446,26 +451,26 @@ public class MultiplayerLobbyScreen extends Screen {
 
         if (game.supportsAI) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
-                    "§f🤖 玩家 vs 人机", 0xFF2A4A14);
+                    "🤖 玩家 vs 人机", 0xFF2A4A14);
             if (h) hoveredModeIndex = 0;
             modeIdx++;
         }
         if (game.supportsLocal) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
-                    "§f👥 本地双人", 0xFF4A3A14);
+                    "👥 本地双人", 0xFF4A3A14);
             if (h) hoveredModeIndex = 1;
             modeIdx++;
         }
         if (game.supportsLAN) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
-                    "§f🌐 局域网对战", 0xFF143A4A);
+                    "🌐 局域网对战", 0xFF143A4A);
             if (h) hoveredModeIndex = 2;
             modeIdx++;
         }
 
         // 返回按钮
         boolean backH = drawModeButton(g, mx, my, cx - 50, startY + modeIdx * 30 + 10, 100, 20,
-                "§7◀ 返回", 0xFF222233);
+                "◀ 返回", 0xFF222233);
         if (backH) hoveredModeIndex = 99;
     }
 
@@ -481,12 +486,12 @@ public class MultiplayerLobbyScreen extends Screen {
         int cx = width / 2;
         int totalPages = Math.max(1, (onlinePlayers.size() + PLAYERS_PER_PAGE - 1) / PLAYERS_PER_PAGE);
         if (playerListPage >= totalPages) playerListPage = totalPages - 1;
-        g.drawCenteredString(font, "§b在线玩家  (" + (playerListPage + 1) + "/" + totalPages + ")", cx, 38, 0x44CCFF);
+        g.drawCenteredString(font, "在线玩家  (" + (playerListPage + 1) + "/" + totalPages + ")", cx, 38, 0x44CCFF);
 
         hoveredPlayerIndex = -1;
         if (onlinePlayers.isEmpty()) {
-            g.drawCenteredString(font, "§7没有找到其他在线玩家", cx, 70, 0x888888);
-            g.drawCenteredString(font, "§7确保在局域网/服务器中有其他玩家", cx, 85, 0x666666);
+            g.drawCenteredString(font, "没有找到其他在线玩家", cx, 70, 0x888888);
+            g.drawCenteredString(font, "确保在局域网/服务器中有其他玩家", cx, 85, 0x666666);
         } else {
             int startIdx = playerListPage * PLAYERS_PER_PAGE;
             int endIdx = Math.min(startIdx + PLAYERS_PER_PAGE, onlinePlayers.size());
@@ -500,9 +505,9 @@ public class MultiplayerLobbyScreen extends Screen {
                 if (hover) hoveredPlayerIndex = displayIdx;
 
                 g.fill(cardX, cardY, cardX + 200, cardY + 20, hover ? 0xFF335566 : 0xFF1A2A33);
-                g.drawString(font, "§f" + p.name, cardX + 5, cardY + 6, 0xFFFFFF);
+                g.drawString(font, p.name, cardX + 5, cardY + 6, 0xFFFFFF);
                 if (hover) {
-                    g.drawString(font, "§a点击邀请", cardX + 150, cardY + 6, 0x44FF44);
+                    g.drawString(font, "点击邀请", cardX + 150, cardY + 6, 0x44FF44);
                 }
             }
         }
@@ -525,12 +530,12 @@ public class MultiplayerLobbyScreen extends Screen {
         int cx = width / 2;
         int totalPages = Math.max(1, (onlinePlayers.size() + PLAYERS_PER_PAGE - 1) / PLAYERS_PER_PAGE);
         if (playerListPage >= totalPages) playerListPage = totalPages - 1;
-        g.drawCenteredString(font, "§b斗地主 - 选择两位对手  (" + (playerListPage+1) + "/" + totalPages + ")", cx, 38, 0x44CCFF);
-        g.drawCenteredString(font, "§7已选 §f" + selectedLanPeers.size() + " §7/ 2 人", cx, 50, 0xAAAAAA);
+        g.drawCenteredString(font, "斗地主 - 选择两位对手  (" + (playerListPage+1) + "/" + totalPages + ")", cx, 38, 0x44CCFF);
+        g.drawCenteredString(font, "已选 " + selectedLanPeers.size() + " / 2 人", cx, 50, 0xAAAAAA);
 
         hoveredPlayerIndex = -1;
         if (onlinePlayers.isEmpty()) {
-            g.drawCenteredString(font, "§7没有其他在线玩家", cx, 75, 0x888888);
+            g.drawCenteredString(font, "没有其他在线玩家", cx, 75, 0x888888);
         } else {
             int startIdx = playerListPage * PLAYERS_PER_PAGE;
             int endIdx = Math.min(startIdx + PLAYERS_PER_PAGE, onlinePlayers.size());
@@ -546,8 +551,8 @@ public class MultiplayerLobbyScreen extends Screen {
                 int bg = selected2 ? 0xFF1A4A2A : (hover ? 0xFF335566 : 0xFF1A2A33);
                 g.fill(cardX, cardY, cardX + 220, cardY + 22, bg);
                 if (selected2) g.fill(cardX, cardY, cardX + 3, cardY + 22, 0xFF44FF88);
-                g.drawString(font, (selected2 ? "§a✔ " : "§7  ") + p.name(), cardX + 8, cardY + 7, 0xFFFFFF);
-                g.drawString(font, selected2 ? "§a已选" : "§7点击选择", cardX + 170, cardY + 7, selected2 ? 0x44FF88 : 0x666666);
+                g.drawString(font, (selected2 ? "✔ " : "  ") + p.name(), cardX + 8, cardY + 7, 0xFFFFFF);
+                g.drawString(font, selected2 ? "已选" : "点击选择", cardX + 170, cardY + 7, selected2 ? 0x44FF88 : 0x666666);
             }
         }
 
@@ -569,7 +574,7 @@ public class MultiplayerLobbyScreen extends Screen {
         boolean btnHov = mx>=cx-60&&mx<=cx+60&&my>=btnY&&my<=btnY+22;
         g.fill(cx-61,btnY-1,cx+61,btnY+23, ready&&btnHov?0xFF00AAFF:0xFF1E3A5F);
         g.fill(cx-60,btnY,cx+60,btnY+22, ready&&btnHov?hbg:bg);
-        g.drawCenteredString(font, ready?"§f发送邀请 ▶":"§7请选满2人", cx, btnY+7, ready?0xFFFFFF:0x666666);
+        g.drawCenteredString(font, ready ? "发送邀请 ▶" : "请选满2人", cx, btnY+7, ready ? 0xFFFFFF : 0x666666);
 
         GameRenderHelper.drawSecondaryButton(g, font, "◀ 返回", cx - 40, height - 28, 80, 18, mx, my);
     }
@@ -578,7 +583,7 @@ public class MultiplayerLobbyScreen extends Screen {
         int cx = width / 2, cy = height / 2;
         // 动画点
         String dots = ".".repeat((int)(tickCount / 10 % 4));
-        g.drawCenteredString(font, "§e" + waitingMessage + dots, cx, cy - 10, 0xFFFF44);
+        g.drawCenteredString(font, waitingMessage + dots, cx, cy - 10, 0xFFFF44);
         GameRenderHelper.drawSecondaryButton(g, font, "取消", cx - 40, cy + 10, 80, 18, 0, 0);
     }
 
@@ -595,8 +600,8 @@ public class MultiplayerLobbyScreen extends Screen {
         g.fill(nx - 2, ny - 2, nx + nw + 2, ny + nh + 2, 0xFF44AAFF); // 外发光边框
         g.fill(nx, ny, nx + nw, ny + nh, 0xFF0A1A3A);
 
-        g.drawCenteredString(font, "§b📩 收到游戏邀请", cx, ny + 8, 0x44CCFF);
-        g.drawCenteredString(font, "§e" + inviterName + " §f邀请你玩 §b" + pendingInvite.getGameId(), cx, ny + 24, 0xFFFFFF);
+        g.drawCenteredString(font, "📩 收到游戏邀请", cx, ny + 8, 0x44CCFF);
+        g.drawCenteredString(font, inviterName + " 邀请你玩 " + pendingInvite.getGameId(), cx, ny + 24, 0xFFFFFF);
 
         // 接受按钮（绿色）
         GameRenderHelper.drawPrimaryButton(g, font, "✔ 接受", nx + 20, ny + nh - 28, 110, 22, mx, my);
@@ -782,15 +787,6 @@ public class MultiplayerLobbyScreen extends Screen {
 
     private void launchGame(String mode) {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
-        if ("lan".equals(mode)) {
-            // LAN HOST 启动：只有 icefire 有专属 HOST 构造，其他游戏复用单机版
-            Screen s = switch (game.id) {
-                case "icefire" -> new com.wzz.game_console.client.screens.games.IceFireGameScreen(true, invitedPlayer);
-                default        -> launchGameForLAN(game.id, invitedPlayer);
-            };
-            if (s != null) Minecraft.getInstance().setScreen(s);
-            return;
-        }
         Screen gameScreen = switch (game.id) {
             case "gomoku"    -> new com.wzz.game_console.client.screens.games.GomokuScreen();
             case "go"        -> new com.wzz.game_console.client.screens.games.gogame.GoGameScreen(

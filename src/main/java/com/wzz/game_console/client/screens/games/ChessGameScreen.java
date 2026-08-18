@@ -238,7 +238,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         CELL = Math.max(24, Math.min(44, Math.min(
                 (width - 140) / COLS,
                 (height - 160) / (ROWS + 1))));
-        PR = CELL * 6 / 10;
+        PR = Math.max(1, CELL * 6 / 10);
         bx = (width  - (COLS - 1) * CELL) / 2;
         by = (height - (ROWS - 1) * CELL) / 2 - CELL / 4;
         // LAN 联机：跳过菜单直接开始
@@ -792,7 +792,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     void undoMove(){
-        if(undoCount==0) return;
+        if(undoCount<=0 || undoCount>undoBoards.length) return;
         // 人机模式：悔2步（撤回AI和玩家各1步）
         int steps = gameMode==GameMode.PVA ? Math.min(2,undoCount) : 1;
         undoCount=Math.max(0,undoCount-steps);

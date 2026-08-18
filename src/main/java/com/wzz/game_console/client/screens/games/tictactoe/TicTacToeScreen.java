@@ -22,7 +22,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
     private TicTacToeGame game;
     private long tickCount = 0;
     private long lastAIMoveTime = 0;
-    private int cellSize, gridStartX, gridStartY;
+    private int cellSize = 20, gridStartX, gridStartY;
 
     // ── LAN 联机 ──────────────────────────────────────────────────
     private int lanMode = LAN_NONE;
@@ -98,6 +98,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         tickCount++;
         // LAN模式下不使用AI
         if (lanMode != LAN_NONE) return;
+        if (showExitConfirm) return; // 弹窗期间冻结 AI 落子
         if (state == State.PLAYING && game.getGameMode() == TicTacToeGame.GameMode.SINGLE_PLAYER
                 && !game.isPlayerTurn() && !game.isGameOver()
                 && lastAIMoveTime > 0 && System.currentTimeMillis() - lastAIMoveTime >= 600) {
@@ -145,12 +146,13 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
             case PLAYING -> renderPlaying(g, mx, my);
         }
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
+        super.render(g, mx, my, pt);
     }
 
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x220022);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§d井 §r§f字 §r§d棋", cx, cy - 60, 0xCC66FF, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "井字棋", cx, cy - 60, 0xCC66FF, 2);
         g.drawCenteredString(font, "Tic-Tac-Toe", cx, cy - 42, 0x553366);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFAA44FF, 0xFF552288);
         g.drawCenteredString(font, "点击格子落子", cx, cy - 10, 0xAAAAAA);
@@ -211,7 +213,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
                 status = isMyTurn ? "你的回合" : "等待对方...";
             }
         }
-        g.drawCenteredString(font, "§d✖ §f" + status, width / 2, 7, 0xFFFFFF);
+        g.drawCenteredString(font, "✖ " + status, width / 2, 7, 0xFFFFFF);
 
         // 游戏结束按钮
         if (game.isGameOver()) {

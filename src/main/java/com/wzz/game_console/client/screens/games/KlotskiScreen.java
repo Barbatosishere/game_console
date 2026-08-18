@@ -195,7 +195,7 @@ public class KlotskiScreen extends Screen {
             selected = clicked;
         } else if (selected != null) {
             // 尝试向点击的空格方向移动
-            int dx = gx - selected.x - selected.w/2 + (selected.w%2==0?0:0);
+            int dx = gx - selected.x - selected.w/2;
             int dy = gy - selected.y - selected.h/2;
             // 找最近的合法方向
             if (Math.abs(dx) >= Math.abs(dy)) tryMove(selected, dx > 0 ? 1 : -1, 0);
@@ -239,10 +239,10 @@ public class KlotskiScreen extends Screen {
         int cx = width/2;
 
         // 标题
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§b华 容 道", cx, 8, 0x44AAFF, 2);
-        g.drawCenteredString(font, "§7关卡 " + currentLevel + " / " + LEVELS.length
-                + "   §f步数: §e" + steps
-                + (undoStack.isEmpty() ? "" : "   §8Z-撤销"),
+        GameRenderHelper.drawShadowedCenteredText(g, font, "华 容 道", cx, 8, 0x44AAFF, 2);
+        g.drawCenteredString(font, "关卡 " + currentLevel + " / " + LEVELS.length
+                + "   步数: " + steps
+                + (undoStack.isEmpty() ? "" : "   Z-撤销"),
                 cx, 28, 0xCCCCCC);
 
         // 出口发光（底部中间2格）
@@ -276,20 +276,20 @@ public class KlotskiScreen extends Screen {
         int infoX = bx + BW * tileSize + 16;
         int infoY = by;
         GameRenderHelper.drawPanel(g, infoX, infoY, 90, 130, 0xFF0D1628, C_BORDER);
-        g.drawString(font, "§b操作说明", infoX+6, infoY+8, 0x44AAFF);
-        g.drawString(font, "§7点击选棋",  infoX+6, infoY+22, 0xAAAAAA);
-        g.drawString(font, "§7点空格移动",infoX+6, infoY+34, 0xAAAAAA);
-        g.drawString(font, "§7WASD/方向键",infoX+6,infoY+46, 0xAAAAAA);
-        g.drawString(font, "§7Z 撤销",    infoX+6, infoY+58, 0xAAAAAA);
-        g.drawString(font, "§7R 重置",    infoX+6, infoY+70, 0xAAAAAA);
-        g.drawString(font, "§7N 下一关",  infoX+6, infoY+82, 0xAAAAAA);
-        g.drawString(font, "§7ESC 返回",  infoX+6, infoY+94, 0xAAAAAA);
-        g.drawString(font, "§a目标:",     infoX+6, infoY+110, 0x44FF88);
-        g.drawString(font, "§f曹操出口",  infoX+6, infoY+122, 0xCCCCCC);
+        g.drawString(font, "操作说明", infoX+6, infoY+8, 0x44AAFF);
+        g.drawString(font, "点击选棋",  infoX+6, infoY+22, 0xAAAAAA);
+        g.drawString(font, "点空格移动",infoX+6, infoY+34, 0xAAAAAA);
+        g.drawString(font, "WASD/方向键",infoX+6,infoY+46, 0xAAAAAA);
+        g.drawString(font, "Z 撤销",    infoX+6, infoY+58, 0xAAAAAA);
+        g.drawString(font, "R 重置",    infoX+6, infoY+70, 0xAAAAAA);
+        g.drawString(font, "N 下一关",  infoX+6, infoY+82, 0xAAAAAA);
+        g.drawString(font, "ESC 返回",  infoX+6, infoY+94, 0xAAAAAA);
+        g.drawString(font, "目标:",     infoX+6, infoY+110, 0x44FF88);
+        g.drawString(font, "曹操出口",  infoX+6, infoY+122, 0xCCCCCC);
 
         // 底栏
         g.fill(0, height-20, width, height, 0xBB060C1A);
-        g.drawCenteredString(font, "§7让 §c曹操 §7从底部出口逃脱！", cx, height-14, 0x556688);
+        g.drawCenteredString(font, "让 曹操 从底部出口逃脱！", cx, height-14, 0x556688);
 
         // 胜利遮罩
         if (won) drawWin(g, mx, my);
@@ -355,14 +355,14 @@ public class KlotskiScreen extends Screen {
         g.fill(cax-2, cay-2, cax+cw+2, cay+ch+2, wc);
         g.fill(cax, cay, cax+cw, cay+ch, 0xFF050F1E);
 
-        g.drawCenteredString(font, "§a🎉 曹操成功逃脱！", cx, cay+12, 0x44FF88);
-        g.drawCenteredString(font, "§f关卡 §b"+currentLevel+" §f完成！  步数: §e"+steps, cx, cay+28, 0xFFFFFF);
+        g.drawCenteredString(font, "曹操成功逃脱！", cx, cay+12, 0x44FF88);
+        g.drawCenteredString(font, "关卡 "+currentLevel+" 完成！  步数: "+steps, cx, cay+28, 0xFFFFFF);
 
         String nextTxt = currentLevel < LEVELS.length ? "下一关 ▶" : "重新开始";
         boolean bh = mx>=cx-60&&mx<=cx+60&&my>=cay+52&&my<=cay+74;
         g.fill(cx-61,cay+51,cx+61,cay+75, bh?0xFF00AAFF:0xFF005588);
         g.fill(cx-60,cay+52,cx+60,cay+74, bh?0xFF0088CC:0xFF003355);
-        g.drawCenteredString(font, "§f"+nextTxt, cx, cay+60, bh?0xFFFFFF:0x88CCFF);
+        g.drawCenteredString(font, nextTxt, cx, cay+60, bh?0xFFFFFF:0x88CCFF);
     }
 
     private static int blend(int c, int with, float t) {

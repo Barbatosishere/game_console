@@ -126,8 +126,8 @@ public class GameSelectorScreen extends Screen {
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x002244);
 
         // ─── 标题区域 ───
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§eGame Console 游戏机", cx, 12, 0xFFDD44, 2);
-        g.drawCenteredString(font, "§7Game Console", cx, 32, 0x556688);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "Game Console 游戏机", cx, 12, 0xFFDD44, 2);
+        g.drawCenteredString(font, "Game Console", cx, 32, 0x556688);
 
         // 分割线
         GameRenderHelper.drawDivider(g, cx - 120, 42, 240, GameRenderHelper.ACCENT_BLUE, GameRenderHelper.ACCENT_RED);
@@ -201,7 +201,7 @@ public class GameSelectorScreen extends Screen {
             g.drawString(font, entry.icon + " " + entry.name, cardX + 8, cardY + (cardH - 8) / 2, hover ? 0xFFFFFF : 0xCCCCCC);
 
             // 分类标签
-            String catLabel = "§7[" + entry.category + "]";
+            String catLabel = "[" + entry.category + "]";
             g.drawString(font, catLabel, cardX + cardW - font.width(catLabel) - 5, cardY + (cardH - 8) / 2, 0x666666);
         }
 
@@ -231,7 +231,7 @@ public class GameSelectorScreen extends Screen {
         }
 
         // ─── 底部信息 ───
-        g.drawCenteredString(font, "§7共 " + filtered.size() + " 款游戏  |  ESC 退出", cx, height - 10, 0x444444);
+        g.drawCenteredString(font, "共 " + filtered.size() + " 款游戏  |  ESC 退出", cx, height - 10, 0x444444);
     }
 
     private int getCategoryColor(String category) {

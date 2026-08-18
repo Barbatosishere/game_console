@@ -119,7 +119,7 @@ public class FlappyBirdScreen extends Screen {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.fillGradientBackground(g, width, height, 0xFF0A1A2A, 0xFF1A3A6A);
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x003366);
-        GameRenderHelper.drawShadowedCenteredText(g, font, "§e像 §r§f素 §r§e鸟", cx, cy - 60, 0xFFDD44, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, "像素鸟", cx, cy - 60, 0xFFDD44, 2);
         g.drawCenteredString(font, "Flappy Bird", cx, cy - 42, 0x556633);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFDDAA22, 0xFF886611);
         g.drawCenteredString(font, "空格/点击/W键 让小鸟飞起来！", cx, cy - 10, 0xCCCCCC);
@@ -158,7 +158,7 @@ public class FlappyBirdScreen extends Screen {
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "§e🐦 分数: §f" + score, 8, 7, 0xFFDD44);
+        g.drawString(font, "🐦 分数: " + score, 8, 7, 0xFFDD44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "空格/点击 飞  ESC 菜单  R 重开");
     }
 

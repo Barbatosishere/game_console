@@ -280,10 +280,13 @@ public class MemoryGameScreen extends Screen {
         }
     }
     
+    /** 弹窗打开时间戳：关闭时据此平移定时基准，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
     @Override
     public void tick() {
         super.tick();
-        if (showExitConfirm) return; // 弹窗期间暂停序列展示，避免玩家无法输入时序列空转
+        if (showExitConfirm) return;
         long currentTime = System.currentTimeMillis();
         if (highlightedCell != -1) {
             if (currentTime - highlightStartTime >= HIGHLIGHT_DURATION) {
@@ -315,7 +318,21 @@ public class MemoryGameScreen extends Screen {
     
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
+        if (keyCode == 256) {
+            if (showExitConfirm) {
+                // 关闭弹窗：平移所有定时基准，补偿暂停期间流逝的墙钟时间
+                long pausedMs = System.currentTimeMillis() - pauseStartTime;
+                if (nextSequenceItemTime > 0) nextSequenceItemTime += pausedMs;
+                if (nextRoundTime > 0) nextRoundTime += pausedMs;
+                if (highlightStartTime > 0) highlightStartTime += pausedMs;
+                if (lastSequenceTime > 0) lastSequenceTime += pausedMs;
+                showExitConfirm = false;
+            } else {
+                pauseStartTime = System.currentTimeMillis();
+                showExitConfirm = true;
+            }
+            return true;
+        }
         if (showExitConfirm) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
