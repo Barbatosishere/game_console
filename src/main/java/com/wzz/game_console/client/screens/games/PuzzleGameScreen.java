@@ -42,7 +42,7 @@ public class PuzzleGameScreen extends Screen {
         int originalX, originalY; // 原始位置
         int currentX, currentY;   // 当前位置
         boolean isBlank;          // 是否是空白块
-        float animX, animY; // 动画位置
+        float animX, animY; // 动画位置（当前未使用，保留供未来平滑动画）
         boolean isAnimating;
         int animTargetX, animTargetY;
         

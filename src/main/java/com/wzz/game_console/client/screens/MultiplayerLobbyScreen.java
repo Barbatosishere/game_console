@@ -226,7 +226,9 @@ public class MultiplayerLobbyScreen extends Screen {
             if (parts.length == 2) {
                 try {
                     onlinePlayers.add(new PlayerInfo(UUID.fromString(parts[0]), parts[1]));
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    LOGGER.warn("[游戏机联机] 解析玩家列表条目失败: {}", entry, e);
+                }
             }
         }
     }
