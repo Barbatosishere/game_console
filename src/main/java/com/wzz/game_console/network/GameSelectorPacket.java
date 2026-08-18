@@ -1,8 +1,6 @@
 package com.wzz.game_console.network;
 
 import com.wzz.game_console.ModMain;
-import com.wzz.game_console.client.screens.GameSelectorScreen;
-import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -11,6 +9,7 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * 服务端 → 客户端：通知打开游戏选择界面
+ * 注：客户端处理器在 ClientPayloadHandler 中注册，避免服务端加载客户端类。
  */
 public record GameSelectorPacket() implements CustomPacketPayload {
 
@@ -25,9 +24,6 @@ public record GameSelectorPacket() implements CustomPacketPayload {
         return TYPE;
     }
 
-    public static void handle(GameSelectorPacket packet, IPayloadContext context) {
-        context.enqueueWork(() -> {
-            Minecraft.getInstance().setScreen(new GameSelectorScreen());
-        });
-    }
+    /** 服务端侧无操作，客户端处理器由 ClientPayloadHandler 注册 */
+    public static void handle(GameSelectorPacket packet, IPayloadContext context) {}
 }

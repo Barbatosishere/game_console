@@ -3,12 +3,12 @@ package com.wzz.game_console.init;
 import com.wzz.game_console.ModMain;
 import com.wzz.game_console.network.GameSelectorPacket;
 import com.wzz.game_console.network.MultiplayerGamePacket;
-import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 /**
- * 网络包注册中心
+ * 网络包注册中心（公共注册）
+ * 客户端专用注册在 ClientPayloadHandler 中。
  */
 public class ModNetworks {
 
@@ -16,30 +16,22 @@ public class ModNetworks {
     public static final PacketHandlerCompat PACKET_HANDLER = new PacketHandlerCompat();
 
     public static void register(final RegisterPayloadHandlersEvent event) {
-        // 协议版本闸门：包格式变更（新增 INVITE_CANCELLED 等）时必须升级版本号，
-        // 版本不一致的客户端/服务端将在连接握手阶段被拒绝，避免新旧协议混用。
         final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.1.0");
 
-        // 服务端 → 客户端：打开游戏选择器
+        // GameSelectorPacket: 注册类型和编解码，服务端用无操作处理器
+        // （客户端处理器由 ClientPayloadHandler 注册）
         registrar.playToClient(
                 GameSelectorPacket.TYPE,
                 GameSelectorPacket.STREAM_CODEC,
                 GameSelectorPacket::handle
         );
 
-        // 双向：多人游戏包
-        registrar.playBidirectional(
+        // MultiplayerGamePacket: 服务端接收处理
+        // （客户端接收处理由 ClientPayloadHandler 注册）
+        registrar.playToServer(
                 MultiplayerGamePacket.TYPE,
                 MultiplayerGamePacket.STREAM_CODEC,
-                (packet, context) -> {
-                    var p = context.player();
-                    if (p == null) return;
-                    if (p.level().isClientSide()) {
-                        MultiplayerGamePacket.handleClient(packet, context);
-                    } else {
-                        MultiplayerGamePacket.handleServer(packet, context);
-                    }
-                }
+                (packet, context) -> MultiplayerGamePacket.handleServer(packet, context)
         );
     }
 
@@ -49,13 +41,13 @@ public class ModNetworks {
     public static class PacketHandlerCompat {
         public void sendToServer(Object packet) {
             if (packet instanceof MultiplayerGamePacket mp) {
-                PacketDistributor.sendToServer(mp);
+                net.neoforged.neoforge.network.PacketDistributor.sendToServer(mp);
             }
         }
 
         public void sendToPlayer(Object target, Object packet) {
             if (target instanceof net.minecraft.server.level.ServerPlayer sp && packet instanceof MultiplayerGamePacket mp) {
-                PacketDistributor.sendToPlayer(sp, mp);
+                net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(sp, mp);
             }
         }
     }

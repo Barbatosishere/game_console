@@ -1,7 +1,6 @@
 package com.wzz.game_console.network;
 
 import com.wzz.game_console.ModMain;
-import com.wzz.game_console.client.screens.MultiplayerLobbyScreen;
 import io.netty.buffer.ByteBufUtil;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -138,11 +137,10 @@ public record MultiplayerGamePacket(
 
     /**
      * 客户端收到包：路由到 MultiplayerLobbyScreen 处理
+     * 注：处理器在 ClientPayloadHandler 中注册，此处仅保留空方法声明。
      */
     public static void handleClient(MultiplayerGamePacket packet, IPayloadContext context) {
-        context.enqueueWork(() -> {
-            MultiplayerLobbyScreen.handleIncomingPacket(packet);
-        });
+        // 客户端处理器由 ClientPayloadHandler 注册
     }
 
     /**
