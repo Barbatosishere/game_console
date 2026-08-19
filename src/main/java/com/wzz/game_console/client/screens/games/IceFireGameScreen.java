@@ -563,6 +563,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
         switch (gameState) {
             case PLAYING -> {
+                // R 键重开（HUD 底部提示"R 重开"）
+                if (key == GLFW.GLFW_KEY_R && lanMode != LAN_CLIENT) { restart(); return true; }
                 // 冰人跳（单机或HOST）
                 if (lanMode != LAN_CLIENT && key == GLFW.GLFW_KEY_W && session != null)
                     session.iceAction(Action.JUMP);
