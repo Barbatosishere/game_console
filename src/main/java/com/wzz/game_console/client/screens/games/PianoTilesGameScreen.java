@@ -13,11 +13,14 @@ import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import org.lwjgl.glfw.GLFW;
 
+import java.awt.FileDialog;
+import java.awt.Frame;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 
 public class PianoTilesGameScreen extends Screen {
@@ -554,7 +557,7 @@ public class PianoTilesGameScreen extends Screen {
 
     // UI按钮
     private Button startButton, pauseButton, backButton;
-    private Button prevSongButton, nextSongButton, selectSongButton;
+    private Button prevSongButton, nextSongButton, selectSongButton, importSongButton;
 
     // 特效类
     public static class HitEffect {
@@ -653,6 +656,13 @@ public class PianoTilesGameScreen extends Screen {
                 playSound(SoundEvents.UI_BUTTON_CLICK.value());
             }).bounds(buttonStartX + buttonSpacing * 2, buttonY, buttonWidth, buttonHeight).build();
             this.addRenderableWidget(nextSongButton);
+
+            // 导入按钮
+            importSongButton = Button.builder(Component.literal("\u5bfc\u5165"), button -> { // "导入"
+                importSongFromDialog();
+                playSound(SoundEvents.UI_BUTTON_CLICK.value());
+            }).bounds(buttonStartX, buttonY + 30, buttonWidth, buttonHeight).build();
+            this.addRenderableWidget(importSongButton);
 
         } else {
             // 游戏模式的按钮
@@ -1329,6 +1339,7 @@ public class PianoTilesGameScreen extends Screen {
         String[] instructions = {
                 "使用左右按钮或 ← → / A D 键选择歌曲",
                 "点击'选择'或按 回车/空格 开始游戏",
+                "点击'导入'从文件导入 .pts 谱面",
                 "按 ESC 退出"
         };
 
@@ -1412,6 +1423,40 @@ public class PianoTilesGameScreen extends Screen {
     private boolean leftMouseDown = false;
     private long lastClickTime = 0;
     private int currentClickLane = -1;
+
+    /** 打开文件对话框导入 .pts 谱面 */
+    private void importSongFromDialog() {
+        try {
+            Frame frame = new Frame();
+            frame.setAlwaysOnTop(true);
+            FileDialog dialog = new FileDialog(frame, "选择导入的谱面文件 (.pts)", FileDialog.LOAD);
+            dialog.setFile("*.pts");
+            dialog.setVisible(true);
+            String filePath = dialog.getFile();
+            String dirPath = dialog.getDirectory();
+            frame.dispose();
+
+            if (filePath == null || dirPath == null) return;
+
+            File srcFile = new File(dirPath, filePath);
+            if (!srcFile.exists() || !srcFile.getName().endsWith(".pts")) return;
+
+            Path musicDir = ExternalFileManager.getMusicDir();
+            if (!Files.exists(musicDir)) Files.createDirectories(musicDir);
+
+            Path destPath = musicDir.resolve(srcFile.getName());
+            Files.copy(srcFile.toPath(), destPath, StandardCopyOption.REPLACE_EXISTING);
+
+            // 重新加载歌曲列表
+            loadAvailableSongs();
+            if (!availableSongs.isEmpty()) {
+                selectedSongIndex = availableSongs.size() - 1;
+                loadSelectedSong();
+            }
+        } catch (Exception e) {
+            System.err.println("导入谱面失败: " + e.getMessage());
+        }
+    }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {

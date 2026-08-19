@@ -227,41 +227,37 @@ public class GoAI {
 
     /**
      * 综合评估棋盘局面（从当前玩家视角）
+     * 使用 visited 标记已计分的棋群，避免重复计数
      */
     private double evaluateBoard(GoPlayer[][] board, GoPlayer player) {
         double score = 0;
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
+        boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
 
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {
-                if (board[x][y] == GoPlayer.NONE) continue;
+                if (board[x][y] == GoPlayer.NONE || visited[x][y]) continue;
 
-                boolean isMine = board[x][y] == player;
-                int groupBonus = 0;
-
-                // 检查该棋子的棋群气数
                 Set<int[]> group = getGroup(board, x, y);
+                boolean isMine = board[x][y] == player;
                 int libs = countGroupLiberties(board, group);
+                int groupScore = 0;
 
                 // 气数评估
                 if (isMine) {
-                    groupBonus += libs * 3; // 气越多越好
-                    if (libs >= 3) groupBonus += 5; // 安定棋群
-                    else if (libs <= 1) groupBonus -= 20; // 危险棋群
+                    groupScore += libs * 3;
+                    if (libs >= 3) groupScore += 5;   // 安定棋群
+                    else if (libs <= 1) groupScore -= 20; // 危险棋群
                 } else {
-                    if (libs <= 1) groupBonus += 15; // 对方危险棋群
+                    if (libs <= 1) groupScore += 15; // 对方危险棋群，有利
                 }
 
-                // 位置价值
-                groupBonus += getPositionValue(x, y, BOARD_SIZE);
-
-                // 只对每个棋群的第一颗棋子计分（避免重复）
-                if (x == group.iterator().next()[0] && y == group.iterator().next()[1]) {
-                    score += isMine ? groupBonus : -groupBonus;
+                // 标记整个棋群为已访问
+                for (int[] pos : group) {
+                    visited[pos[0]][pos[1]] = true;
                 }
 
-                // 跳过同棋群的其他棋子（已计分）
-                // 简单的做法：只取遍历到的第一颗
+                score += isMine ? groupScore : -groupScore;
             }
         }
 
@@ -270,7 +266,7 @@ public class GoAI {
         int oppStones = countStones(board, opponent);
         score += (myStones - oppStones) * 1.5;
 
-        // 势力范围评估（简易 influence map）
+        // 势力范围评估
         score += evaluateInfluence(board, player, opponent);
 
         return score;
@@ -442,8 +438,11 @@ public class GoAI {
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {
                 if (board[x][y] == GoPlayer.NONE) {
-                    // 简单排除自杀（但不在完整模拟中排除，因为 MCTS 会处理）
-                    moves.add(new int[]{x, y});
+                    // 快速排除明显的自杀走法：在棋盘副本上测试落子
+                    GoPlayer[][] testBoard = deepCopyBoard(board);
+                    if (simulatePlaceStone(testBoard, x, y, player)) {
+                        moves.add(new int[]{x, y});
+                    }
                 }
             }
         }
