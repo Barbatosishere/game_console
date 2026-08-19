@@ -6,6 +6,7 @@ import com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen;
 import com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame;
 import com.wzz.game_console.client.screens.games.tictactoe.TicTacToeScreen;
 import com.wzz.game_console.util.GameRenderHelper;
+import com.wzz.game_console.util.GameSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -17,6 +18,10 @@ import com.wzz.game_console.client.screens.games.*;
 import org.jetbrains.annotations.NotNull;
 import org.lwjgl.glfw.GLFW;
 
+import java.awt.FileDialog;
+import java.awt.Frame;
+import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
@@ -41,6 +46,9 @@ public class GameSelectorScreen extends Screen {
     private static final int CATEGORY_PADDING = 16;
     private static final int CATEGORY_GAP = 4;
     private int selectedCategoryIndex = 0;
+    /** 导入消息（临时显示） */
+    private String importMessage = null;
+    private long importMessageTime = 0;
 
     public GameSelectorScreen() {
         super(Component.literal("Game Console 游戏机"));
@@ -232,6 +240,18 @@ public class GameSelectorScreen extends Screen {
 
         // ─── 底部信息 ───
         g.drawCenteredString(font, "共 " + filtered.size() + " 款游戏  |  ESC 退出", cx, height - 10, 0x444444);
+
+        // ─── 导入设置按钮 ───
+        GameRenderHelper.drawButton(g, font, "导入设置", 5, height - 24, 60, 18, mouseX, mouseY,
+                0xFF222233, 0xFF333355, 0xFF666688);
+
+        // ─── 导入消息（3秒后消失） ───
+        if (importMessage != null && System.currentTimeMillis() - importMessageTime < 3000) {
+            int msgColor = importMessage.contains("失败") ? 0xFFFF4444 : 0xFF44FF44;
+            g.drawCenteredString(font, importMessage, cx, height - 40, msgColor);
+        } else {
+            importMessage = null;
+        }
     }
 
     private int getCategoryColor(String category) {
@@ -242,6 +262,34 @@ public class GameSelectorScreen extends Screen {
             case "休闲" -> 0xFF44CC44;
             default -> 0xFF888888;
         };
+    }
+
+    /** 打开文件对话框导入外部游戏设置 JSON */
+    private void importSettingsFromFile() {
+        try {
+            Frame frame = new Frame();
+            frame.setAlwaysOnTop(true);
+            FileDialog dialog = new FileDialog(frame, "选择游戏设置文件 (.json)", FileDialog.LOAD);
+            dialog.setFile("*.json");
+            dialog.setVisible(true);
+            String filePath = dialog.getFile();
+            String dirPath = dialog.getDirectory();
+            frame.dispose();
+
+            if (filePath == null || dirPath == null) return;
+
+            File srcFile = new File(dirPath, filePath);
+            if (!srcFile.exists() || !srcFile.getName().endsWith(".json")) return;
+
+            Path srcPath = srcFile.toPath();
+            boolean success = GameSettings.importFromFile(srcPath);
+
+            importMessage = success ? "设置导入成功！" : "导入失败：文件格式不正确";
+            importMessageTime = System.currentTimeMillis();
+        } catch (Exception e) {
+            importMessage = "导入失败：" + e.getMessage();
+            importMessageTime = System.currentTimeMillis();
+        }
     }
 
     @Override
@@ -291,6 +339,12 @@ public class GameSelectorScreen extends Screen {
         }
         if (mx >= cx + 50 && mx <= cx + 130 && my >= navY && my <= navY + 18 && currentPage < totalPages - 1) {
             currentPage++;
+            return true;
+        }
+
+        // ─── 导入设置按钮 ───
+        if (mx >= 5 && mx <= 65 && my >= navY && my <= navY + 18) {
+            importSettingsFromFile();
             return true;
         }
 
