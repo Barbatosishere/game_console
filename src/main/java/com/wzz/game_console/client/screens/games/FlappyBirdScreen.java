@@ -85,7 +85,7 @@ public class FlappyBirdScreen extends Screen {
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
         if (showExitConfirm) return true;
-        if (key == GLFW.GLFW_KEY_R && state == State.GAME_OVER) { startGame(); return true; }
+        if (key == GLFW.GLFW_KEY_R && state != State.MENU) { startGame(); return true; }
         if (state == State.PLAYING && (key == GLFW.GLFW_KEY_SPACE || key == GLFW.GLFW_KEY_W || key == GLFW.GLFW_KEY_UP)) flap();
         return true;
     }

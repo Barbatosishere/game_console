@@ -94,7 +94,7 @@ public class SnakeGameScreen extends Screen {
             else { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
         }
         if (showExitConfirm) return true;
-        if (state == State.GAME_OVER && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
+        if (state != State.MENU && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
         if (state == State.PLAYING) {
             switch (key) {
                 case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { if (dy != 1) { dx=0; dy=-1; } }

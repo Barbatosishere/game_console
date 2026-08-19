@@ -779,7 +779,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
         if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
 
-        if (gameOver && key == GLFW.GLFW_KEY_R) {
+        if (key == GLFW.GLFW_KEY_R) {
             if (lanMode == LAN_CLIENT) return true; // CLIENT 不能单方面重开
             initGame(gameMode == GameMode.TWO_PLAYER);
             // HOST 重开后，下一帧的 sendState 会自动同步新状态给 CLIENT

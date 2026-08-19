@@ -34,7 +34,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private final List<Particle> particles = new ArrayList<>();
     private int lastMoveX = -1;
     private int lastMoveY = -1;
-    private boolean hellMode = false;
+    private GomokuAI.Difficulty difficulty = GomokuAI.Difficulty.NORMAL;
+    private GomokuAI ai;
     private int lanMode = 0;
     private UUID remotePeer = null;
     private boolean isMyTurn = true;
@@ -130,6 +131,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         this.lastMoveX = -1;
         this.lastMoveY = -1;
         this.isMyTurn = this.lanMode != 2;
+        this.ai = new GomokuAI(this.difficulty);
     }
 
     public void tick() {
@@ -151,146 +153,15 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void aiMove() {
-        int[] best = this.hellMode ? this.findBestMoveHellMode() : this.findBestMoveNormal();
+        if (this.ai == null) {
+            this.ai = new GomokuAI(this.difficulty);
+        }
+        int[] best = this.ai.getMove(this.board);
         if (best != null) {
             this.board[best[0]][best[1]] = 2;
             this.lastMoveX = best[0];
             this.lastMoveY = best[1];
         }
-    }
-
-    private int[] findBestMoveNormal() {
-        int[] bestMove = null;
-        int bestScore = Integer.MIN_VALUE;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    int scoreAI = this.evaluatePosition(i, j, 2);
-                    int scorePlayer = this.evaluatePosition(i, j, 1);
-                    int total = scoreAI * 2 + scorePlayer;
-                    if (total > bestScore) {
-                        bestScore = total;
-                        bestMove = new int[]{i, j};
-                    }
-                }
-            }
-        }
-
-        if (bestMove == null) {
-            bestMove = new int[]{7, 7};
-        }
-
-        return bestMove;
-    }
-
-    private int[] findBestMoveHellMode() {
-        int bestScore = Integer.MIN_VALUE;
-        int[] bestMove = null;
-        int depth = 4;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    this.board[i][j] = 2;
-                    int score = this.minimax(depth - 1, false, Integer.MIN_VALUE, Integer.MAX_VALUE, i, j, 2);
-                    this.board[i][j] = 0;
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestMove = new int[]{i, j};
-                    }
-                }
-            }
-        }
-
-        return bestMove != null ? bestMove : new int[]{7, 7};
-    }
-
-    private int minimax(int depth, boolean isMaximizing, int alpha, int beta, int lastX, int lastY, int lastPlayer) {
-        // 仅检查上一步落子是否获胜，避免每个节点全盘扫描
-        if (this.checkWinAt(lastX, lastY, lastPlayer)) {
-            return lastPlayer == 2 ? 100000 + depth : -100000 - depth;
-        }
-        if (depth == 0) {
-            return this.evaluateBoard();
-        }
-        List<int[]> candidates = this.generateCandidateMoves();
-        if (candidates.isEmpty()) return this.evaluateBoard();
-        int bestScore = isMaximizing ? Integer.MIN_VALUE : Integer.MAX_VALUE;
-
-        for (int[] move : candidates) {
-            int i = move[0];
-            int j = move[1];
-            int player = isMaximizing ? 2 : 1;
-            this.board[i][j] = player;
-            int score = this.minimax(depth - 1, !isMaximizing, alpha, beta, i, j, player);
-            this.board[i][j] = 0;
-            if (isMaximizing) {
-                bestScore = Math.max(bestScore, score);
-                alpha = Math.max(alpha, score);
-            } else {
-                bestScore = Math.min(bestScore, score);
-                beta = Math.min(beta, score);
-            }
-
-            if (beta <= alpha) {
-                break;
-            }
-        }
-
-        return bestScore;
-    }
-
-    private List<int[]> generateCandidateMoves() {
-        List<int[]> allMoves = new ArrayList<>();
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    allMoves.add(new int[]{i, j});
-                }
-            }
-        }
-
-        allMoves.sort((a, b) -> {
-            int scoreA = evaluatePositionPattern(a[0], a[1], 2);
-            int scoreB = evaluatePositionPattern(b[0], b[1], 2);
-            return Integer.compare(scoreB, scoreA);
-        });
-        return allMoves.subList(0, Math.min(10, allMoves.size()));
-    }
-
-    private int evaluateBoard() {
-        int score = 0;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 2) {
-                    score += this.evaluatePositionHell(i, j, 2);
-                } else if (this.board[i][j] == 1) {
-                    score -= this.evaluatePositionHell(i, j, 1);
-                }
-            }
-        }
-
-        return score;
-    }
-
-    private boolean checkGameOver() {
-        return this.checkWinner() != 0 || this.isBoardFull();
-    }
-
-    private int checkWinner() {
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                int cell = this.board[i][j];
-                if (cell != 0 && this.checkWinAt(i, j, cell)) {
-                    return cell;
-                }
-            }
-        }
-
-        return 0;
     }
 
     private boolean isBoardFull() {
@@ -305,245 +176,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         return true;
     }
 
-    private int evaluatePosition(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int blocks = 0;
-            int emptyEnds = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            score += this.getPatternScore(count, blocks, emptyEnds);
-        }
-
-        return score;
-    }
-
-    private int evaluatePositionPattern(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int block = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    block++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] != 0) {
-                        block++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    block++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] != 0) {
-                        block++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            score += this.getPatternScore2(count, block);
-        }
-
-        return score;
-    }
-
-    private int evaluatePositionHell(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int blocks = 0;
-            int emptyEnds = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            if (count >= 5) {
-                score += 100000;
-            } else if (count == 4 && blocks == 0) {
-                score += 10000;
-            } else if (count == 4 && blocks == 1) {
-                score += 1000;
-            } else if (count == 3 && blocks == 0 && emptyEnds == 2) {
-                score += 500;
-            } else if (count == 3 && blocks == 0 && emptyEnds == 1) {
-                score += 200;
-            } else if (count == 2 && blocks == 0 && emptyEnds == 2) {
-                score += 50;
-            }
-        }
-
-        return score;
-    }
-
-    private int getPatternScore(int count, int blocks, int emptyEnds) {
-        if (count >= 5) {
-            return 100000;
-        }
-
-        if (count == 4) {
-            if (blocks == 0) {
-                return 10000;
-            }
-
-            if (blocks == 1) {
-                return 1000;
-            }
-        }
-
-        if (count == 3) {
-            if (blocks == 0 && emptyEnds == 2) {
-                return 500;
-            }
-
-            if (blocks == 1 && emptyEnds == 1) {
-                return 100;
-            }
-        }
-
-        if (count == 2) {
-            if (blocks == 0 && emptyEnds == 2) {
-                return 50;
-            }
-
-            if (blocks == 1 && emptyEnds == 1) {
-                return 10;
-            }
-        }
-
-        return count == 1 && blocks < 2 ? 5 : 0;
-    }
-
-    private int getPatternScore2(int count, int blocks) {
-        if (count >= 5) {
-            return 100000;
-        } else if (count == 4) {
-            return blocks == 0 ? 10000 : 3000;
-        } else if (count == 3) {
-            return blocks == 0 ? 1000 : 300;
-        } else if (count == 2) {
-            return blocks == 0 ? 200 : 50;
-        } else {
-            return count == 1 ? 10 : 0;
-        }
-    }
-
     private boolean inBoard(int x, int y) {
         return x >= 0 && x < 15 && y >= 0 && y < 15;
-    }
-
-    private boolean hasNeighbor(int x, int y) {
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dy = -2; dy <= 2; dy++) {
-                if (dx != 0 || dy != 0) {
-                    int nx = x + dx;
-                    int ny = y + dy;
-                    if (this.inBoard(nx, ny) && this.board[nx][ny] != 0) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        return false;
     }
 
     private boolean checkWin(int player) {
@@ -599,7 +233,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 return true;
             } else if (key == 72) {
                 if (this.state == State.MENU) {
-                    this.hellMode = !this.hellMode;
+                    this.difficulty = this.difficulty.next();
                 }
                 return true;
             } else {
@@ -629,7 +263,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
 
             if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 73 && my <= cy + 95) {
-                this.hellMode = !this.hellMode;
+                this.difficulty = this.difficulty.next();
                 return true;
             }
         }
@@ -745,8 +379,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         GameRenderHelper.drawPrimaryButton(g, this.font, "开始游戏", cx - 60, cy + 45, 120, 22, mx, my);
-        String hellLabel = this.hellMode ? "地狱模式: 开 [H]" : "地狱模式: 关 [H]";
-        GameRenderHelper.drawSecondaryButton(g, this.font, hellLabel, cx - 60, cy + 73, 120, 18, mx, my);
+        String diffLabel = "难度: " + this.difficulty.label + " [H]";
+        GameRenderHelper.drawSecondaryButton(g, this.font, diffLabel, cx - 60, cy + 73, 120, 18, mx, my);
     }
 
     private void renderPlaying(GuiGraphics g, int mx, int my) {
@@ -803,7 +437,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         GameRenderHelper.tickAndRenderParticles(g, this.particles);
         GameRenderHelper.drawTopHUD(g, this.width, this.height);
-        String modeTag = this.hellMode ? " [地狱]" : " [普通]";
+        String modeTag = " [" + this.difficulty.label + "]";
         String turnText;
         if (this.lanMode == 0) {
             turnText = this.playerTurn ? "⚫ 你的回合 - 黑棋" : "⚪ AI思考中...";
@@ -837,7 +471,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             mainMsg = win ? "🎉 你赢了！" : "AI 获胜！";
             subMsg = win
                     ? "恭喜你连成五子！"
-                    : (this.hellMode ? "地狱AI不好惹，再接再厉！" : "再接再厉！");
+                    : ("难度[" + this.difficulty.label + "]的AI获胜，再接再厉！");
         } else {
             int myPiece = this.lanMode == 1 ? 1 : 2;
             win = this.winner == myPiece;

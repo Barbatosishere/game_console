@@ -118,7 +118,7 @@ public class TetrisGameScreen extends Screen {
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
         if (showExitConfirm) return true;
-        if (state == State.GAME_OVER && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
+        if (state != State.MENU && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
         if (state != State.PLAYING) return true;
         switch (key) {
             case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (canPlace(current, cx-1, cy)) cx--; }
