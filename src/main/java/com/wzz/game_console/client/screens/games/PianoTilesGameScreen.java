@@ -870,6 +870,9 @@ public class PianoTilesGameScreen extends Screen {
     }
 
     private long pauseStartTime = 0; // 暂停开始时间
+    /** 恢复倒计时：暂停恢复后显示 3-2-1 再开始，单位秒 */
+    private int countdownRemaining = 0;
+    private long countdownStartTime = 0;
     private long totalPausedTime = 0; // 总暂停时间
 
     private void startSongSelectMode() {
@@ -936,11 +939,14 @@ public class PianoTilesGameScreen extends Screen {
                 gamePaused = true;
                 pauseStartTime = System.currentTimeMillis();
                 audioPlayer.pause();
+            } else if (countdownRemaining > 0) {
+                // 倒计时中再次暂停：取消倒计时，回到暂停状态
+                countdownRemaining = 0;
             } else {
-                gamePaused = false;
-                totalPausedTime += System.currentTimeMillis() - pauseStartTime;
-                gameStartTime += System.currentTimeMillis() - pauseStartTime;
-                audioPlayer.resume();
+                // 暂停恢复：启动 3 秒倒计时
+                countdownRemaining = 3;
+                countdownStartTime = System.currentTimeMillis();
+                // 保持 gamePaused = true，倒计时结束后才恢复
             }
         }
     }
@@ -955,6 +961,23 @@ public class PianoTilesGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+
+        // 恢复倒计时处理（在 gamePaused 检查之前执行）
+        if (countdownRemaining > 0) {
+            long elapsed = System.currentTimeMillis() - countdownStartTime;
+            if (elapsed >= 1000) {
+                countdownRemaining--;
+                countdownStartTime = System.currentTimeMillis();
+                if (countdownRemaining <= 0) {
+                    // 倒计时结束，真正恢复游戏
+                    gamePaused = false;
+                    totalPausedTime += System.currentTimeMillis() - pauseStartTime;
+                    gameStartTime += System.currentTimeMillis() - pauseStartTime;
+                    audioPlayer.resume();
+                }
+            }
+        }
+
         if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown && !showExitConfirm) {
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastClickTime > 100) { // 每100ms最多触发一次
@@ -1264,17 +1287,31 @@ public class PianoTilesGameScreen extends Screen {
         }
 
         if (gamePaused) {
-            String pauseText = "\u6e38\u620f\u6682\u505c";
-            String resumeHint = "\u70b9\u51fb'\u7ee7\u7eed'\u6216\u6309\u7a7a\u683c\u952e\u6062\u590d\u6e38\u620f";
+            if (countdownRemaining > 0) {
+                // 倒计时：大号居中显示
+                guiGraphics.flush();
+                guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
+                String cd = String.valueOf(countdownRemaining);
+                int cx = this.width / 2, cy = this.height / 2;
+                guiGraphics.pose().pushPose();
+                guiGraphics.pose().translate(cx, cy, 0);
+                guiGraphics.pose().scale(3f, 3f, 1f);
+                int tw = font.width(cd);
+                guiGraphics.drawString(font, cd, -tw / 2, -4, 0xFFFFDD44);
+                guiGraphics.pose().popPose();
+            } else {
+                String pauseText = "u6e38u620fu6682u505c";
+                String resumeHint = "u70b9u51fb'u7ee7u7eed'u6216u6309u7a7au683cu952eu6062u590du6e38u620f";
 
-            int pauseX = (this.width - font.width(pauseText)) / 2;
-            int hintX = (this.width - font.width(resumeHint)) / 2;
-            int pauseY = (this.height - font.lineHeight) / 2;
+                int pauseX = (this.width - font.width(pauseText)) / 2;
+                int hintX = (this.width - font.width(resumeHint)) / 2;
+                int pauseY = (this.height - font.lineHeight) / 2;
 
-            guiGraphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
-            guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
-            guiGraphics.drawString(font, pauseText, pauseX, pauseY, 0xFFFFFFFF);
-            guiGraphics.drawString(font, resumeHint, hintX, pauseY + font.lineHeight + 10, 0xFFCCCCCC);
+                guiGraphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
+                guiGraphics.fill(0, 0, this.width, this.height, 0x80000000);
+                guiGraphics.drawString(font, pauseText, pauseX, pauseY, 0xFFFFFFFF);
+                guiGraphics.drawString(font, resumeHint, hintX, pauseY + font.lineHeight + 10, 0xFFCCCCCC);
+            }
         }
     }
 
