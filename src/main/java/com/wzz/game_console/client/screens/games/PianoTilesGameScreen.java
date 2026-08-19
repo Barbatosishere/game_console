@@ -538,6 +538,10 @@ public class PianoTilesGameScreen extends Screen {
     private long gameStartTime;
     private long currentGameTime = 0;
     private float fallSpeed;
+    /** 游戏开始前置时间：让音符从顶端开始下落，音频延迟启动对齐 */
+    private static final long START_LEAD_MS = 2000;
+    /** 音频计划播放时间（延迟启动用） */
+    private long audioScheduledTime = 0;
 
     // 视觉效果
     private List<HitEffect> hitEffects = new ArrayList<>();
@@ -925,12 +929,13 @@ public class PianoTilesGameScreen extends Screen {
         gameActive = true;
         gamePaused = false;
         gameOver = false;
-        gameStartTime = System.currentTimeMillis();
+        // 游戏时钟前置2000ms：音符从顶端开始下落，走过全程到达打击线时音频才启动
+        gameStartTime = System.currentTimeMillis() + START_LEAD_MS;
+        audioScheduledTime = System.currentTimeMillis() + START_LEAD_MS;
         noteIndex = 0;
         activeTiles.clear();
         totalPausedTime = 0;
-        // 开始播放背景音乐
-        audioPlayer.play();
+        // 不立即播放音频，等 lead 结束后自动播放
     }
 
     private void togglePause() {
@@ -971,11 +976,21 @@ public class PianoTilesGameScreen extends Screen {
                 if (countdownRemaining <= 0) {
                     // 倒计时结束，真正恢复游戏
                     gamePaused = false;
-                    totalPausedTime += System.currentTimeMillis() - pauseStartTime;
-                    gameStartTime += System.currentTimeMillis() - pauseStartTime;
+                    long pausedMs = System.currentTimeMillis() - pauseStartTime;
+                    totalPausedTime += pausedMs;
+                    gameStartTime += pausedMs;
+                    if (audioScheduledTime > 0) {
+                        audioScheduledTime += pausedMs; // 同步推迟音频启动
+                    }
                     audioPlayer.resume();
                 }
             }
+        }
+
+        // 音频延迟启动：游戏开始后等待 lead 时间才播放音频，使音符从顶端开始对齐
+        if (audioScheduledTime > 0 && System.currentTimeMillis() >= audioScheduledTime && !audioPlayer.isPlaying()) {
+            audioScheduledTime = 0;
+            audioPlayer.play();
         }
 
         if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown && !showExitConfirm) {
