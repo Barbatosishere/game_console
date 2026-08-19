@@ -149,6 +149,11 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         super.render(g, mx, my, pt);
     }
 
+    @Override
+    public void renderBackground(GuiGraphics guiGraphics, int i, int j, float f) {
+        // 不渲染默认菜单背景纹理和模糊效果，游戏自行绘制不透明背景（修复画面模糊）
+    }
+
     private void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x220022);
