@@ -2,6 +2,7 @@ package com.wzz.game_console.client.screens.games;
 
 import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.util.GameRenderHelper;
+import com.wzz.game_console.util.GameSettings;
 import com.wzz.game_console.util.ResourceUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -609,6 +610,10 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void startGame() {
+        // 检查外部导入设置是否覆盖了难度
+        if (GameSettings.getConfiguredGames().contains("icefire")) {
+            difficulty = GameSettings.getInt("icefire", "difficulty", difficulty);
+        }
         session = new GameSession(difficulty);
         session.init();
         gameState = GameState.PLAYING;
