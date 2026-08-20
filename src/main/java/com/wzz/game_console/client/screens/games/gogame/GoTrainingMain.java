@@ -21,6 +21,7 @@ public final class GoTrainingMain {
         int generations = intOption(options, "generations", 1);
         int epochs = intOption(options, "epochs", 1);
         double learningRate = doubleOption(options, "learningRate", 0.001);
+        int warmup = intOption(options, "warmup", 0);
         long seed = longOption(options, "seed", 0x5EEDL);
         Path weights = Path.of(required(options, "weights"));
         int checkpointInterval = intOption(options, "checkpoint", 10);
@@ -31,9 +32,16 @@ public final class GoTrainingMain {
         GoSelfPlayTrainer.Result result = null;
         try {
             for (int generation = 0; generation < generations; generation++) {
-                // 余弦退火学习率调度：从初始 LR 平滑衰减
-                double frac = generations > 1 ? (double) generation / (generations - 1) : 0.0;
-                double currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
+                double currentLR;
+                if (warmup > 0 && generation < warmup) {
+                    // 预热阶段：LR 从 0 线性升到目标值，配合 Momentum 稳定起步
+                    currentLR = learningRate * (generation + 1.0) / warmup;
+                } else {
+                    // 余弦退火学习率调度：从初始 LR 平滑衰减
+                    int remain = Math.max(1, generations - warmup);
+                    double frac = (double) (generation - warmup) / remain;
+                    currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
+                }
                 result = trainer.runGeneration(games, parallelism, epochs, currentLR, seed + generation);
                 System.out.printf("generation=%d lr=%.6f games=%d completed=%d samples=%d replay=%d meanLoss=%.8f%n",
                         generation + 1, currentLR, result.games, result.completedGames,

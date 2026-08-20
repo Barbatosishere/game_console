@@ -115,6 +115,14 @@ public class MCTSGoAI implements GoAI {
         this.selfPlayMode = selfPlayMode;
     }
 
+    /** 当前探索强度倍率（自对弈训练用，随代次衰减：1.0 → ~0.2） */
+    private volatile double explorationScale = 1.0;
+
+    /** 设置探索强度倍率（影响 Dirichlet 噪声比例和采样温度）。范围 [0,1]。 */
+    public void setExplorationScale(double scale) {
+        this.explorationScale = Math.max(0, Math.min(1, scale));
+    }
+
     public static MCTSGoAI createFromSettings() {
         try {
             int searchTime = GameSettings.getInt("go", "searchTime", DEFAULT_SEARCH_TIME);
@@ -363,6 +371,8 @@ public class MCTSGoAI implements GoAI {
                 + (root.untriedMoves == null ? 0 : root.untriedMoves.size());
         if (n < 2) return;
         double[] noise = dirichletSample(n, DIRICHLET_ALPHA, this.random);
+        // 探索衰减：噪声混入比例随训练代次降低
+        double eps = DIRICHLET_EPS * explorationScale;
         Map<String, Double> noiseMap = new HashMap<>(n * 2);
         int i = 0;
         // 对已展开的子节点，直接设置 prior（噪声按策略先验的 ×361 缩放对齐）
@@ -371,7 +381,7 @@ public class MCTSGoAI implements GoAI {
                 if (child.move == null) { i++; continue; }
                 double v = noise[i++];
                 noiseMap.put(child.move[0] + "," + child.move[1], v);
-                child.prior = (1.0 - DIRICHLET_EPS) * child.prior + DIRICHLET_EPS * (v * 361.0);
+                child.prior = (1.0 - eps) * child.prior + eps * (v * 361.0);
             }
         }
         // 对未展开的候选，仅记录噪声，expand 时读取
@@ -600,11 +610,12 @@ public class MCTSGoAI implements GoAI {
                     prior = Math.max(node.policyCache[moveIdx], 1e-10) * 361.0; // 缩放回约 1.0 量级
                 }
             }
-            // 根节点 Dirichlet 噪声叠加
+            // 根节点 Dirichlet 噪声叠加（与 applyRootNoise 的探索衰减保持一致）
             if (node.rootNoise != null) {
                 Double w = node.rootNoise.get(move[0] + "," + move[1]);
                 if (w != null) {
-                    prior = (1.0 - DIRICHLET_EPS) * prior + DIRICHLET_EPS * (w * 361.0);
+                    double eps = DIRICHLET_EPS * explorationScale;
+                    prior = (1.0 - eps) * prior + eps * (w * 361.0);
                 }
             }
             child.prior = prior;
@@ -924,7 +935,10 @@ public class MCTSGoAI implements GoAI {
      */
     private int[] sampleMCTSMove(MCTSNode root, int moveCount) {
         if (root.children == null || root.children.isEmpty()) return null;
-        double temp = moveCount < 30 ? 1.0 : 0.1;
+        // 温度随探索强度衰减（早期高探索→高温，后期低探索→低温更贪心）
+        double earlyTemp = 1.5 * explorationScale + 0.1;
+        double lateTemp = 0.3 * explorationScale + 0.05;
+        double temp = moveCount < 30 ? earlyTemp : lateTemp;
 
         List<MCTSNode> candidates = new ArrayList<>();
         List<Double> weights = new ArrayList<>();

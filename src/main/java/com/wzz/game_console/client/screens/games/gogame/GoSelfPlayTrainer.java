@@ -83,6 +83,8 @@ public final class GoSelfPlayTrainer {
     private final Config config;
     private NeuralEvaluator evaluator;
     private final List<Sample> replayBuffer = new ArrayList<>();
+    /** 当前代次数（用于探索衰减等训练策略） */
+    private int generation = 0;
 
     public GoSelfPlayTrainer() {
         this(new Config(), new NeuralEvaluator());
@@ -105,6 +107,9 @@ public final class GoSelfPlayTrainer {
     public Result runGeneration(int games, int parallelism, int epochs, double learningRate, long seed) {
         if (games < 0 || epochs < 0 || learningRate <= 0) throw new IllegalArgumentException("Invalid generation parameters");
         if (games == 0) return new Result(0, 0, 0, 0, evaluator);
+        generation++; // 递增代次，供探索衰减使用
+        // 探索强度随训练代次衰减：gen 0→1.0, gen 40→0.2
+        final double expScale = Math.max(0.2, 1.0 - 0.02 * (generation - 1));
         int workers = Math.max(1, Math.min(parallelism <= 0 ? config.parallelism : parallelism, games));
         final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
         ExecutorService pool = Executors.newFixedThreadPool(workers);
@@ -112,7 +117,7 @@ public final class GoSelfPlayTrainer {
         try {
             for (int i = 0; i < games; i++) {
                 final int gameIndex = i;
-                futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex)));
+                futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
             }
             List<Sample> newSamples = new ArrayList<>();
             int completed = 0;
@@ -155,13 +160,15 @@ public final class GoSelfPlayTrainer {
         return initialLr * 0.5 * (1.0 + Math.cos(Math.PI * ratio));
     }
 
-    private GameSamples playGame(NeuralEvaluator.ModelWeights model, long seed) {
+    private GameSamples playGame(NeuralEvaluator.ModelWeights model, long seed, double explorationScale) {
         List<Sample> samples = new ArrayList<>();
         GoGame game = GoGame.rulesOnly();
         MCTSGoAI ai = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, model);
         ai.setRandomSeed(seed);
         // 自对弈模式：开启根节点 Dirichlet 噪声 + 访问分布温度采样（增强探索）
         ai.setSelfPlayMode(true);
+        // 探索强度随训练代次衰减
+        ai.setExplorationScale(explorationScale);
         try {
             int moves = 0;
             while (!game.isGameOver() && moves < Math.max(1, config.maxMoves)) {
