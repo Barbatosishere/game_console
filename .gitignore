@@ -38,3 +38,9 @@ cfr.jar
 
 # 但保留 src/main/resources 下的真实资源（如合成配方），避免被上述规则误忽略
 !src/main/resources/data/
+
+# CUDA 实验残留（项目实际使用 OpenCL）
+cuda/
+
+# Minecraft 运行日志
+logs/

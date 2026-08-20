@@ -11,6 +11,8 @@ group = mod_group_id
 repositories {
     mavenLocal()
     mavenCentral() // 供测试依赖（如 JUnit）下载
+    // JogAmp 仓库（JOCL OpenCL 绑定）
+    maven { url 'https://jogamp.org/deployment/maven' }
 }
 
 base {
@@ -135,10 +137,47 @@ dependencies {
     // ─── 单元测试：JUnit 5 ───
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+
+    // ─── OpenCL GPU 加速 ───
+    implementation 'net.java.dev.jna:jna:5.14.0'
 }
 
 test {
     useJUnitPlatform()
+}
+
+// Pure-Java self-play training entry point. Pass arguments with -PtrainArgs="--weights path ...".
+tasks.register('trainGoAI', JavaExec) {
+    group = 'training'
+    description = 'Train the Go MCTS neural evaluator with self-play'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoTrainingMain'
+    args((project.findProperty('trainArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+    maxHeapSize = '4g'
+}
+
+tasks.register('runChessSim', JavaExec) {
+    group = 'training'
+    description = '自对弈模拟：内置中国象棋引擎自我对弈，统计胜率/步数/耗时'
+    mainClass = 'com.wzz.game_console.client.screens.games.chess.ChessSimulationMain'
+    args((project.findProperty('chessSimArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+}
+
+tasks.register('adversarialTrain', JavaExec) {
+    group = 'training'
+    description = '对抗训练：己方 MCTS AI vs 外部 KataGo 引擎'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoAdversarialMain'
+    args((project.findProperty('advArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+    maxHeapSize = '4g'
+}
+
+tasks.register('gpuProbe', JavaExec) {
+    group = 'training'
+    description = '探测 OpenCL GPU 设备是否可用'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoGpuProbe'
+    classpath = sourceSets.main.runtimeClasspath
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

@@ -3,6 +3,7 @@ package com.wzz.game_console.client.screens.games.gogame;
 import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.client.screens.games.LanMultiplayerScreen;
 import com.wzz.game_console.util.GameRenderHelper;
+import com.wzz.game_console.util.GameSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
@@ -19,9 +20,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger(GoGameScreen.class);
     boolean showExitConfirm = false;
     private static final int BOARD_SIZE = 19;
-    private static final int[][] DIRS = {{1,0},{-1,0},{0,1},{0,-1}};
 
-    private enum State { MENU, PLAYING, GAME_OVER }
+    private enum State { MENU, SETTINGS, PLAYING, GAME_OVER }
     private State state = State.MENU;
     private final GoGame game;
     private long tickCount = 0;
@@ -41,6 +41,14 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private boolean myTurn = true; // 单机或 HOST 默认先手
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
+
+    // ── AI 引擎设置 ─────────────────────────────────────────
+    /** 设置界面中当前选中的引擎 */
+    private String settingsEngine = GameSettings.getString("go", "engine", "mcts");
+    /** 设置界面中当前的搜索时间（ms） */
+    private int settingsSearchTime = GameSettings.getInt("go", "searchTime", 3000);
+    /** 设置界面中当前的 KataGo 路径 */
+    private String settingsKatagoPath = GameSettings.getString("go", "katagoPath", "");
 
     /** 单机 / AI 构造 */
     public GoGameScreen(GoGame game) {
@@ -136,8 +144,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
      * 修复 Bug：原版 endGame() 不计算胜者，导致局域网双方都显示"你赢了"。
      */
     private void finishGame() {
-        // 计算双方领地 + 提子数
-        int[] territory = calcTerritory();
+        // 计算双方领地（中国规则数子法，复用 GoGame 的公共计分方法）
+        int[] territory = game.calcTerritory();
         int blackTerritory = territory[0];
         int whiteTerritory = territory[1];
 
@@ -173,54 +181,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         state = State.GAME_OVER;
     }
 
-    /**
-     * 数子法计算领地（flood-fill 无子区域，判断属于哪方）。
-     * @return [黑领地, 白领地]（包含己方活子数）
-     */
-    private int[] calcTerritory() {
-        int size = game.getBoardSize();
-        boolean[][] visited = new boolean[size][size];
-        int blackT = 0, whiteT = 0;
-
-        // 先统计棋盘上的活子数
-        for (int x = 0; x < size; x++)
-            for (int y = 0; y < size; y++) {
-                GoPlayer s = game.getStone(x, y);
-                if (s == GoPlayer.BLACK) blackT++;
-                else if (s == GoPlayer.WHITE) whiteT++;
-            }
-
-        // 再统计空点领地
-        for (int x = 0; x < size; x++) {
-            for (int y = 0; y < size; y++) {
-                if (visited[x][y] || game.getStone(x, y) != GoPlayer.NONE) continue;
-                // BFS 找连通空区
-                java.util.List<int[]> region = new java.util.ArrayList<>();
-                java.util.Queue<int[]> queue = new java.util.LinkedList<>();
-                queue.add(new int[]{x, y});
-                boolean touchBlack = false, touchWhite = false;
-                while (!queue.isEmpty()) {
-                    int[] pos = queue.poll();
-                    int px = pos[0], py = pos[1];
-                    if (px < 0 || px >= size || py < 0 || py >= size) continue;
-                    if (visited[px][py]) continue;
-                    visited[px][py] = true;
-                    GoPlayer st = game.getStone(px, py);
-                    if (st == GoPlayer.BLACK) { touchBlack = true; continue; }
-                    if (st == GoPlayer.WHITE) { touchWhite = true; continue; }
-                    region.add(new int[]{px, py});
-                    for (int[] d : DIRS)
-                        queue.add(new int[]{px+d[0], py+d[1]});
-                }
-                int pts = region.size();
-                if (touchBlack && !touchWhite) blackT += pts;
-                else if (touchWhite && !touchBlack) whiteT += pts;
-                // 争议地带不计
-            }
-        }
-        return new int[]{blackT, whiteT};
-    }
-
     @Override public void tick() {
         tickCount++;
         // AI 模式：AI 执白，黑棋下完后触发
@@ -234,6 +194,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     @Override public boolean keyPressed(int key, int scan, int mods) {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (state == State.SETTINGS) { state = State.MENU; return true; }
             if (state != State.MENU) { showExitConfirm = true; return true; }
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
@@ -269,6 +230,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         GameRenderHelper.fillDarkBackground(g, width, height);
         switch (state) {
             case MENU -> renderMenu(g, mx, my);
+            case SETTINGS -> renderSettings(g, mx, my);
             case PLAYING -> renderPlaying(g, mx, my);
             case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g, mx, my); }
         }
@@ -284,6 +246,82 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawCenteredString(font, "鼠标点击落子  N新游戏  P弃权", cx, cy - 10, 0xAAAAAA);
         g.drawCenteredString(font, "围地为王，黑白博弈的艺术", cx, cy + 5, 0xCCCCCC);
         GameRenderHelper.drawPrimaryButton(g, font, "开始游戏", cx - 60, cy + 30, 120, 22, mx, my);
+        // 设置按钮
+        GameRenderHelper.drawPrimaryButton(g, font, "⚙ AI设置", cx - 60, cy + 58, 120, 22, mx, my);
+    }
+
+    private void renderSettings(GuiGraphics g, int mx, int my) {
+        int cx = width / 2, cy = height / 2;
+        GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x112200);
+
+        // 设置面板背景
+        int pw = 320, ph = 260;
+        int px = cx - pw / 2, py = cy - ph / 2;
+        g.fill(px, py, px + pw, py + ph, 0xCC0A1520);
+        g.fill(px - 2, py - 2, px + pw + 2, py + 2, 0xFF3A5A8A);
+        g.fill(px - 2, py + ph, px + pw + 2, py + ph + 2, 0xFF3A5A8A);
+        g.fill(px - 2, py, px + 2, py + ph, 0xFF3A5A8A);
+        g.fill(px + pw, py, px + pw + 2, py + ph, 0xFF3A5A8A);
+
+        // 标题
+        GameRenderHelper.drawShadowedCenteredText(g, font, "AI 引擎设置", cx, py + 12, 0xFFFFFF, 1);
+
+        // 引擎选择
+        int optionY = py + 45;
+        g.drawString(font, "引擎类型:", px + 15, optionY, 0xCCCCCC);
+
+        // MCTS 按钮
+        boolean mctsSelected = "mcts".equals(settingsEngine);
+        int mctsColor = mctsSelected ? 0xFF44AA44 : 0xFF666666;
+        int mctsBg = mctsSelected ? 0xFF1A3A1A : 0xFF2A2A2A;
+        g.fill(px + 90, optionY - 4, px + 200, optionY + 18, mctsBg);
+        g.drawString(font, "改进版MCTS", px + 95, optionY, mctsColor);
+
+        // KataGo 按钮
+        boolean kataSelected = "katago".equals(settingsEngine);
+        int kataColor = kataSelected ? 0xFF44AA44 : 0xFF666666;
+        int kataBg = kataSelected ? 0xFF1A3A1A : 0xFF2A2A2A;
+        g.fill(px + 205, optionY - 4, px + 305, optionY + 18, kataBg);
+        g.drawString(font, "KataGo", px + 215, optionY, kataColor);
+
+        // 搜索时间
+        int timeY = optionY + 45;
+        g.drawString(font, "搜索时间: " + (settingsSearchTime / 1000.0) + "s", px + 15, timeY, 0xCCCCCC);
+
+        // 时间滑块背景
+        int sliderX = px + 90, sliderW = 200;
+        g.fill(sliderX, timeY + 8, sliderX + sliderW, timeY + 18, 0xFF3A3A3A);
+        // 滑块填充
+        int fillW = (settingsSearchTime - 1000) * sliderW / 9000;
+        g.fill(sliderX, timeY + 8, sliderX + fillW, timeY + 18, 0xFF4A6A8A);
+        // 滑块位置
+        int thumbX = sliderX + fillW - 5;
+        g.fill(thumbX, timeY + 3, thumbX + 10, timeY + 23, 0xFF88AACC);
+
+        // KataGo 路径（仅当选择 KataGo 时显示）
+        int pathY = timeY + 45;
+        if ("katago".equals(settingsEngine)) {
+            g.drawString(font, "KataGo 路径:", px + 15, pathY, 0xCCCCCC);
+            // 路径显示（截断过长路径）
+            String displayPath = settingsKatagoPath.isEmpty() ? "(未配置)" :
+                    (settingsKatagoPath.length() > 30 ?
+                            "..." + settingsKatagoPath.substring(settingsKatagoPath.length() - 30) :
+                            settingsKatagoPath);
+            int pathColor = settingsKatagoPath.isEmpty() ? 0xFF666666 : 0xFFAAAAAA;
+            g.fill(px + 90, pathY - 4, px + 305, pathY + 18, 0xFF2A2A2A);
+            g.drawString(font, displayPath, px + 95, pathY, pathColor);
+            pathY += 45;
+        }
+
+        // 当前状态
+        int statusY = pathY + 10;
+        String currentEngine = GameSettings.getString("go", "engine", "mcts");
+        String status = "当前引擎: " + ("mcts".equals(currentEngine) ? "改进版MCTS" : "KataGo");
+        g.drawString(font, status, px + 15, statusY, 0xFF888888);
+
+        // 保存并返回按钮
+        int btnY = py + ph - 50;
+        GameRenderHelper.drawPrimaryButton(g, font, "保存并返回", cx - 60, btnY, 120, 22, mx, my);
     }
 
     private void renderPlaying(GuiGraphics g, int mx, int my) {
@@ -353,6 +391,11 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                 : (game.isAiMode() ? "AI模式" : "双人模式");
         g.drawString(font, modeStr, infoX + 5, infoY + 78, 0xCCCCCC);
 
+        // AI 引擎状态
+        String engineStr = GameSettings.getString("go", "engine", "mcts");
+        String engineLabel = "mcts".equals(engineStr) ? "MCTS" : "KataGo";
+        g.drawString(font, "AI: " + engineLabel, infoX + 5, infoY + 92, 0x666666);
+
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "⚫⚪ 围棋", 8, 7, 0xFFFFFF);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  N 新游戏  P 弃权");
@@ -383,10 +426,52 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+
+        // ── 设置界面 ──
+        if (state == State.SETTINGS) {
+            int cx = width / 2, cy = height / 2;
+            int pw = 320, ph = 260;
+            int px = cx - pw / 2, py = cy - ph / 2;
+
+            // 引擎选择
+            int optionY = py + 45;
+            if (mx >= px + 90 && mx <= px + 200 && my >= optionY - 4 && my <= optionY + 18) {
+                settingsEngine = "mcts";
+                return true;
+            }
+            if (mx >= px + 205 && mx <= px + 305 && my >= optionY - 4 && my <= optionY + 18) {
+                settingsEngine = "katago";
+                return true;
+            }
+
+            // 时间滑块
+            int timeY = optionY + 45;
+            int sliderX = px + 90, sliderW = 200;
+            if (mx >= sliderX && mx <= sliderX + sliderW && my >= timeY + 3 && my <= timeY + 23) {
+                int ratio = (int) ((mx - sliderX) * 9.0 / sliderW) + 1;
+                settingsSearchTime = Math.max(1000, Math.min(10000, ratio * 1000));
+                return true;
+            }
+
+            // 保存并返回按钮
+            int btnY = py + ph - 50;
+            if (mx >= cx - 60 && mx <= cx + 60 && my >= btnY && my <= btnY + 22) {
+                // 保存设置到 GameSettings
+                saveSettings();
+                state = State.MENU;
+                return true;
+            }
+            return true;
+        }
+
         if (state == State.MENU) {
             int cx = width/2, cy = height/2;
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) {
                 resetGame(); state = State.PLAYING; return true;
+            }
+            // 设置按钮
+            if (mx >= cx-60 && mx <= cx+60 && my >= cy+58 && my <= cy+80) {
+                state = State.SETTINGS; return true;
             }
         }
         if (state == State.PLAYING && btn == 0 && !game.isGameOver()) {
@@ -409,6 +494,46 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             }
         }
         return super.mouseClicked(mx, my, btn);
+    }
+
+    /**
+     * 保存 AI 设置到 data/game_settings.json
+     */
+    private void saveSettings() {
+        try {
+            // 使用 GameSettings 的内部机制保存
+            // 这里通过反射或直接修改 settings map 来保存
+            // 由于 GameSettings 没有提供保存单个键的方法，我们使用 importFromFile 的变通方式
+            java.nio.file.Path dataDir = com.wzz.game_console.util.ExternalFileManager.getDataDir();
+            java.nio.file.Path settingsPath = dataDir.resolve("game_settings.json");
+
+            // 读取现有设置
+            java.util.Map<String, java.util.Map<String, Object>> allSettings = new java.util.HashMap<>();
+            if (java.nio.file.Files.exists(settingsPath)) {
+                String content = java.nio.file.Files.readString(settingsPath, java.nio.charset.StandardCharsets.UTF_8);
+                com.google.gson.Gson gson = new com.google.gson.Gson();
+                java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<java.util.Map<String, java.util.Map<String, Object>>>(){}.getType();
+                java.util.Map<String, java.util.Map<String, Object>> loaded = gson.fromJson(content, type);
+                if (loaded != null) allSettings = loaded;
+            }
+
+            // 更新围棋设置
+            java.util.Map<String, Object> goSettings = allSettings.getOrDefault("go", new java.util.HashMap<>());
+            goSettings.put("engine", settingsEngine);
+            goSettings.put("searchTime", settingsSearchTime);
+            goSettings.put("katagoPath", settingsKatagoPath);
+            allSettings.put("go", goSettings);
+
+            // 保存
+            java.nio.file.Files.createDirectories(dataDir);
+            com.google.gson.Gson gson = new com.google.gson.GsonBuilder().setPrettyPrinting().create();
+            String json = gson.toJson(allSettings);
+            java.nio.file.Files.writeString(settingsPath, json, java.nio.charset.StandardCharsets.UTF_8);
+
+            LOGGER.info("[围棋] AI 设置已保存: engine={}, searchTime={}ms", settingsEngine, settingsSearchTime);
+        } catch (Exception e) {
+            LOGGER.error("[围棋] 保存 AI 设置失败: {}", e.getMessage());
+        }
     }
 
     @Override public boolean isPauseScreen() { return false; }

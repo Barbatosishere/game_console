@@ -2,7 +2,7 @@ package com.wzz.game_console.client.screens.games.gogame;
 
 import java.util.*;
 
-public class GoGame {
+public class GoGame implements AutoCloseable {
     private static final int BOARD_SIZE = 19;
     private static final int[][] DIRS = {{0,1}, {1,0}, {0,-1}, {-1,0}};
     private GoPlayer[][] board;
@@ -14,6 +14,8 @@ public class GoGame {
     private int consecutivePasses;
     private List<GoMove> moveHistory;
     private GoAI ai;
+    /** Whether reset() should create the configured AI engine. */
+    private final boolean initializeAi;
     /** 历史局面哈希：劫争判定（禁止全局同型，中国规则），新局面不得与任何历史局面重复 */
     private final Set<Long> positionHistory = new HashSet<>();
     /** 调试开关：为 true 时输出劫争判定的详细追踪信息（默认关闭，正常对局不刷屏） */
@@ -33,13 +35,31 @@ public class GoGame {
     }
     
     public GoGame() {
+        this(true);
+    }
+
+    /**
+     * Creates a game and optionally initializes its AI engine.
+     *
+     * <p>Passing {@code false} creates a rules-only game. This path does not
+     * read {@code GameSettings} and does not start an external engine, making
+     * it suitable for trainers and rule/evaluation code.</p>
+     *
+     * @param initializeAi whether to create the configured AI engine
+     */
+    public GoGame(boolean initializeAi) {
+        this.initializeAi = initializeAi;
         this.board = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
         this.moveHistory = new ArrayList<>();
-        this.ai = new GoAI();
         // reset() 已声明为 final，避免构造器调用可覆写方法的 this-escape 风险
         reset();
     }
-    
+
+    /** Creates a game containing only the Go rules and board state. */
+    public static GoGame rulesOnly() {
+        return new GoGame(false);
+    }
+
     public final void reset() {
         // 初始化棋盘
         for (int x = 0; x < BOARD_SIZE; x++) {
@@ -57,6 +77,73 @@ public class GoGame {
         // 空棋盘作为初始历史局面（用于劫争的同型判定）
         positionHistory.clear();
         positionHistory.add(boardHash());
+
+        // 重新初始化 AI（支持引擎切换）；规则专用局面始终不创建 AI。
+        if (initializeAi) {
+            initAi();
+        }
+    }
+
+    /**
+     * 根据 GameSettings 初始化 AI 引擎。
+     * 支持在游戏中途切换引擎（重开时生效）。
+     * 注意：如果 GameSettings 或其他依赖不可用，会回退到默认 MCTS。
+     */
+    public void initAi() {
+        if (!initializeAi) {
+            return;
+        }
+        // 关闭旧 AI 引擎（如果有外部进程需要清理）
+        if (this.ai != null) {
+            this.ai.shutdown();
+        }
+
+        // 尝试创建 AI 引擎
+        try {
+            this.ai = GoAI.create();
+        } catch (Throwable t) {
+            // 任何异常（包括 ClassNotFoundException、NoClassDefFoundError）
+            // 都使用默认的 MCTSGoAI
+            this.ai = new MCTSGoAI();
+        }
+    }
+
+    /**
+     * 设置自定义 AI 引擎（覆盖 GameSettings 配置）。
+     */
+    public void setAiEngine(GoAI aiEngine) {
+        if (this.ai != null) {
+            this.ai.shutdown();
+        }
+        this.ai = aiEngine;
+    }
+
+    /** Releases the configured AI engine, if this game owns one. */
+    @Override
+    public void close() {
+        if (this.ai != null) {
+            this.ai.shutdown();
+            this.ai = null;
+        }
+    }
+
+    /** Alias for callers that use explicit resource lifecycle naming. */
+    public void shutdown() {
+        close();
+    }
+
+    /**
+     * 获取历史走法列表（供 KataGo 等外部引擎同步棋盘用）。
+     */
+    public List<GoMove> getMoveHistory() {
+        return Collections.unmodifiableList(moveHistory);
+    }
+
+    /**
+     * 获取当前回合数（落子数 / 2 + 1）。
+     */
+    public int moveHistorySize() {
+        return moveHistory.size();
     }
 
     public boolean placeStone(int x, int y) {
@@ -136,14 +223,21 @@ public class GoGame {
         return true;
     }
 
-    /** 当前局面的 Zobrist 哈希（64 位，碰撞概率极低） */
-    private long boardHash() {
+    /**
+     * 根据棋盘状态计算 Zobrist 哈希（静态方法，供 NeuralEvaluator 复用）。
+     */
+    public static long boardHash(GoPlayer[][] board) {
         long hash = 0;
         for (int x = 0; x < BOARD_SIZE; x++)
             for (int y = 0; y < BOARD_SIZE; y++)
                 if (board[x][y] != GoPlayer.NONE)
                     hash ^= ZOBRIST_TABLE[x][y][board[x][y].ordinal()];
         return hash;
+    }
+
+    /** 当前局面的 Zobrist 哈希（64 位，碰撞概率极低） */
+    private long boardHash() {
+        return boardHash(this.board);
     }
 
     private GoPlayer[][] copyBoardInternal() {
@@ -185,7 +279,7 @@ public class GoGame {
     }
     
     public void makeAiMove() {
-        if (!aiMode || gameOver || currentPlayer == GoPlayer.BLACK) {
+        if (!aiMode || ai == null || gameOver || currentPlayer == GoPlayer.BLACK) {
             return;
         }
 
@@ -287,5 +381,79 @@ public class GoGame {
             }
         }
         return copy;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  计分（中国规则数子法）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 数子法计算领地（flood-fill 无子区域，判断属于哪方）。
+     * 得分 = 棋盘活子数 + 单独围空（不含提子数，避免双重计分）。
+     * @return [黑领地, 白领地]
+     */
+    public int[] calcTerritory() {
+        boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
+        int blackT = 0, whiteT = 0;
+
+        // 先统计棋盘上的活子数
+        for (int x = 0; x < BOARD_SIZE; x++)
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                GoPlayer s = board[x][y];
+                if (s == GoPlayer.BLACK) blackT++;
+                else if (s == GoPlayer.WHITE) whiteT++;
+            }
+
+        // 再统计空点领地
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                if (visited[x][y] || board[x][y] != GoPlayer.NONE) continue;
+                // BFS 找连通空区
+                java.util.List<int[]> region = new java.util.ArrayList<>();
+                java.util.Queue<int[]> queue = new java.util.LinkedList<>();
+                queue.add(new int[]{x, y});
+                boolean touchBlack = false, touchWhite = false;
+                while (!queue.isEmpty()) {
+                    int[] pos = queue.poll();
+                    int px = pos[0], py = pos[1];
+                    if (px < 0 || px >= BOARD_SIZE || py < 0 || py >= BOARD_SIZE) continue;
+                    if (visited[px][py]) continue;
+                    visited[px][py] = true;
+                    GoPlayer st = board[px][py];
+                    if (st == GoPlayer.BLACK) { touchBlack = true; continue; }
+                    if (st == GoPlayer.WHITE) { touchWhite = true; continue; }
+                    region.add(new int[]{px, py});
+                    for (int[] d : DIRS)
+                        queue.add(new int[]{px + d[0], py + d[1]});
+                }
+                int pts = region.size();
+                if (touchBlack && !touchWhite) blackT += pts;
+                else if (touchWhite && !touchBlack) whiteT += pts;
+                // 争议地带不计
+            }
+        }
+        return new int[]{blackT, whiteT};
+    }
+
+    /**
+     * 计算某一方的最终得分（中国规则数子法，黑贴 3.75 子）。
+     * @param player 视角
+     * @return 该方的得分
+     */
+    public double getScore(GoPlayer player) {
+        int[] territory = calcTerritory();
+        double score = (player == GoPlayer.BLACK ? territory[0] : territory[1]);
+        if (player == GoPlayer.WHITE) score += 3.75; // 贴目
+        return score;
+    }
+
+    /**
+     * 计算两方的分差（从指定视角看，正数表示该方领先）。
+     * @param perspective 视角方
+     * @return 分差（视角方 - 对方）
+     */
+    public double getScoreMargin(GoPlayer perspective) {
+        GoPlayer opponent = perspective == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
+        return getScore(perspective) - getScore(opponent);
     }
 }
