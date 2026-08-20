@@ -173,16 +173,19 @@ public class MCTSGoAI implements GoAI {
             return false;
         }
 
-        // 获取最佳走法的胜率（读 currentRoot.children 是唯一的共享写点）
+        // 快照 currentRoot.children（共享树下其他线程可能并发写入，需同步）
         MCTSNode root = currentRoot;
-        if (root == null || root.children == null || root.children.isEmpty()) {
-            return false;
+        if (root == null) return false;
+        List<MCTSNode> children;
+        synchronized (root) {
+            if (root.children == null || root.children.isEmpty()) return false;
+            children = new ArrayList<>(root.children);
         }
 
         double bestWinRate = Double.NEGATIVE_INFINITY;
         double secondWinRate = Double.NEGATIVE_INFINITY;
 
-        for (MCTSNode child : root.children) {
+        for (MCTSNode child : children) {
             if (child.visits > 0) {
                 double winRate = child.totalScore / child.visits;
                 if (winRate > bestWinRate) {
@@ -458,67 +461,59 @@ public class MCTSGoAI implements GoAI {
     }
 
     /**
-     * 并行 MCTS 搜索（带提前终止）。
+     * 并行 MCTS 搜索（共享树 + virtual loss）。
      * <p>
-     * 每个线程使用独立的 MCTSNode 树进行搜索，模拟结束后通过 mergeResults
-     * 将结果合并回主树，从而彻底避免所有竞态条件：
+     * 所有线程共享同一棵搜索树，通过 virtual loss 迫使各线程分散到不同分支，
+     * 避免独立树模式下各线程扎堆探索相同的高 UCB 走法。
+     * 无需树克隆和合并，搜索效率显著高于独立树方案。
+     * <p>
+     * 线程安全策略：
      * <ul>
-     *   <li>node.visits++ / node.totalScore += score — 只在线程本地的树中执行，无竞争</li>
-     *   <li>node.untriedMoves.remove() — 仅在线程本地的 ArrayList 中操作，安全</li>
-     *   <li>node.children.add(child) — 仅在线程本地的树中增删，安全</li>
-     *   <li>shouldTerminateEarly 读取的 currentRoot.children 在合并阶段才被写入，主线程独占</li>
+     *   <li>selection：无锁读取（过时数据不影响收敛）</li>
+     *   <li>virtual loss + expand + backpropagate：synchronized(node) 逐节点加锁</li>
+     *   <li>锁顺序始终叶子→根，无死锁</li>
      * </ul>
      */
     private void parallelSearchWithEarlyTerminate(long deadline) {
-        List<Future<SearchResult>> futures = new ArrayList<>(parallelThreads);
+        List<Future<Void>> futures = new ArrayList<>(parallelThreads);
 
-        // 每个线程独立搜索一棵本地树（复用共享线程池）
         for (int i = 0; i < parallelThreads; i++) {
             futures.add(SHARED_POOL.submit(() -> {
-                // 深拷贝主树作为本地根节点，后续所有操作均在本地树上进行
-                MCTSNode localRoot = cloneNodeTree(currentRoot);
-                int localIters = 0;
-                int itersPerThread = maxIterations / parallelThreads;
-
-                while (localIters < itersPerThread && System.currentTimeMillis() < deadline) {
-                    // 通过原子变量读取总迭代次数（读操作对合并无影响）
-                    if (shouldTerminateEarly(totalIterations.get())) {
-                        break;
-                    }
-                    localIters++;
+                int iters = 0, cap = maxIterations / parallelThreads;
+                while (iters < cap && System.currentTimeMillis() < deadline) {
+                    if (shouldTerminateEarly(totalIterations.get())) break;
+                    iters++;
                     totalIterations.incrementAndGet();
 
-                    MCTSNode node = selectNode(localRoot);
+                    MCTSNode node = selectNode(currentRoot);
+
+                    // virtual loss：标记此节点正被评估，降低 UCB 吸引其他线程去其他分支
+                    synchronized (node) {
+                        node.visits++;
+                        node.totalScore--;
+                    }
+
                     if (!node.untriedMoves.isEmpty()) {
                         expand(node);
                     }
                     double score = simulate(node);
+
+                    // 回传（含 virtual loss 的净效果：visits +1, totalScore + score）
                     backpropagate(node, score);
                 }
-                return new SearchResult(localRoot, localIters);
+                return null;
             }));
         }
 
         // 等待所有线程完成（或超时）
-        List<SearchResult> results = new ArrayList<>();
-        for (Future<SearchResult> f : futures) {
+        for (Future<Void> f : futures) {
             try {
-                long remaining = Math.max(1, deadline - System.currentTimeMillis() + 100);
-                SearchResult r = f.get(remaining, TimeUnit.MILLISECONDS);
-                if (r != null) {
-                    results.add(r);
-                }
+                f.get(Math.max(500, deadline - System.currentTimeMillis() + 1000), TimeUnit.MILLISECONDS);
             } catch (Exception ignored) {
-                // 超时或中断：忽略该线程结果
+                // 超时或中断：忽略该线程
             }
         }
-
         // 共享线程池不关闭（线程设为 daemon，随进程退出）
-
-        // 将所有本地树的结果合并回 currentRoot
-        if (!results.isEmpty()) {
-            mergeResults(results);
-        }
     }
 
     /**
@@ -543,173 +538,15 @@ public class MCTSGoAI implements GoAI {
     }
 
     /**
-     * 深度拷贝一棵 MCTSNode 树（用于并行搜索时为每个线程创建独立副本）。
-     * <p>
-     * 新树的每个节点持有独立的 board 引用和 untriedMoves ArrayList，
-     * 保证线程间完全隔离。
-     *
-     * @param root 要拷贝的根节点（来自 currentRoot）
-     * @return 独立副本的根节点
-     */
-    private MCTSNode cloneNodeTree(MCTSNode root) {
-        if (root == null) return null;
-
-        MCTSNode copy = new MCTSNode(
-                deepCopyBoard(root.board),
-                root.player,
-                null,           // 新树的 parent 设为 null
-                root.move,
-                root.untriedMoves != null ? new ArrayList<>(root.untriedMoves) : new ArrayList<>()
-        );
-        copy.visits = root.visits;
-        copy.totalScore = root.totalScore;
-        copy.linkedMove = root.linkedMove;
-        copy.prior = root.prior;
-        copy.rootNoise = root.rootNoise; // 只读共享，线程安全
-        copy.policyCache = root.policyCache; // 只读共享，线程安全
-        copy.valueCache = root.valueCache;
-        copy.valueCached = root.valueCached;
-
-        // 递归拷贝子树
-        if (root.children != null) {
-            copy.children = new ArrayList<>(root.children.size());
-            for (MCTSNode child : root.children) {
-                MCTSNode childCopy = cloneNodeTreeRecursive(child, copy);
-                copy.children.add(childCopy);
-            }
-        }
-
-        return copy;
-    }
-
-    /**
-     * 递归拷贝子树的内部实现。
-     */
-    private MCTSNode cloneNodeTreeRecursive(MCTSNode node, MCTSNode parent) {
-        if (node == null) return null;
-
-        MCTSNode copy = new MCTSNode(
-                deepCopyBoard(node.board),
-                node.player,
-                parent,
-                node.move,
-                node.untriedMoves != null ? new ArrayList<>(node.untriedMoves) : new ArrayList<>()
-        );
-        copy.visits = node.visits;
-        copy.totalScore = node.totalScore;
-        copy.linkedMove = node.linkedMove;
-        copy.prior = node.prior;
-        copy.rootNoise = node.rootNoise; // 只读共享，线程安全
-        copy.policyCache = node.policyCache; // 只读共享，线程安全
-        copy.valueCache = node.valueCache;
-        copy.valueCached = node.valueCached;
-
-        if (node.children != null) {
-            copy.children = new ArrayList<>(node.children.size());
-            for (MCTSNode child : node.children) {
-                MCTSNode childCopy = cloneNodeTreeRecursive(child, copy);
-                copy.children.add(childCopy);
-            }
-        }
-
-        return copy;
-    }
-
-    /**
-     * 将各线程的本地搜索结果合并回主树 currentRoot。
-     * <p>
-     * 合并策略：对 currentRoot.children 中的每个子节点，将其 visits 和 totalScore
-     * 加上所有本地树中对应 move 的对应节点的统计值。
-     * 若某本地树有主树不存在的子节点，则追加到主树中。
-     */
-    private void mergeResults(List<SearchResult> results) {
-        if (results.isEmpty() || currentRoot == null) return;
-
-        // 统计主树已有子节点的 move -> child 映射
-        Map<String, MCTSNode> rootChildMap = new HashMap<>();
-        if (currentRoot.children == null) {
-            currentRoot.children = new ArrayList<>();
-        } else {
-            for (MCTSNode child : currentRoot.children) {
-                if (child.move != null) {
-                    rootChildMap.put(child.move[0] + "," + child.move[1], child);
-                }
-            }
-        }
-
-        // 遍历每个本地搜索结果
-        for (SearchResult result : results) {
-            MCTSNode localRoot = result.localRoot;
-            if (localRoot == null || localRoot.children == null) continue;
-
-            for (MCTSNode localChild : localRoot.children) {
-                if (localChild.move == null) continue;
-
-                String key = localChild.move[0] + "," + localChild.move[1];
-                MCTSNode existing = rootChildMap.get(key);
-
-                if (existing != null) {
-                    // 累加到现有子节点
-                    existing.visits += localChild.visits;
-                    existing.totalScore += localChild.totalScore;
-
-                    // 合并子节点的子节点（递归合并）
-                    if (localChild.children != null && !localChild.children.isEmpty()) {
-                        mergeChildren(existing, localChild.children);
-                    }
-                } else {
-                    // 主树中没有对应节点，深拷贝本地子树并追加
-                    MCTSNode newChild = cloneNodeTreeRecursive(localChild, currentRoot);
-                    currentRoot.children.add(newChild);
-                    rootChildMap.put(key, newChild);
-                }
-            }
-        }
-    }
-
-    /**
-     * 将 sourceChildren 合并到 targetNode.children 中。
-     */
-    private void mergeChildren(MCTSNode targetNode, List<MCTSNode> sourceChildren) {
-        if (targetNode.children == null) {
-            targetNode.children = new ArrayList<>();
-        }
-
-        // 建立目标节点已有子节点的映射
-        Map<String, MCTSNode> childMap = new HashMap<>();
-        for (MCTSNode child : targetNode.children) {
-            if (child.move != null) {
-                childMap.put(child.move[0] + "," + child.move[1], child);
-            }
-        }
-
-        for (MCTSNode srcChild : sourceChildren) {
-            if (srcChild.move == null) continue;
-
-            String key = srcChild.move[0] + "," + srcChild.move[1];
-            MCTSNode existing = childMap.get(key);
-
-            if (existing != null) {
-                existing.visits += srcChild.visits;
-                existing.totalScore += srcChild.totalScore;
-
-                if (srcChild.children != null && !srcChild.children.isEmpty()) {
-                    mergeChildren(existing, srcChild.children);
-                }
-            } else {
-                MCTSNode newChild = cloneNodeTreeRecursive(srcChild, targetNode);
-                targetNode.children.add(newChild);
-                childMap.put(key, newChild);
-            }
-        }
-    }
-
-    /**
      * 扩展节点
      */
     private void expand(MCTSNode node) {
         if (node.untriedMoves.isEmpty()) return;
-        int[] moveFull = node.untriedMoves.remove(node.untriedMoves.size() - 1);
+        int[] moveFull;
+        synchronized (node) {
+            if (node.untriedMoves.isEmpty()) return;
+            moveFull = node.untriedMoves.remove(node.untriedMoves.size() - 1);
+        }
         int[] move = new int[]{moveFull[0], moveFull[1]};
 
         // 首次展开时：一次前向同时拿到策略先验与价值，避免后续 simulate 重复计算
@@ -746,7 +583,9 @@ public class MCTSGoAI implements GoAI {
             child.prior = prior;
 
             if (node.children == null) node.children = new ArrayList<>();
-            node.children.add(child);
+            synchronized (node) {
+                node.children.add(child);
+            }
             node.linkedMove = move;
         }
     }
@@ -755,54 +594,64 @@ public class MCTSGoAI implements GoAI {
      * 启发式排序候选点
      * @param moves 支持 2 元素 [x,y] 或 3 元素 [x,y,pruningValue] 数组
      */
+    /**
+     * 对走法列表按预计算价值排序（不再重新评估——getAllValidMoves 已用
+     * evaluateMoveScore 一次性算好了完整排序分）。
+     */
     private List<int[]> heuristicSort(GoPlayer[][] board, GoPlayer player, List<int[]> moves) {
-        // 用 int[361] 数组替代 HashMap<String,Integer>，减少分配和装箱
-        int[] scores = new int[BOARD_SIZE * BOARD_SIZE];
-        java.util.Arrays.fill(scores, Integer.MIN_VALUE);
-
-        for (int[] move : moves) {
-            int score = 0;
-            int x = move[0], y = move[1];
-            int idx = x * BOARD_SIZE + y;
-
-            // 如果是 3 元素数组，先加入剪枝阶段的价值分
-            if (move.length >= 3) {
-                score += move[2];
-            }
-
-            // 1. 吃子检测（打吃）
-            score += countCaptures(board, x, y, player) * 50;
-
-            // 2. 被吃检测（防打吃）
-            GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-            score -= countCaptures(board, x, y, opponent) * 40;
-
-            // 3. 气数评估
-            score += evaluateMoveLiberties(board, x, y, player) * 10;
-
-            // 4. 位置评估
-            score += getPositionBonus(x, y);
-
-            // 5. 连接己方棋子
-            score += countFriendlyNeighbors(board, x, y, player) * 15;
-
-            // 6. 防止己方被打吃
-            if (wouldBeInAtari(board, x, y, player)) {
-                score -= 30;
-            }
-
-            scores[idx] = score;
-        }
-
-        // 按分数排序（通过数组查分，避免字符串拼接）
         moves.sort((a, b) -> {
-            int sa = scores[a[0] * BOARD_SIZE + a[1]];
-            int sb = scores[b[0] * BOARD_SIZE + b[1]];
-            // Integer.MIN_VALUE 表示未计算（理论上不可能）
+            int sa = a.length >= 3 ? a[2] : 0;
+            int sb = b.length >= 3 ? b[2] : 0;
             return Integer.compare(sb, sa);
         });
-
         return moves;
+    }
+
+    /**
+     * 统一评估走法价值：一次计算所有昂贵原语，合并剪枝判定和排序分。
+     * <p>
+     * 替代原先 evaluateMovePruning + heuristicSort 的两次独立计算，
+     * countCaptures/evaluateMoveLiberties/countFriendlyNeighbors 等
+     * 棋群遍历操作只做一次，消除了此前每次 expand 对全盘 361 点做
+     * 两轮 BFS 的冗余开销。
+     *
+     * @return 走法分值（负值表示应剪枝跳过）
+     */
+    private int evaluateMoveScore(GoPlayer[][] board, int x, int y, GoPlayer player) {
+        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
+
+        // ── 一次性计算所有昂贵原语（棋群遍历/HashSet 仅一次）──
+        int captures = countCaptures(board, x, y, player);
+        int oppCaptures = countCaptures(board, x, y, opponent);
+        int libs = evaluateMoveLiberties(board, x, y, player);
+        int friendly = countFriendlyNeighbors(board, x, y, player);
+        int posBonus = getPositionBonus(x, y);
+        int edgeDist = Math.min(Math.min(x, y), Math.min(BOARD_SIZE - 1 - x, BOARD_SIZE - 1 - y));
+
+        // 对手邻居数
+        int oppNbrs = 0;
+        for (int[] dir : DIRS) {
+            int nx = x + dir[0], ny = y + dir[1];
+            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent)
+                oppNbrs++;
+        }
+        // 是否被打吃
+        boolean inAtari = wouldBeInAtari(board, x, y, player);
+
+        // ── 剪枝判定 ──
+        int pruneScore = libs * 3 + friendly * 5 + captures * 20 + posBonus;
+        if (edgeDist == 0) pruneScore -= 5;
+        if (edgeDist == 0 && friendly == 0) pruneScore -= 20;
+        if (friendly == 0 && oppNbrs >= 3) pruneScore -= 15;
+        if (libs <= 1 && captures == 0) pruneScore -= 30;
+
+        // 明显差的走法直接跳过
+        if (pruneScore < -10) return pruneScore;
+
+        // ── 完整排序分（合并原先 heuristicSort 的逻辑）──
+        int score = captures * 50 - oppCaptures * 40 + libs * 10 + posBonus + friendly * 15;
+        if (inAtari) score -= 30;
+        return score;
     }
 
     /**
@@ -957,8 +806,10 @@ public class MCTSGoAI implements GoAI {
 
     private void backpropagate(MCTSNode node, double score) {
         while (node != null) {
-            node.visits++;
-            node.totalScore += score;
+            synchronized (node) {
+                node.visits++;
+                node.totalScore += score;
+            }
             node = node.parent;
         }
     }
@@ -1750,8 +1601,8 @@ public class MCTSGoAI implements GoAI {
                 if (board[x][y] != GoPlayer.NONE) continue;
                 if (!isLegalMove(board, x, y, player)) continue;
 
-                // 知识剪枝：评估走法价值
-                int value = evaluateMovePruning(board, x, y, player);
+                // 知识剪枝 + 完整排序分：一次计算（evaluateMoveScore 合并了剪枝和排序）
+                int value = evaluateMoveScore(board, x, y, player);
                 if (value < -10) continue;  // 明显差的走法直接跳过
 
                 moves.add(new int[]{x, y, value});
@@ -1772,55 +1623,12 @@ public class MCTSGoAI implements GoAI {
         // 按价值排序（优先搜索高价值走法）
         moves.sort((a, b) -> b[2] - a[2]);
 
-        // 返回 3 元素数组给调用方，展开时取前两个元素
         return moves;
     }
 
     /**
      * 评估走法是否值得搜索（负分表示应剪枝）
      */
-    private int evaluateMovePruning(GoPlayer[][] board, int x, int y, GoPlayer player) {
-        int score = 0;
-
-        // 基本评估
-        score += evaluateMoveLiberties(board, x, y, player) * 3;
-        score += countFriendlyNeighbors(board, x, y, player) * 5;
-        score += countCaptures(board, x, y, player) * 20;
-        score += getPositionBonus(x, y);
-
-        // 负分剪枝条件：
-
-        // 1. 过于深入边角（边部4线以内，深度超过2格）
-        int edgeDist = Math.min(Math.min(x, y), Math.min(BOARD_SIZE - 1 - x, BOARD_SIZE - 1 - y));
-        if (edgeDist == 0) score -= 5;  // 边路
-        if (edgeDist == 0 && !hasFriendlyNeighbor(board, x, y, player)) score -= 20;
-
-        // 2. 孤立的点（周围无己方棋子，对手棋子多）
-        int friendlyNbrs = countFriendlyNeighbors(board, x, y, player);
-        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-        int oppNbrs = 0;
-        for (int[] dir : DIRS) {
-            int nx = x + dir[0], ny = y + dir[1];
-            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent) {
-                oppNbrs++;
-            }
-        }
-        if (friendlyNbrs == 0 && oppNbrs >= 3) score -= 15;  // 被包围的孤立点
-
-        // 3. 自杀式落子（落子后气数很少）
-        board[x][y] = player;
-        Set<int[]> group = getGroup(board, x, y);
-        int libs = countGroupLiberties(board, group);
-        board[x][y] = GoPlayer.NONE;
-        if (libs <= 1 && countCaptures(board, x, y, player) == 0) score -= 30;
-
-        return score;
-    }
-
-    private boolean hasFriendlyNeighbor(GoPlayer[][] board, int x, int y, GoPlayer player) {
-        return countFriendlyNeighbors(board, x, y, player) > 0;
-    }
-
     private boolean isLegalMove(GoPlayer[][] board, int x, int y, GoPlayer player) {
         board[x][y] = player;
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
@@ -1924,23 +1732,6 @@ public class MCTSGoAI implements GoAI {
             copy[x] = board[x].clone();
         }
         return copy;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  并行搜索结果容器
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * 并行搜索线程的返回值封装。
-     */
-    private static final class SearchResult {
-        final MCTSNode localRoot;
-        final int iterations;
-
-        SearchResult(MCTSNode localRoot, int iterations) {
-            this.localRoot = localRoot;
-            this.iterations = iterations;
-        }
     }
 
     // ══════════════════════════════════════════════════════════════════
