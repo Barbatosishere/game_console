@@ -629,70 +629,13 @@ public class NeuralEvaluator {
                 bTopIn = new double[batchSize][TOP_INPUT];
                 bShared = new double[batchSize][TOP_HIDDEN];
                 bShZ = new double[batchSize][TOP_HIDDEN];
-                for (int n = 0; n < batchSize; n++) {
-                    double[][][] p = planes[n];
-                    double[] aux = auxFeatures[n];
-                    double[][][] subIn = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_INPUT];
-                    double[][][] subZ = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
-                    double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
-                    for (int b = 0; b < NUM_BLOCKS; b++) {
-                        int bx = BLOCK_STARTS[b][0], by = BLOCK_STARTS[b][1];
-                        for (int s = 0; s < SUBS_PER_BLOCK; s++) {
-                            int sx = bx + SUB_OFFSETS[s][0], sy = by + SUB_OFFSETS[s][1];
-                            int idx = 0;
-                            for (int pp = 0; pp < PLANES; pp++)
-                                for (int dx = 0; dx < SUB_SIZE; dx++)
-                                    for (int dy = 0; dy < SUB_SIZE; dy++)
-                                        subIn[b][s][idx++] = p[pp][sx + dx][sy + dy];
-                            for (int j = 0; j < SUB_HIDDEN; j++) {
-                                double sum = subB1[b][j];
-                                for (int i = 0; i < SUB_INPUT; i++)
-                                    sum += subW1[b][i][j] * subIn[b][s][i];
-                                subZ[b][s][j] = sum;
-                                subOut[b][s][j] = Math.max(0, sum);
-                            }
-                        }
-                    }
-                    double[][] blkIn = new double[NUM_BLOCKS][BLOCK_INPUT];
-                    double[][] blkZ = new double[NUM_BLOCKS][BLOCK_HIDDEN];
-                    double[][] blkOut = new double[NUM_BLOCKS][BLOCK_HIDDEN];
-                    for (int b = 0; b < NUM_BLOCKS; b++) {
-                        int idx = 0;
-                        for (int s = 0; s < SUBS_PER_BLOCK; s++)
-                            for (int h = 0; h < SUB_HIDDEN; h++)
-                                blkIn[b][idx++] = subOut[b][s][h];
-                        for (int j = 0; j < BLOCK_HIDDEN; j++) {
-                            double sum = blockB1[b][j];
-                            for (int i = 0; i < BLOCK_INPUT; i++)
-                                sum += blockW1[b][i][j] * blkIn[b][i];
-                            blkZ[b][j] = sum;
-                            blkOut[b][j] = Math.max(0, sum);
-                        }
-                    }
-                    int topIdx = 0;
-                    for (int b = 0; b < NUM_BLOCKS; b++)
-                        for (int h = 0; h < BLOCK_HIDDEN; h++)
-                            bTopIn[n][topIdx++] = blkOut[b][h];
-                    System.arraycopy(aux, 0, bTopIn[n], NUM_BLOCKS * BLOCK_HIDDEN, AUX_SIZE);
-                    for (int b = 0; b < NUM_BLOCKS; b++) {
-                        for (int s = 0; s < SUBS_PER_BLOCK; s++) {
-                            System.arraycopy(subIn[b][s], 0, bSubIn[n][b][s], 0, SUB_INPUT);
-                            System.arraycopy(subZ[b][s], 0, bSubZ[n][b][s], 0, SUB_HIDDEN);
-                        }
-                        System.arraycopy(blkIn[b], 0, bBlkIn[n][b], 0, BLOCK_INPUT);
-                        System.arraycopy(blkZ[b], 0, bBlkZ[n][b], 0, BLOCK_HIDDEN);
-                    }
-                }
-                boolean ranGpu = oc.batchTopForward(bTopIn, topW1, topB1, bShared, bShZ);
+                // 整个 batch 的三层前向在 GPU 上完成（子块→字块→顶级）
+                boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize,
+                        subW1, subB1, blockW1, blockB1, topW1, topB1,
+                        bSubIn, bSubZ, bBlkIn, bBlkZ, bTopIn, bShared, bShZ);
                 if (!ranGpu) {
-                    for (int n = 0; n < batchSize; n++)
-                        for (int j = 0; j < TOP_HIDDEN; j++) {
-                            double sum = topB1[j];
-                            for (int i = 0; i < TOP_INPUT; i++)
-                                sum += topW1[i][j] * bTopIn[n][i];
-                            bShZ[n][j] = sum;
-                            bShared[n][j] = Math.max(0, sum);
-                        }
+                    // GPU 失败，回退 CPU 路径
+                    useGpu = false;
                 }
             }
 

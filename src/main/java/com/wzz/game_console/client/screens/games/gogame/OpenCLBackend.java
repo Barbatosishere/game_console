@@ -104,6 +104,70 @@ public class OpenCLBackend implements AutoCloseable {
         } catch (Exception e) { System.err.println("[OpenCL] " + e.getMessage()); return -1; }
     }
 
+    // ── 完整 GPU Pass 0 前向：子块→字块→顶级，一次批量完成 ──
+    /**
+     * 在整个 batch 上 GPU 执行 子块/字块/顶级 三层前向（ReLU 中间结果），
+     * 并填充成 NeuralEvaluator.trainMiniBatch GPU 路径所需的全部中间量。
+     * 若 GPU 不可用或失败返回 false，调用方回退 CPU 路径。
+     *
+     * @param bSubIn [B][9][9][36] 子块输入
+     * @param bSubZ  [B][9][9][16] 子块 ReLU 输出（供反向的 ReLU 掩码使用）
+     * @param bBlkIn [B][9][144]   字块输入
+     * @param bBlkZ  [B][9][64]    字块 ReLU 输出
+     * @param bTopIn [B][600]      顶级输入
+     * @param bShared [B][256]     顶级 ReLU 输出
+     * @param bShZ   [B][256]      顶级 ReLU 输出（bShared 的副本，供反向掩码）
+     */
+    public boolean batchPass0Forward(double[][][][] planes, double[][] aux, int B,
+                                      double[][][] subW, double[][] subB,
+                                      double[][][] blkW, double[][] blkB,
+                                      double[][] topW, double[] topB,
+                                      double[][][][] bSubIn, double[][][][] bSubZ,
+                                      double[][][] bBlkIn, double[][][] bBlkZ,
+                                      double[][] bTopIn, double[][] bShared, double[][] bShZ) {
+        if (!available) return false;
+        try {
+            // ── 关键：子块权重需从 [9][36][16] 复制为 GPU 内核期望的 [81][36][16]
+            //    （每大块内 9 个子块共享该块的权重，内核按子块全局索引 s=0..80 取权）
+            double[][][] subWGpu = new double[81][36][16];
+            double[][] subBGpu = new double[81][16];
+            for (int si = 0; si < 81; si++) {
+                int b = si / 9;
+                subWGpu[si] = subW[b];
+                subBGpu[si] = subB[b];
+            }
+            // ── 子块前向 ──
+            double[][][] subIn = extractSubInputs(planes, B);      // [81][B][36]
+            double[][][] subOut = gpuSubFwd(subIn, subWGpu, subBGpu, B); // [81][B][16]
+            for (int n = 0; n < B; n++)
+                for (int b = 0; b < 9; b++)
+                    for (int s = 0; s < 9; s++) {
+                        System.arraycopy(subIn[b*9+s][n], 0, bSubIn[n][b][s], 0, 36);
+                        System.arraycopy(subOut[b*9+s][n], 0, bSubZ[n][b][s], 0, 16);
+                    }
+            // ── 字块前向 ──
+            double[][][] blkIn = buildBlkIn(subOut, B);            // [9][B][144]
+            double[][][] blkOut = gpuBlockFwd(blkIn, blkW, blkB, B); // [9][B][64]
+            for (int n = 0; n < B; n++)
+                for (int b = 0; b < 9; b++) {
+                    System.arraycopy(blkIn[b][n], 0, bBlkIn[n][b], 0, 144);
+                    System.arraycopy(blkOut[b][n], 0, bBlkZ[n][b], 0, 64);
+                }
+            // ── 顶级前向 ──
+            double[][] topIn = buildTopIn(blkOut, aux, B);         // [B][600]
+            double[][] sharedOut = gpuTopFwd(topIn, topW, topB, B); // [B][256]
+            for (int n = 0; n < B; n++) {
+                System.arraycopy(topIn[n], 0, bTopIn[n], 0, 600);
+                System.arraycopy(sharedOut[n], 0, bShared[n], 0, 256);
+                System.arraycopy(sharedOut[n], 0, bShZ[n], 0, 256);
+            }
+            return true;
+        } catch (Exception e) {
+            System.err.println("[OpenCL] batchPass0Forward: " + e.getMessage());
+            return false;
+        }
+    }
+
     // ── 兼容现有 NeuralEvaluator 集成：顶级 FC GPU 前向 ──
     /**
      * GPU 执行顶级 FC(600→256) + ReLU，对 batch 一次完成。
