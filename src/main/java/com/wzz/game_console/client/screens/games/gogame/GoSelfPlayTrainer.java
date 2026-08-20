@@ -18,6 +18,7 @@ public final class GoSelfPlayTrainer {
         public int batchSize = 128;
         public double l2 = 1.0e-5;
         public double gradientClip = 5.0;
+        public double momentum = 0.9;
         public int maxReplaySamples = 20_000;
     }
 
@@ -251,7 +252,7 @@ public final class GoSelfPlayTrainer {
                     }
                 }
                 total += evaluator.trainMiniBatch(planes, aux, values, policies,
-                        learningRate, config.l2, config.gradientClip);
+                        learningRate, config.l2, config.gradientClip, config.momentum);
                 batches++;
             }
         }

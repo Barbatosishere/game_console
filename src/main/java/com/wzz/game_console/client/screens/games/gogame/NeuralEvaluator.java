@@ -124,6 +124,20 @@ public class NeuralEvaluator {
     private final Object modelLock = new Object();
     private volatile long modelVersion;
 
+    // 动量缓冲（惰性分配，首次 momentum > 0 训练时创建）
+    private double[][][] vSubW1;
+    private double[][] vSubB1;
+    private double[][][] vBlockW1;
+    private double[][] vBlockB1;
+    private double[][] vTopW1;
+    private double[] vTopB1;
+    private double[][] vPolicyW;
+    private double[] vPolicyB;
+    private double[][] vValueW1;
+    private double[] vValueB1;
+    private double[] vValueW2;
+    private double vValueB2;
+
     // 评估缓存（Zobrist 哈希 -> 评估值，仅用于旧版 evaluate 接口）
     private final Map<CacheKey, Double> evaluationCache = new HashMap<>();
 
@@ -571,15 +585,19 @@ public class NeuralEvaluator {
      * @param learningRate  学习率
      * @param l2            L2 正则系数
      * @param gradientClip  梯度裁剪阈值
+     * @param momentum      动量系数（0 = 无动量，推荐 0.9）
      * @return 平均 loss
      */
     public double trainMiniBatch(double[][][][] planes, double[][] auxFeatures,
                                   double[] valueTargets, double[][] policyTargets,
-                                  double learningRate, double l2, double gradientClip) {
+                                  double learningRate, double l2, double gradientClip,
+                                  double momentum) {
         int batchSize = planes.length;
         if (batchSize == 0) return 0;
 
         synchronized (modelLock) {
+            // 确保动量缓冲就绪
+            if (momentum > 0) ensureVelocities();
             // ── 梯度累加器 ──────────────────────────────────────────────
             double[][][] gSubW = new double[NUM_BLOCKS][SUB_INPUT][SUB_HIDDEN];
             double[][] gSubB = new double[NUM_BLOCKS][SUB_HIDDEN];
@@ -881,19 +899,37 @@ public class NeuralEvaluator {
                                        gPolicyW, gPolicyB, gValueW1, gValueB1, gValueW2, gValueB2);
             if (norm > gradientClip) scale *= gradientClip / norm;
 
-            // 更新 all weights
-            updateMMM(subW1, gSubW, learningRate * scale, l2);
-            updateMM(subB1, gSubB, learningRate * scale, 0);
-            updateMMM(blockW1, gBlockW, learningRate * scale, l2);
-            updateMM(blockB1, gBlockB, learningRate * scale, 0);
-            updateMM(topW1, gTopW, learningRate * scale, l2);
-            updateM(topB1, gTopB, learningRate * scale, 0);
-            updateMM(policyW, gPolicyW, learningRate * scale, l2);
-            updateM(policyB, gPolicyB, learningRate * scale, 0);
-            updateMM(valueW1, gValueW1, learningRate * scale, l2);
-            updateM(valueB1, gValueB1, learningRate * scale, 0);
-            updateM(valueW2, gValueW2, learningRate * scale, l2);
-            valueB2 -= learningRate * scale * (gValueB2 + l2 * valueB2);
+            // 更新 all weights（momentum > 0 时使用动量更新）
+            double r = learningRate * scale;
+            boolean useMom = momentum > 0;
+            if (useMom) {
+                updateMMM(subW1, gSubW, vSubW1, r, l2, momentum);
+                updateMM(subB1, gSubB, vSubB1, r, 0, momentum);
+                updateMMM(blockW1, gBlockW, vBlockW1, r, l2, momentum);
+                updateMM(blockB1, gBlockB, vBlockB1, r, 0, momentum);
+                updateMM(topW1, gTopW, vTopW1, r, l2, momentum);
+                updateM(topB1, gTopB, vTopB1, r, 0, momentum);
+                updateMM(policyW, gPolicyW, vPolicyW, r, l2, momentum);
+                updateM(policyB, gPolicyB, vPolicyB, r, 0, momentum);
+                updateMM(valueW1, gValueW1, vValueW1, r, l2, momentum);
+                updateM(valueB1, gValueB1, vValueB1, r, 0, momentum);
+                updateM(valueW2, gValueW2, vValueW2, r, l2, momentum);
+                vValueB2 = momentum * vValueB2 + r * (gValueB2 + l2 * valueB2);
+                valueB2 -= vValueB2;
+            } else {
+                updateMMM(subW1, gSubW, null, r, l2, 0);
+                updateMM(subB1, gSubB, null, r, 0, 0);
+                updateMMM(blockW1, gBlockW, null, r, l2, 0);
+                updateMM(blockB1, gBlockB, null, r, 0, 0);
+                updateMM(topW1, gTopW, null, r, l2, 0);
+                updateM(topB1, gTopB, null, r, 0, 0);
+                updateMM(policyW, gPolicyW, null, r, l2, 0);
+                updateM(policyB, gPolicyB, null, r, 0, 0);
+                updateMM(valueW1, gValueW1, null, r, l2, 0);
+                updateM(valueB1, gValueB1, null, r, 0, 0);
+                updateM(valueW2, gValueW2, null, r, l2, 0);
+                valueB2 -= r * (gValueB2 + l2 * valueB2);
+            }
 
             modelVersion++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
@@ -901,21 +937,79 @@ public class NeuralEvaluator {
         }
     }
 
-    // ── 梯度更新辅助 ──────────────────────────────────────────────────
-    private static void updateMMM(double[][][] w, double[][][] g, double rate, double l2) {
-        for (int a = 0; a < w.length; a++)
-            for (int b = 0; b < w[a].length; b++)
-                for (int c = 0; c < w[a][b].length; c++)
-                    w[a][b][c] -= rate * (g[a][b][c] + l2 * w[a][b][c]);
+    // ── 梯度更新辅助（支持动量）─────────────────────────────────────
+    /**
+     * 更新 3D 权重：w -= v, v = momentum * v + rate * (g + l2 * w)
+     * 当 v == null 或 momentum == 0 时退化为纯 SGD：w -= rate * (g + l2 * w)
+     */
+    private static void updateMMM(double[][][] w, double[][][] g, double[][][] v, double rate, double l2, double momentum) {
+        if (v != null) {
+            for (int a = 0; a < w.length; a++)
+                for (int b = 0; b < w[a].length; b++)
+                    for (int c = 0; c < w[a][b].length; c++) {
+                        double grad = g[a][b][c] + l2 * w[a][b][c];
+                        v[a][b][c] = momentum * v[a][b][c] + rate * grad;
+                        w[a][b][c] -= v[a][b][c];
+                    }
+        } else {
+            for (int a = 0; a < w.length; a++)
+                for (int b = 0; b < w[a].length; b++)
+                    for (int c = 0; c < w[a][b].length; c++)
+                        w[a][b][c] -= rate * (g[a][b][c] + l2 * w[a][b][c]);
+        }
     }
-    private static void updateMM(double[][] w, double[][] g, double rate, double l2) {
-        for (int a = 0; a < w.length; a++)
-            for (int b = 0; b < w[a].length; b++)
-                w[a][b] -= rate * (g[a][b] + l2 * w[a][b]);
+    private static void updateMM(double[][] w, double[][] g, double[][] v, double rate, double l2, double momentum) {
+        if (v != null) {
+            for (int a = 0; a < w.length; a++)
+                for (int b = 0; b < w[a].length; b++) {
+                    double grad = g[a][b] + l2 * w[a][b];
+                    v[a][b] = momentum * v[a][b] + rate * grad;
+                    w[a][b] -= v[a][b];
+                }
+        } else {
+            for (int a = 0; a < w.length; a++)
+                for (int b = 0; b < w[a].length; b++)
+                    w[a][b] -= rate * (g[a][b] + l2 * w[a][b]);
+        }
     }
-    private static void updateM(double[] w, double[] g, double rate, double l2) {
-        for (int a = 0; a < w.length; a++)
-            w[a] -= rate * (g[a] + l2 * w[a]);
+    private static void updateM(double[] w, double[] g, double[] v, double rate, double l2, double momentum) {
+        if (v != null) {
+            for (int a = 0; a < w.length; a++) {
+                double grad = g[a] + l2 * w[a];
+                v[a] = momentum * v[a] + rate * grad;
+                w[a] -= v[a];
+            }
+        } else {
+            for (int a = 0; a < w.length; a++)
+                w[a] -= rate * (g[a] + l2 * w[a]);
+        }
+    }
+
+    /** 惰性创建动量缓冲（首次 momentum > 0 训练时调用） */
+    private void ensureVelocities() {
+        if (vSubW1 != null) return;
+        vSubW1 = new double[NUM_BLOCKS][SUB_INPUT][SUB_HIDDEN];
+        vSubB1 = new double[NUM_BLOCKS][SUB_HIDDEN];
+        vBlockW1 = new double[NUM_BLOCKS][BLOCK_INPUT][BLOCK_HIDDEN];
+        vBlockB1 = new double[NUM_BLOCKS][BLOCK_HIDDEN];
+        vTopW1 = new double[TOP_INPUT][TOP_HIDDEN];
+        vTopB1 = new double[TOP_HIDDEN];
+        vPolicyW = new double[TOP_HIDDEN][POLICY_SIZE];
+        vPolicyB = new double[POLICY_SIZE];
+        vValueW1 = new double[TOP_HIDDEN][VALUE_HIDDEN];
+        vValueB1 = new double[VALUE_HIDDEN];
+        vValueW2 = new double[VALUE_HIDDEN];
+        vValueB2 = 0;
+    }
+    /** 重置动量缓冲为 0（加载新权重后调用） */
+    private void resetVelocities() {
+        vSubW1 = null; vSubB1 = null;
+        vBlockW1 = null; vBlockB1 = null;
+        vTopW1 = null; vTopB1 = null;
+        vPolicyW = null; vPolicyB = null;
+        vValueW1 = null; vValueB1 = null;
+        vValueW2 = null;
+        vValueB2 = 0;
     }
 
     private static double gradientNorm(double[][][] gSubW, double[][] gSubB,
@@ -1282,6 +1376,8 @@ public class NeuralEvaluator {
             copyInto(m.valueW2, valueW2); this.valueB2 = m.valueB2;
             modelVersion++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
+            // 加载新权重后重置动量缓冲，避免旧动量污染新权重
+            resetVelocities();
         }
     }
 

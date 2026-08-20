@@ -557,6 +557,16 @@ public class MCTSGoAI implements GoAI {
             node.policyCache = fr.policy;
             node.valueCache = fr.value;
             node.valueCached = true;
+
+            // 策略头引导展开顺序：按策略概率升序排列（概率高的在末尾，remove(size-1) 优先展开）
+            if (node.untriedMoves.size() > 1) {
+                double[] policy = node.policyCache;
+                node.untriedMoves.sort((a, b) -> {
+                    double pa = policy[a[0] * BOARD_SIZE + a[1]];
+                    double pb = policy[b[0] * BOARD_SIZE + b[1]];
+                    return Double.compare(pa, pb); // 升序：低概率在前，高概率在后
+                });
+            }
         }
 
         GoPlayer[][] childBoard = deepCopyBoard(node.board);
@@ -602,7 +612,7 @@ public class MCTSGoAI implements GoAI {
         moves.sort((a, b) -> {
             int sa = a.length >= 3 ? a[2] : 0;
             int sb = b.length >= 3 ? b[2] : 0;
-            return Integer.compare(sb, sa);
+            return Integer.compare(sa, sb); // 升序，让 expand 的 remove(size-1) 取出最高分
         });
         return moves;
     }
@@ -1620,8 +1630,8 @@ public class MCTSGoAI implements GoAI {
             }
         }
 
-        // 按价值排序（优先搜索高价值走法）
-        moves.sort((a, b) -> b[2] - a[2]);
+        // 按价值排序（升序，让 expand 的 remove(size-1) 取出最高分走法优先展开）
+        moves.sort((a, b) -> a[2] - b[2]);
 
         return moves;
     }

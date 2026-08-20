@@ -22,6 +22,7 @@ public final class GoAdversarialTrainer {
         public int batchSize = 128;
         public double l2 = 1.0e-5;
         public double gradientClip = 5.0;
+        public double momentum = 0.9;
         public int maxReplaySamples = 20_000;
         /** KataGo 可执行文件路径 */
         public String katagoPath = "";
@@ -400,7 +401,7 @@ public final class GoAdversarialTrainer {
                     }
                 }
                 total += evaluator.trainMiniBatch(planes, aux, values, policies,
-                        learningRate, config.l2, config.gradientClip);
+                        learningRate, config.l2, config.gradientClip, config.momentum);
                 batches++;
             }
         }
