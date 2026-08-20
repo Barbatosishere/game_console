@@ -41,6 +41,14 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private boolean isMyTurn = true;
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
+    /** AI 后台思考结果（null=无解），由主线程 tick 消费 */
+    private volatile int[] aiPending = null;
+    /** AI 后台思考是否已完成 */
+    private volatile boolean aiDone = false;
+    /** 是否已有 AI 线程在思考（仅主线程访问） */
+    private boolean aiComputing = false;
+    /** 对局代次，重开/退出后丢弃残留的 AI 结果 */
+    private int aiGeneration = 0;
 
     public GomokuScreen() {
         super(Component.literal("五子棋"));
@@ -123,6 +131,12 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void startGame() {
+        synchronized (this) {
+            this.aiGeneration++;
+            this.aiPending = null;
+            this.aiDone = false;
+            this.aiComputing = false;
+        }
         this.board = new int[15][15];
         this.playerTurn = true;
         this.winner = 0;
@@ -138,29 +152,59 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         this.tickCount++;
         if (this.lanMode == 0) {
             if (this.state == State.PLAYING && !this.playerTurn && this.winner == 0) {
-                this.aiMove();
-                if (this.checkWin(2)) {
-                    this.winner = 2;
-                    this.state = State.GAME_OVER;
-                } else if (this.isBoardFull()) {
-                    this.winner = 0;
-                    this.state = State.GAME_OVER;
-                } else {
-                    this.playerTurn = true;
-                }
+                this.tickAiTurn();
             }
         }
     }
 
-    private void aiMove() {
-        if (this.ai == null) {
-            this.ai = new GomokuAI(this.difficulty);
+    private void tickAiTurn() {
+        if (!this.aiComputing) {
+            // 启动后台线程计算落子，避免阻塞渲染线程
+            this.aiComputing = true;
+            this.aiDone = false;
+            if (this.ai == null) {
+                this.ai = new GomokuAI(this.difficulty);
+            }
+            final GomokuAI ai = this.ai;
+            final int[][] snapshot = this.board;
+            final int gen;
+            synchronized (this) {
+                gen = this.aiGeneration;
+            }
+            Thread t = new Thread(() -> {
+                int[] move = ai.getMove(snapshot);
+                synchronized (this) {
+                    if (gen == this.aiGeneration) {
+                        this.aiPending = move;
+                        this.aiDone = true;
+                    }
+                }
+            }, "GomokuAI");
+            t.setDaemon(true);
+            t.start();
+            return;
         }
-        int[] best = this.ai.getMove(this.board);
-        if (best != null) {
-            this.board[best[0]][best[1]] = 2;
-            this.lastMoveX = best[0];
-            this.lastMoveY = best[1];
+
+        if (this.aiDone) {
+            // 后台计算完成，在主线程落地走法
+            this.aiDone = false;
+            this.aiComputing = false;
+            int[] best = this.aiPending;
+            this.aiPending = null;
+            if (best != null) {
+                this.board[best[0]][best[1]] = 2;
+                this.lastMoveX = best[0];
+                this.lastMoveY = best[1];
+            }
+            if (this.checkWin(2)) {
+                this.winner = 2;
+                this.state = State.GAME_OVER;
+            } else if (this.isBoardFull()) {
+                this.winner = 0;
+                this.state = State.GAME_OVER;
+            } else {
+                this.playerTurn = true;
+            }
         }
     }
 
