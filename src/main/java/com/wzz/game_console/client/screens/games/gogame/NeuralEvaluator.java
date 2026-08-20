@@ -619,6 +619,8 @@ public class NeuralEvaluator {
             double[][][][] bSubIn = null, bSubZ = null;
             double[][][] bBlkIn = null, bBlkZ = null;
             double[][] bTopIn = null, bShared = null, bShZ = null;
+            double[][] bPolicyOut = null;  // [B][362] GPU softmax 输出
+            double[] bValueOut = null;     // [B] GPU tanh 输出
             try { oc = ensureOpenCL(); useGpu = (oc != null); }
             catch (Throwable e) { useGpu = false; oc = null; }
             if (useGpu) {
@@ -629,10 +631,14 @@ public class NeuralEvaluator {
                 bTopIn = new double[batchSize][TOP_INPUT];
                 bShared = new double[batchSize][TOP_HIDDEN];
                 bShZ = new double[batchSize][TOP_HIDDEN];
-                // 整个 batch 的三层前向在 GPU 上完成（子块→字块→顶级）
+                bPolicyOut = new double[batchSize][POLICY_SIZE];
+                bValueOut = new double[batchSize];
+                // 整个 batch 的前向在 GPU 上完成（子块→字块→顶级→策略头→价值头）
                 boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize,
                         subW1, subB1, blockW1, blockB1, topW1, topB1,
-                        bSubIn, bSubZ, bBlkIn, bBlkZ, bTopIn, bShared, bShZ);
+                        policyW, policyB, valueW1, valueB1, valueW2, valueB2,
+                        bSubIn, bSubZ, bBlkIn, bBlkZ, bTopIn, bShared, bShZ,
+                        bPolicyOut, bValueOut);
                 if (!ranGpu) {
                     // GPU 失败，回退 CPU 路径
                     useGpu = false;
@@ -715,26 +721,31 @@ public class NeuralEvaluator {
                     }
                 }
 
-                // 策略头
-                double[] logits = new double[POLICY_SIZE];
-                double maxLog = Double.NEGATIVE_INFINITY;
-                for (int j = 0; j < POLICY_SIZE; j++) {
-                    double sum = policyB[j];
-                    for (int i = 0; i < TOP_HIDDEN; i++)
-                        sum += policyW[i][j] * shared[i];
-                    logits[j] = sum;
-                    if (sum > maxLog) maxLog = sum;
+                // 策略头（GPU 路径直接复用 GPU softmax 输出，CPU 路径自行前向）
+                double[] policy;
+                if (useGpu) {
+                    policy = bPolicyOut[n];
+                } else {
+                    double[] logits = new double[POLICY_SIZE];
+                    double maxLog = Double.NEGATIVE_INFINITY;
+                    for (int j = 0; j < POLICY_SIZE; j++) {
+                        double sum = policyB[j];
+                        for (int i = 0; i < TOP_HIDDEN; i++)
+                            sum += policyW[i][j] * shared[i];
+                        logits[j] = sum;
+                        if (sum > maxLog) maxLog = sum;
+                    }
+                    policy = new double[POLICY_SIZE];
+                    double sumExp = 0;
+                    for (int j = 0; j < POLICY_SIZE; j++) {
+                        policy[j] = Math.exp(logits[j] - maxLog);
+                        sumExp += policy[j];
+                    }
+                    double invSum = 1.0 / Math.max(sumExp, 1e-30);
+                    for (int j = 0; j < POLICY_SIZE; j++) policy[j] *= invSum;
                 }
-                double[] policy = new double[POLICY_SIZE];
-                double sumExp = 0;
-                for (int j = 0; j < POLICY_SIZE; j++) {
-                    policy[j] = Math.exp(logits[j] - maxLog);
-                    sumExp += policy[j];
-                }
-                double invSum = 1.0 / Math.max(sumExp, 1e-30);
-                for (int j = 0; j < POLICY_SIZE; j++) policy[j] *= invSum;
 
-                // 价值头
+                // 价值头（vh/vhZ 供反向使用；最终值 GPU 已算出则直接复用）
                 double[] vhZ = new double[VALUE_HIDDEN];
                 double[] vh = new double[VALUE_HIDDEN];
                 for (int j = 0; j < VALUE_HIDDEN; j++) {
@@ -744,10 +755,15 @@ public class NeuralEvaluator {
                     vhZ[j] = sum;
                     vh[j] = Math.max(0, sum);
                 }
-                double valuePre = valueB2;
-                for (int i = 0; i < VALUE_HIDDEN; i++)
-                    valuePre += valueW2[i] * vh[i];
-                double value = Math.tanh(valuePre);
+                double value;
+                if (useGpu) {
+                    value = bValueOut[n]; // GPU tanh 输出
+                } else {
+                    double valuePre = valueB2;
+                    for (int i = 0; i < VALUE_HIDDEN; i++)
+                        valuePre += valueW2[i] * vh[i];
+                    value = Math.tanh(valuePre);
+                }
 
                 // ── Loss ──────────────────────────────────────────────
                 double vLoss = (value - vTgt) * (value - vTgt);

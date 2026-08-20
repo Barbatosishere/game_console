@@ -122,9 +122,12 @@ public class OpenCLBackend implements AutoCloseable {
                                       double[][][] subW, double[][] subB,
                                       double[][][] blkW, double[][] blkB,
                                       double[][] topW, double[] topB,
+                                      double[][] polW, double[] polB,
+                                      double[][] valW1, double[] valB1, double[] valW2, double valB2,
                                       double[][][][] bSubIn, double[][][][] bSubZ,
                                       double[][][] bBlkIn, double[][][] bBlkZ,
-                                      double[][] bTopIn, double[][] bShared, double[][] bShZ) {
+                                      double[][] bTopIn, double[][] bShared, double[][] bShZ,
+                                      double[][] bPolicyOut, double[] bValueOut) {
         if (!available) return false;
         try {
             // ── 关键：子块权重需从 [9][36][16] 复制为 GPU 内核期望的 [81][36][16]
@@ -161,6 +164,12 @@ public class OpenCLBackend implements AutoCloseable {
                 System.arraycopy(sharedOut[n], 0, bShared[n], 0, 256);
                 System.arraycopy(sharedOut[n], 0, bShZ[n], 0, 256);
             }
+            // ── 策略头 GPU ―─
+            double[][] policyOut = gpuPolicyFwd(sharedOut, polW, polB, B); // [B][362] softmax
+            for (int n = 0; n < B; n++) System.arraycopy(policyOut[n], 0, bPolicyOut[n], 0, 362);
+            // ── 价值头 GPU ―─
+            double[] valueOut = gpuValueFwd(sharedOut, valW1, valB1, valW2, valB2, B); // [B]
+            System.arraycopy(valueOut, 0, bValueOut, 0, B);
             return true;
         } catch (Exception e) {
             System.err.println("[OpenCL] batchPass0Forward: " + e.getMessage());
