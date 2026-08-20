@@ -258,8 +258,9 @@ public class MCTSGoAI implements GoAI {
             if (endgameMove != null) return endgameMove;
         }
 
-        // 战术阅读：在 MCTS 之前处理中盘复杂战斗
-        int[] tacticalMove = tacticalReading(board, currentPlayer);
+        // 战术阅读：在 MCTS 之前处理中盘复杂战斗（限时预算，避免拖延）
+        int tacticalBudget = Math.max(200, Math.min(800, baseSearchTime / 4));
+        int[] tacticalMove = tacticalReading(board, currentPlayer, System.currentTimeMillis() + tacticalBudget);
         if (tacticalMove != null && isLegalMove(board, tacticalMove[0], tacticalMove[1], currentPlayer)) {
             return tacticalMove;
         }
@@ -558,7 +559,7 @@ public class MCTSGoAI implements GoAI {
             node.valueCache = fr.value;
             node.valueCached = true;
 
-            // 策略头引导展开顺序：按策略概率升序排列（概率高的在末尾，remove(size-1) 优先展开）
+            // 策略头引导展开顺序 + Top-K 剪枝：保留累积概率达 95% 的高概率走法
             if (node.untriedMoves.size() > 1) {
                 double[] policy = node.policyCache;
                 node.untriedMoves.sort((a, b) -> {
@@ -566,6 +567,22 @@ public class MCTSGoAI implements GoAI {
                     double pb = policy[b[0] * BOARD_SIZE + b[1]];
                     return Double.compare(pa, pb); // 升序：低概率在前，高概率在后
                 });
+                // 从高概率端逆向收集，直到覆盖 95% 总概率且至少保留 3 个
+                double total = 0;
+                for (int[] m : node.untriedMoves) total += policy[m[0] * BOARD_SIZE + m[1]];
+                if (total > 0) {
+                    double cum = 0;
+                    List<int[]> kept = new ArrayList<>(node.untriedMoves.size());
+                    for (int i = node.untriedMoves.size() - 1; i >= 0; i--) {
+                        int[] m = node.untriedMoves.get(i);
+                        kept.add(m); // 当前走法先保留（含达到条件的那一个）
+                        cum += policy[m[0] * BOARD_SIZE + m[1]];
+                        if (cum >= 0.95 * total && kept.size() >= 3) break;
+                    }
+                    // 反转回低→高顺序，配合 remove(size-1) 优先取出高概率走法
+                    java.util.Collections.reverse(kept);
+                    node.untriedMoves = kept;
+                }
             }
         }
 
@@ -939,106 +956,166 @@ public class MCTSGoAI implements GoAI {
     //  战术阅读器（深度优先 α-β 搜索）
     // ══════════════════════════════════════════════════════════════════
 
-    private static final double TACTICAL_WINDOW = 0.3;  // α-β 剪枝窗口
+    // ══════════════════════════════════════════════════════════════════
+    //  局部战术搜索（受限 α-β + 神经网络叶子评估）
+    // ══════════════════════════════════════════════════════════════════
+
+    /** 局部搜索最大深度 */
+    private static final int TACTICAL_DEPTH = 5;
 
     /**
-     * 战术阅读：检查某区域是否存在必杀或必活的走法。
-     * 用于中盘复杂战斗的局部计算。
+     * 战术阅读：对对手危险棋群做受限 α-β 深度搜索，用神经网络评估叶子。
+     * 气数≤2 的棋群用深度 5 搜索，气数=3 用深度 3。
+     * 搜索范围限定在目标棋群周围 2 格内，避免全盘扫描。
+     *
+     * @param deadline 时间预算截止时间戳，超时立即返回
+     * @return 必胜走法 {x,y}，找不到则返回 null
      */
-    private int[] tacticalReading(GoPlayer[][] board, GoPlayer player) {
-        // 找对手的危险棋群（气数<=3）
+    private int[] tacticalReading(GoPlayer[][] board, GoPlayer player, long deadline) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-        List<Set<int[]>> targetGroups = new ArrayList<>();
 
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {
-                if (board[x][y] == opponent) {
-                    Set<int[]> group = getGroup(board, x, y);
-                    int libs = countGroupLiberties(board, group);
-                    if (libs <= 3 && group.size() >= 2) {
-                        targetGroups.add(group);
+                if (board[x][y] != opponent) continue;
+                Set<int[]> group = getGroup(board, x, y);
+                int libs = countGroupLiberties(board, group);
+                if (libs <= 3 && group.size() >= 2) {
+                    // 收集局部区域
+                    Set<String> region = collectLocalRegion(board, group);
+                    if (region.isEmpty()) continue;
+                    int[] best = localAlphaBetaSearch(board, group, player, opponent,
+                            libs <= 2 ? TACTICAL_DEPTH : 3, region, deadline);
+                    if (best != null) return best;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 收集目标棋群周围 2 格内的所有空点（局部搜索区域）。
+     */
+    private Set<String> collectLocalRegion(GoPlayer[][] board, Set<int[]> group) {
+        Set<String> region = new HashSet<>();
+        for (int[] pos : group) {
+            for (int[] dir : DIRS) {
+                int nx = pos[0] + dir[0], ny = pos[1] + dir[1];
+                if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE
+                        && board[nx][ny] == GoPlayer.NONE) {
+                    region.add(nx + "," + ny);
+                    // 扩展一圈到 2 格半径
+                    for (int[] d2 : DIRS) {
+                        int nx2 = nx + d2[0], ny2 = ny + d2[1];
+                        if (nx2 >= 0 && nx2 < BOARD_SIZE && ny2 >= 0 && ny2 < BOARD_SIZE
+                                && board[nx2][ny2] == GoPlayer.NONE)
+                            region.add(nx2 + "," + ny2);
                     }
                 }
             }
         }
-
-        if (targetGroups.isEmpty()) return null;
-
-        // 对每个危险棋群找杀棋走法
-        for (Set<int[]> target : targetGroups) {
-            int[] killer = findTacticalKill(board, player, target);
-            if (killer != null) return killer;
-        }
-
-        return null;
+        return region;
     }
 
     /**
-     * 找杀死目标棋群的走法
+     * 对目标棋群做局部 α-β 搜索，返回最佳杀棋走法。
+     * 只有找到明确优势（评估值 > 0.3）的走法才返回。
      */
-    private int[] findTacticalKill(GoPlayer[][] board, GoPlayer player, Set<int[]> target) {
-        // 收集目标棋群周围的所有候选点
-        Set<String> candidates = new HashSet<>();
-        for (int[] pos : target) {
-            for (int[] dir : DIRS) {
-                int nx = pos[0] + dir[0], ny = pos[1] + dir[1];
-                if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE
-                    && board[nx][ny] == GoPlayer.NONE) {
-                    candidates.add(nx + "," + ny);
-                }
+    private int[] localAlphaBetaSearch(GoPlayer[][] board, Set<int[]> target,
+                                        GoPlayer attacker, GoPlayer defender,
+                                        int maxDepth, Set<String> region, long deadline) {
+        // 候选点排序（吃子优先）
+        List<int[]> candidates = new ArrayList<>();
+        for (String s : region) {
+            String[] p = s.split(",");
+            int x = Integer.parseInt(p[0]), y = Integer.parseInt(p[1]);
+            if (!isLegalMove(board, x, y, attacker)) continue;
+            int priority = countCaptures(board, x, y, attacker) * 20
+                         + countFriendlyNeighbors(board, x, y, attacker) * 5;
+            candidates.add(new int[]{x, y, priority});
+        }
+        candidates.sort((a, b) -> b[2] - a[2]);
+
+        int[] bestMove = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+
+        for (int[] move : candidates) {
+            if (System.currentTimeMillis() > deadline) break;
+            GoPlayer[][] next = deepCopyBoard(board);
+            if (!simulatePlaceStone(next, move[0], move[1], attacker)) continue;
+
+            double score = -localAlphaBeta(next, target, defender, maxDepth - 1,
+                    Double.NEGATIVE_INFINITY, -bestScore, region, deadline);
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestMove = new int[]{move[0], move[1]};
             }
+            // 必胜走法，提前停止
+            if (score > 0.8) break;
         }
 
-        if (candidates.isEmpty()) return null;
-
-        // 简单评分排序
-        List<int[]> moves = new ArrayList<>();
-        for (String c : candidates) {
-            String[] parts = c.split(",");
-            int x = Integer.parseInt(parts[0]), y = Integer.parseInt(parts[1]);
-            int score = evaluateTacticalMove(board, x, y, player, target);
-            moves.add(new int[]{x, y, score});
-        }
-
-        moves.sort((a, b) -> b[2] - a[2]);
-
-        // 取最高分的走法
-        if (!moves.isEmpty() && moves.get(0)[2] > 0) {
-            int[] best = moves.get(0);
-            return new int[]{best[0], best[1]};
-        }
-
-        return null;
+        return bestScore > 0.3 ? bestMove : null;
     }
 
-    private int evaluateTacticalMove(GoPlayer[][] board, int x, int y, GoPlayer player,
-                                     Set<int[]> target) {
-        int score = 0;
+    /**
+     * 递归 α-β 搜索（限深、限局部区域）。
+     * 叶子节点用神经网络价值头评估。
+     * 通过 negamax 负号翻转处理交替行棋方。
+     */
+    private double localAlphaBeta(GoPlayer[][] board, Set<int[]> target,
+                                   GoPlayer player, int depth,
+                                   double alpha, double beta, Set<String> region, long deadline) {
+        if (System.currentTimeMillis() > deadline) return 0;
 
-        // 检查落子后能否提掉目标
-        GoPlayer[][] test = deepCopyBoard(board);
-        simulatePlaceStone(test, x, y, player);
+        // 终局：目标棋群被完全提掉
+        if (targetIsCaptured(board, target)) return 1.0;
 
-        boolean allDead = true;
+        // 达到深度或目标活了（多气+安全）：神经网络评估
+        if (depth <= 0) {
+            return neuralEvaluator.forwardValue(board, player, null);
+        }
+
+        // 生成局部合法走法
+        List<int[]> moves = legalMovesInRegion(board, player, region);
+        if (moves.isEmpty()) return 0;
+
+        // 按吃子数排序提升剪枝效率
+        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
+        moves.sort((a, b) -> {
+            int ca = countCaptures(board, a[0], a[1], player);
+            int cb = countCaptures(board, b[0], b[1], player);
+            return cb - ca;
+        });
+
+        for (int[] move : moves) {
+            GoPlayer[][] next = deepCopyBoard(board);
+            if (!simulatePlaceStone(next, move[0], move[1], player)) continue;
+            double v = -localAlphaBeta(next, target, opponent, depth - 1, -beta, -alpha, region, deadline);
+            if (v > alpha) alpha = v;
+            if (alpha >= beta) break;
+        }
+        return alpha;
+    }
+
+    /** 检查目标棋群是否已被完全提掉 */
+    private boolean targetIsCaptured(GoPlayer[][] board, Set<int[]> target) {
         for (int[] pos : target) {
-            if (test[pos[0]][pos[1]] != GoPlayer.NONE) {
-                allDead = false;
-                break;
+            if (board[pos[0]][pos[1]] != GoPlayer.NONE) return false;
+        }
+        return true;
+    }
+
+    /** 生成局部区域内的合法走法 */
+    private List<int[]> legalMovesInRegion(GoPlayer[][] board, GoPlayer player, Set<String> region) {
+        List<int[]> moves = new ArrayList<>();
+        for (String s : region) {
+            String[] p = s.split(",");
+            int x = Integer.parseInt(p[0]), y = Integer.parseInt(p[1]);
+            if (isLegalMove(board, x, y, player)) {
+                moves.add(new int[]{x, y});
             }
         }
-        if (allDead) score += 100;  // 必杀
-
-        // 检查落子后己方是否安全
-        test[x][y] = player;
-        Set<int[]> myGroup = getGroup(test, x, y);
-        int myLibs = countGroupLiberties(test, myGroup);
-        if (myLibs >= 2) score += 20;
-        if (myLibs == 1) score -= 50;  // 自杀危险
-
-        // 检查能否紧气
-        score += countCaptures(board, x, y, player) * 15;
-
-        return score;
+        return moves;
     }
 
     // ══════════════════════════════════════════════════════════════════
