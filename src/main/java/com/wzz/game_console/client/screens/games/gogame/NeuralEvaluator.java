@@ -1367,7 +1367,9 @@ public class NeuralEvaluator {
         try (DataInputStream in = new DataInputStream(Files.newInputStream(path))) {
             int magic = in.readInt();
             int fmt = in.readInt();
-            if (magic != MODEL_MAGIC || fmt != MODEL_FORMAT)
+            // 向后兼容：NEV2（0x4E455632）用 double 8 字节，NEV3 用 float 4 字节
+            boolean isDouble = (magic == 0x4E455632 && fmt == 2);
+            if (magic != MODEL_MAGIC && magic != 0x4E455632)
                 throw new IOException("Unsupported model format: magic=" + Integer.toHexString(magic) + " fmt=" + fmt);
             long ver = in.readLong();
 
@@ -1375,16 +1377,16 @@ public class NeuralEvaluator {
             double[][] lSubB1 = new double[NUM_BLOCKS][SUB_HIDDEN];
             double[][][] lBlockW1 = new double[NUM_BLOCKS][BLOCK_INPUT][BLOCK_HIDDEN];
             double[][] lBlockB1 = new double[NUM_BLOCKS][BLOCK_HIDDEN];
-            for (int b = 0; b < NUM_BLOCKS; b++) { readMatrix(in, lSubW1[b]); readVector(in, lSubB1[b]); }
-            for (int b = 0; b < NUM_BLOCKS; b++) { readMatrix(in, lBlockW1[b]); readVector(in, lBlockB1[b]); }
-            double[][] lTopW1 = readMatrix(in, TOP_INPUT, TOP_HIDDEN);
-            double[] lTopB1 = readVector(in, TOP_HIDDEN);
-            double[][] lPolicyW = readMatrix(in, TOP_HIDDEN, POLICY_SIZE);
-            double[] lPolicyB = readVector(in, POLICY_SIZE);
-            double[][] lValueW1 = readMatrix(in, TOP_HIDDEN, VALUE_HIDDEN);
-            double[] lValueB1 = readVector(in, VALUE_HIDDEN);
-            double[] lValueW2 = readVector(in, VALUE_HIDDEN);
-            double lValueB2 = in.readFloat();
+            for (int b = 0; b < NUM_BLOCKS; b++) { readMatrix(in, lSubW1[b], isDouble); readVector(in, lSubB1[b], isDouble); }
+            for (int b = 0; b < NUM_BLOCKS; b++) { readMatrix(in, lBlockW1[b], isDouble); readVector(in, lBlockB1[b], isDouble); }
+            double[][] lTopW1 = readMatrix(in, TOP_INPUT, TOP_HIDDEN, isDouble);
+            double[] lTopB1 = readVector(in, TOP_HIDDEN, isDouble);
+            double[][] lPolicyW = readMatrix(in, TOP_HIDDEN, POLICY_SIZE, isDouble);
+            double[] lPolicyB = readVector(in, POLICY_SIZE, isDouble);
+            double[][] lValueW1 = readMatrix(in, TOP_HIDDEN, VALUE_HIDDEN, isDouble);
+            double[] lValueB1 = readVector(in, VALUE_HIDDEN, isDouble);
+            double[] lValueW2 = readVector(in, VALUE_HIDDEN, isDouble);
+            double lValueB2 = isDouble ? in.readDouble() : in.readFloat();
 
             ModelWeights m = new ModelWeights(lSubW1, lSubB1, lBlockW1, lBlockB1,
                     lTopW1, lTopB1, lPolicyW, lPolicyB,
@@ -1399,20 +1401,20 @@ public class NeuralEvaluator {
     private static void writeVector(DataOutputStream o, double[] v) throws IOException {
         for (double x : v) o.writeFloat((float)x);
     }
-    private static double[][] readMatrix(DataInputStream in, int r, int c) throws IOException {
+    private static double[][] readMatrix(DataInputStream in, int r, int c, boolean isDouble) throws IOException {
         double[][] m = new double[r][c];
-        for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) m[i][j] = in.readDouble();
+        for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) m[i][j] = isDouble ? in.readDouble() : in.readFloat();
         return m;
     }
-    private static void readMatrix(DataInputStream in, double[][] target) throws IOException {
-        for (double[] r : target) for (int j = 0; j < r.length; j++) r[j] = in.readDouble();
+    private static void readMatrix(DataInputStream in, double[][] target, boolean isDouble) throws IOException {
+        for (double[] r : target) for (int j = 0; j < r.length; j++) r[j] = isDouble ? in.readDouble() : in.readFloat();
     }
-    private static double[] readVector(DataInputStream in, int n) throws IOException {
+    private static double[] readVector(DataInputStream in, int n, boolean isDouble) throws IOException {
         double[] v = new double[n];
-        for (int i = 0; i < n; i++) v[i] = in.readDouble();
+        for (int i = 0; i < n; i++) v[i] = isDouble ? in.readDouble() : in.readFloat();
         return v;
     }
-    private static void readVector(DataInputStream in, double[] target) throws IOException {
-        for (int i = 0; i < target.length; i++) target[i] = in.readDouble();
+    private static void readVector(DataInputStream in, double[] target, boolean isDouble) throws IOException {
+        for (int i = 0; i < target.length; i++) target[i] = isDouble ? in.readDouble() : in.readFloat();
     }
 }
