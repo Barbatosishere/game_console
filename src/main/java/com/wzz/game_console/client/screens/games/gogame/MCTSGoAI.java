@@ -567,6 +567,8 @@ public class MCTSGoAI implements GoAI {
         copy.prior = root.prior;
         copy.rootNoise = root.rootNoise; // 只读共享，线程安全
         copy.policyCache = root.policyCache; // 只读共享，线程安全
+        copy.valueCache = root.valueCache;
+        copy.valueCached = root.valueCached;
 
         // 递归拷贝子树
         if (root.children != null) {
@@ -599,6 +601,8 @@ public class MCTSGoAI implements GoAI {
         copy.prior = node.prior;
         copy.rootNoise = node.rootNoise; // 只读共享，线程安全
         copy.policyCache = node.policyCache; // 只读共享，线程安全
+        copy.valueCache = node.valueCache;
+        copy.valueCached = node.valueCached;
 
         if (node.children != null) {
             copy.children = new ArrayList<>(node.children.size());
@@ -708,11 +712,14 @@ public class MCTSGoAI implements GoAI {
         int[] moveFull = node.untriedMoves.remove(node.untriedMoves.size() - 1);
         int[] move = new int[]{moveFull[0], moveFull[1]};
 
-        // 首次展开时：计算策略先验并缓存
+        // 首次展开时：一次前向同时拿到策略先验与价值，避免后续 simulate 重复计算
         if (node.policyCache == null) {
-            node.policyCache = neuralEvaluator.forwardPolicy(
-                    neuralEvaluator.buildInputPlanes(node.board, node.player, null),
+            NeuralEvaluator.ForwardResult fr = neuralEvaluator.forward(
+                    neuralEvaluator.buildInputPlanes(node.board, node.player, node.move),
                     neuralEvaluator.extractAuxFeatures(node.board, node.player));
+            node.policyCache = fr.policy;
+            node.valueCache = fr.value;
+            node.valueCached = true;
         }
 
         GoPlayer[][] childBoard = deepCopyBoard(node.board);
@@ -749,11 +756,14 @@ public class MCTSGoAI implements GoAI {
      * @param moves 支持 2 元素 [x,y] 或 3 元素 [x,y,pruningValue] 数组
      */
     private List<int[]> heuristicSort(GoPlayer[][] board, GoPlayer player, List<int[]> moves) {
-        Map<String, Integer> scores = new HashMap<>();
+        // 用 int[361] 数组替代 HashMap<String,Integer>，减少分配和装箱
+        int[] scores = new int[BOARD_SIZE * BOARD_SIZE];
+        java.util.Arrays.fill(scores, Integer.MIN_VALUE);
 
         for (int[] move : moves) {
             int score = 0;
             int x = move[0], y = move[1];
+            int idx = x * BOARD_SIZE + y;
 
             // 如果是 3 元素数组，先加入剪枝阶段的价值分
             if (move.length >= 3) {
@@ -781,14 +791,15 @@ public class MCTSGoAI implements GoAI {
                 score -= 30;
             }
 
-            scores.put(x + "," + y, score);
+            scores[idx] = score;
         }
 
-        // 按分数排序
+        // 按分数排序（通过数组查分，避免字符串拼接）
         moves.sort((a, b) -> {
-            int sa = scores.getOrDefault(a[0] + "," + a[1], 0);
-            int sb = scores.getOrDefault(b[0] + "," + b[1], 0);
-            return sb - sa;
+            int sa = scores[a[0] * BOARD_SIZE + a[1]];
+            int sb = scores[b[0] * BOARD_SIZE + b[1]];
+            // Integer.MIN_VALUE 表示未计算（理论上不可能）
+            return Integer.compare(sb, sa);
         });
 
         return moves;
@@ -925,15 +936,23 @@ public class MCTSGoAI implements GoAI {
     }
 
     /**
-     * 纯神经网络模拟评估。
+     * 纯神经网络模拟评估（缓存感知）。
      * <p>
-     * 在叶子节点调用神经网络价值头，直接返回纯网络评估值（-1~1），
-     * 不叠加启发式评分，避免稀释网络信号。
+     * 若节点已有 valueCache（来自 expand 的同一次前向），直接返回；
+     * 否则（首次选中且 untried 为空时）做一次完整前向，同时缓存策略+价值。
      */
     private double simulate(MCTSNode node) {
-        // 使用纯神经网络评估（不混合启发式）
-        double value = neuralEvaluator.forwardValue(node.board, node.player, node.linkedMove);
-        return value;
+        if (node.valueCached) return node.valueCache;
+        // 首次遇此节点：一次前向同时拿到策略+价值，避免后续重复前向
+        NeuralEvaluator.ForwardResult fr = neuralEvaluator.forward(
+                neuralEvaluator.buildInputPlanes(node.board, node.player, node.move),
+                neuralEvaluator.extractAuxFeatures(node.board, node.player));
+        node.valueCache = fr.value;
+        node.valueCached = true;
+        if (node.policyCache == null) {
+            node.policyCache = fr.policy;
+        }
+        return fr.value;
     }
 
     private void backpropagate(MCTSNode node, double score) {
@@ -984,6 +1003,9 @@ public class MCTSGoAI implements GoAI {
         copy.totalScore = node.totalScore;
         copy.linkedMove = node.linkedMove;
         copy.prior = node.prior;
+        copy.policyCache = node.policyCache; // 只读共享，线程安全（行为复用）
+        copy.valueCache = node.valueCache;
+        copy.valueCached = node.valueCached;
 
         if (node.children != null) {
             copy.children = new ArrayList<>();
@@ -1942,6 +1964,10 @@ public class MCTSGoAI implements GoAI {
         Map<String, Double> rootNoise = null;
         /** 该节点的策略缓存（362 维，网络输出的走法先验），首次展开时填充 */
         double[] policyCache = null;
+        /** 该节点的价值缓存（-1~1，与 policyCache 同一次前向计算），避免 MCTS 重复前向 */
+        double valueCache = 0;
+        /** valueCache 是否已填充 */
+        boolean valueCached = false;
 
         MCTSNode(GoPlayer[][] board, GoPlayer player, MCTSNode parent, int[] move, List<int[]> untriedMoves) {
             this.board = board;

@@ -226,13 +226,15 @@ public final class GoSelfPlayTrainer {
                 int n = 0;
                 for (int k = start; k < end; k++) {
                     Sample s = samples.get(k);
+                    // 辅助特征在 D4 对称下不变（气数直方图/眼形/全局特征均对称），只需计算一次
+                    double[] baseAux = evaluator.extractAuxFeatures(s.board, s.player);
                     for (int t = 0; t < symCount; t++) {
                         // 对棋盘应用对称变换
                         GoPlayer[][] transformedBoard = applySymmetry(s.board, SYMM_PERMS[t]);
                         // 构建输入平面
                         planes[n] = evaluator.buildInputPlanes(transformedBoard, s.player, null);
-                        // 辅助特征
-                        aux[n] = evaluator.extractAuxFeatures(transformedBoard, s.player);
+                        // 辅助特征（对称不变，复用）
+                        aux[n] = baseAux;
                         // 价值目标
                         values[n] = s.valueTarget;
                         // 策略目标：前 361 维随棋盘变换，pass 维不变
