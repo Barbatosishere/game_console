@@ -60,8 +60,8 @@ public class NeuralEvaluator {
     private static final int AUX_SIZE = LIBERTY_HIST_BINS + EYE_FEATURE_SIZE + GLOBAL_FEATURE_SIZE; // 24
 
     // 持久化
-    private static final int MODEL_MAGIC = 0x4E455632; // NEV2
-    private static final int MODEL_FORMAT = 2;
+    private static final int MODEL_MAGIC = 0x4E455633; // NEV3
+    private static final int MODEL_FORMAT = 3;
     private static final int MAX_CACHE_SIZE = 10000;
 
     // 四方向
@@ -1411,7 +1411,7 @@ public class NeuralEvaluator {
             writeMatrix(out, m.topW1); writeVector(out, m.topB1);
             writeMatrix(out, m.policyW); writeVector(out, m.policyB);
             writeMatrix(out, m.valueW1); writeVector(out, m.valueB1);
-            writeVector(out, m.valueW2); out.writeDouble(m.valueB2);
+            writeVector(out, m.valueW2); out.writeFloat((float)m.valueB2);
         }
         try {
             Files.move(temp, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -1441,7 +1441,7 @@ public class NeuralEvaluator {
             double[][] lValueW1 = readMatrix(in, TOP_HIDDEN, VALUE_HIDDEN);
             double[] lValueB1 = readVector(in, VALUE_HIDDEN);
             double[] lValueW2 = readVector(in, VALUE_HIDDEN);
-            double lValueB2 = in.readDouble();
+            double lValueB2 = in.readFloat();
 
             ModelWeights m = new ModelWeights(lSubW1, lSubB1, lBlockW1, lBlockB1,
                     lTopW1, lTopB1, lPolicyW, lPolicyB,
@@ -1451,10 +1451,10 @@ public class NeuralEvaluator {
     }
 
     private static void writeMatrix(DataOutputStream o, double[][] m) throws IOException {
-        for (double[] r : m) for (double v : r) o.writeDouble(v);
+        for (double[] r : m) for (double v : r) o.writeFloat((float)v);
     }
     private static void writeVector(DataOutputStream o, double[] v) throws IOException {
-        for (double x : v) o.writeDouble(x);
+        for (double x : v) o.writeFloat((float)x);
     }
     private static double[][] readMatrix(DataInputStream in, int r, int c) throws IOException {
         double[][] m = new double[r][c];
