@@ -142,13 +142,18 @@ public class NeuralEvaluator {
     private final Map<CacheKey, Double> evaluationCache = new HashMap<>();
 
     /** OpenCL GPU 加速后端（懒初始化，失败自动回退 CPU） */
-    private OpenCLBackend opencl;
+    private volatile OpenCLBackend opencl;
 
     // ══════════════════════════════════════════════════════════════════════
     //  构造
     // ══════════════════════════════════════════════════════════════════════
 
     public NeuralEvaluator() {
+        this(false);
+    }
+
+    /** 私有构造：skipInit=true 时跳过随机初始化（默认构造调用 initWeights） */
+    private NeuralEvaluator(boolean skipInit) {
         this.subW1 = new double[NUM_BLOCKS][SUB_INPUT][SUB_HIDDEN];
         this.subB1 = new double[NUM_BLOCKS][SUB_HIDDEN];
         this.blockW1 = new double[NUM_BLOCKS][BLOCK_INPUT][BLOCK_HIDDEN];
@@ -162,7 +167,7 @@ public class NeuralEvaluator {
         this.valueW2 = new double[VALUE_HIDDEN];
         this.valueB2 = 0.0;
         this.modelVersion = 0L;
-        initWeights();
+        if (!skipInit) initWeights();
     }
 
     /**
@@ -170,7 +175,8 @@ public class NeuralEvaluator {
      * 用于并行自对弈的每局 worker，避免频繁创建。
      */
     public static NeuralEvaluator fromWeights(ModelWeights m) {
-        NeuralEvaluator e = new NeuralEvaluator();
+        // 跳过随机 init（省去一倍的 init+apply 开销），直接 apply 模型快照
+        NeuralEvaluator e = new NeuralEvaluator(true);
         e.apply(m);
         return e;
     }
@@ -501,7 +507,7 @@ public class NeuralEvaluator {
                 policy[j] = Math.exp(policy[j] - maxLogit);
                 sumExp += policy[j];
             }
-            double invSum = 1.0 / sumExp;
+            double invSum = 1.0 / Math.max(sumExp, 1e-30);
             for (int j = 0; j < POLICY_SIZE; j++) policy[j] *= invSum;
 
             // ── 价值头 ──────────────────────────────────────────────────

@@ -499,9 +499,9 @@ public class MCTSGoAI implements GoAI {
                     MCTSNode node = selectNode(currentRoot);
 
                     // virtual loss：标记此节点正被评估，降低 UCB 吸引其他线程去其他分支
+                    // 只增加访问数不改变总分（额外访问降低 PUCT 探索加成，足够分流）
                     synchronized (node) {
                         node.visits++;
-                        node.totalScore--;
                     }
 
                     if (!node.untriedMoves.isEmpty()) {
@@ -569,29 +569,30 @@ public class MCTSGoAI implements GoAI {
             node.valueCache = fr.value;
             node.valueCached = true;
 
-            // 策略头引导展开顺序 + Top-K 剪枝：保留累积概率达 95% 的高概率走法
-            if (node.untriedMoves.size() > 1) {
-                double[] policy = node.policyCache;
-                node.untriedMoves.sort((a, b) -> {
-                    double pa = policy[a[0] * BOARD_SIZE + a[1]];
-                    double pb = policy[b[0] * BOARD_SIZE + b[1]];
-                    return Double.compare(pa, pb); // 升序：低概率在前，高概率在后
-                });
-                // 从高概率端逆向收集，直到覆盖 95% 总概率且至少保留 3 个
-                double total = 0;
-                for (int[] m : node.untriedMoves) total += policy[m[0] * BOARD_SIZE + m[1]];
-                if (total > 0) {
-                    double cum = 0;
-                    List<int[]> kept = new ArrayList<>(node.untriedMoves.size());
-                    for (int i = node.untriedMoves.size() - 1; i >= 0; i--) {
-                        int[] m = node.untriedMoves.get(i);
-                        kept.add(m); // 当前走法先保留（含达到条件的那一个）
-                        cum += policy[m[0] * BOARD_SIZE + m[1]];
-                        if (cum >= 0.95 * total && kept.size() >= 3) break;
+            // 策略头引导展开顺序 + Top-K 剪枝（必须在 synchronized 内操作 untriedMoves）
+            synchronized (node) {
+                if (node.untriedMoves.size() > 1) {
+                    double[] policy = node.policyCache;
+                    node.untriedMoves.sort((a, b) -> {
+                        double pa = policy[a[0] * BOARD_SIZE + a[1]];
+                        double pb = policy[b[0] * BOARD_SIZE + b[1]];
+                        return Double.compare(pa, pb); // 升序：低概率在前，高概率在后
+                    });
+                    // 从高概率端逆向收集，直到覆盖 95% 总概率且至少保留 3 个
+                    double total = 0;
+                    for (int[] m : node.untriedMoves) total += policy[m[0] * BOARD_SIZE + m[1]];
+                    if (total > 0) {
+                        double cum = 0;
+                        List<int[]> kept = new ArrayList<>(node.untriedMoves.size());
+                        for (int i = node.untriedMoves.size() - 1; i >= 0; i--) {
+                            int[] m = node.untriedMoves.get(i);
+                            kept.add(m);
+                            cum += policy[m[0] * BOARD_SIZE + m[1]];
+                            if (cum >= 0.95 * total && kept.size() >= 3) break;
+                        }
+                        java.util.Collections.reverse(kept);
+                        node.untriedMoves = kept;
                     }
-                    // 反转回低→高顺序，配合 remove(size-1) 优先取出高概率走法
-                    java.util.Collections.reverse(kept);
-                    node.untriedMoves = kept;
                 }
             }
         }
@@ -620,8 +621,8 @@ public class MCTSGoAI implements GoAI {
             }
             child.prior = prior;
 
-            if (node.children == null) node.children = new ArrayList<>();
             synchronized (node) {
+                if (node.children == null) node.children = new ArrayList<>();
                 node.children.add(child);
             }
             node.linkedMove = move;
@@ -806,7 +807,14 @@ public class MCTSGoAI implements GoAI {
         double bestValue = Double.NEGATIVE_INFINITY;
         double logParentVisits = Math.log(Math.max(parent.visits, 1));
 
-        for (MCTSNode child : parent.children) {
+        // 快照 children 避免并发修改异常（expand 在加锁状态下添加子节点）
+        List<MCTSNode> children;
+        synchronized (parent) {
+            if (parent.children == null || parent.children.isEmpty()) return null;
+            children = new ArrayList<>(parent.children);
+        }
+
+        for (MCTSNode child : children) {
             if (child.visits == 0) return child;
 
             double winRate = child.totalScore / child.visits;
@@ -899,8 +907,12 @@ public class MCTSGoAI implements GoAI {
         if (node.children != null) {
             copy.children = new ArrayList<>();
             for (MCTSNode child : node.children) {
-                // 子节点的棋盘引用会在递归时用 newBoard 更新
-                MCTSNode childCopy = deepCopyNode(child, newBoard);
+                // 为每个子节点创建正确的棋盘：在父棋盘基础上应用子走法
+                GoPlayer[][] childBoard = deepCopyBoard(boardCopy);
+                if (child.move != null) {
+                    simulatePlaceStone(childBoard, child.move[0], child.move[1], node.player);
+                }
+                MCTSNode childCopy = deepCopyNode(child, childBoard);
                 childCopy.parent = copy;
                 copy.children.add(childCopy);
             }
@@ -1858,8 +1870,8 @@ public class MCTSGoAI implements GoAI {
         double[] policyCache = null;
         /** 该节点的价值缓存（-1~1，与 policyCache 同一次前向计算），避免 MCTS 重复前向 */
         double valueCache = 0;
-        /** valueCache 是否已填充 */
-        boolean valueCached = false;
+        /** valueCache 是否已填充（volatile 保证写入顺序，防止双检锁失效） */
+        volatile boolean valueCached = false;
 
         MCTSNode(GoPlayer[][] board, GoPlayer player, MCTSNode parent, int[] move, List<int[]> untriedMoves) {
             this.board = board;

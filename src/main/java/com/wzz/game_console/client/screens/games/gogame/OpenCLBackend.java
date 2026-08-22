@@ -166,9 +166,11 @@ public class OpenCLBackend implements AutoCloseable {
             }
             // ── 策略头 GPU ―─
             double[][] policyOut = gpuPolicyFwd(sharedOut, polW, polB, B); // [B][362] softmax
+            if (policyOut == null) return false;
             for (int n = 0; n < B; n++) System.arraycopy(policyOut[n], 0, bPolicyOut[n], 0, 362);
             // ── 价值头 GPU ―─
             double[] valueOut = gpuValueFwd(sharedOut, valW1, valB1, valW2, valB2, B); // [B]
+            if (valueOut == null) return false;
             System.arraycopy(valueOut, 0, bValueOut, 0, B);
             return true;
         } catch (Exception e) {
@@ -287,7 +289,7 @@ public class OpenCLBackend implements AutoCloseable {
         Memory dW2 = flatten1D(w2); Pointer dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
         Pointer dOut = alloc((long)B * 8);
         setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
-        setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B);
+        setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
         launch(k, B, 1);
         double[] out = new double[B]; readBack(dOut, out);
         free(dInG, dW1G, dB1G, dW2G, dOut); return out;
@@ -489,10 +491,10 @@ public class OpenCLBackend implements AutoCloseable {
     "  double se=0; for(int j=0;j<362;j++){ double e=exp(l[j]-mx); l[j]=e; se+=e; }\n" +
     "  for(int j=0;j<362;j++) out[r*362+j]=l[j]/se;\n" +
     "}\n" +
-    "__kernel void value_fwd(__global double* in, __global double* w1, __global double* b1, __global double* w2, __global double* out, int B) {\n" +
+    "__kernel void value_fwd(__global double* in, __global double* w1, __global double* b1, __global double* w2, __global double* out, int B, double b2) {\n" +
     "  int r=get_global_id(0); if(r>=B)return;\n" +
     "  double h[128]; for(int j=0;j<128;j++){ double s=b1[j]; for(int k=0;k<256;k++) s+=in[r*256+k]*w1[k*128+j]; h[j]=s>0?s:0; }\n" +
-    "  double s=0; for(int k=0;k<128;k++) s+=w2[k]*h[k]; out[r]=tanh(s);\n" +
+    "  double s=b2; for(int k=0;k<128;k++) s+=w2[k]*h[k]; out[r]=tanh(s);\n" +
     "}\n" +
     "__kernel void matmul(__global double* A, __global double* B, __global double* C, int M, int N, int K) {\n" +
     "  int r=get_global_id(0),c=get_global_id(1); if(r>=M||c>=N)return;\n" +
