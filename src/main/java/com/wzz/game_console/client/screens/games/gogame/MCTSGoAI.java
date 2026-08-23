@@ -288,9 +288,8 @@ public class MCTSGoAI implements GoAI {
             this.currentRoot.player = currentPlayer;
             this.currentRoot.parent = null;
         } else {
-            // 启发式排序候选点
-            List<int[]> sortedMoves = heuristicSort(board, currentPlayer, validMoves);
-            this.currentRoot = new MCTSNode(board, currentPlayer, null, null, sortedMoves);
+            // 启发式排序候选点（getAllValidMoves 已按价值升序排好）
+            this.currentRoot = new MCTSNode(board, currentPlayer, null, null, validMoves);
         }
 
         // 根节点 Dirichlet 噪声（仅在自对弈训练时启用，对局模式关闭以保证棋力）
@@ -600,7 +599,7 @@ public class MCTSGoAI implements GoAI {
         GoPlayer[][] childBoard = deepCopyBoard(node.board);
         if (simulatePlaceStone(childBoard, move[0], move[1], node.player)) {
             GoPlayer nextPlayer = node.player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-            List<int[]> childMoves = heuristicSort(childBoard, nextPlayer, getAllValidMoves(childBoard, nextPlayer));
+            List<int[]> childMoves = getAllValidMoves(childBoard, nextPlayer);
             MCTSNode child = new MCTSNode(childBoard, nextPlayer, node, move, childMoves);
 
             // 策略先验：从缓存中查找该走法的概率
@@ -627,23 +626,6 @@ public class MCTSGoAI implements GoAI {
             }
             node.linkedMove = move;
         }
-    }
-
-    /**
-     * 启发式排序候选点
-     * @param moves 支持 2 元素 [x,y] 或 3 元素 [x,y,pruningValue] 数组
-     */
-    /**
-     * 对走法列表按预计算价值排序（不再重新评估——getAllValidMoves 已用
-     * evaluateMoveScore 一次性算好了完整排序分）。
-     */
-    private List<int[]> heuristicSort(GoPlayer[][] board, GoPlayer player, List<int[]> moves) {
-        moves.sort((a, b) -> {
-            int sa = a.length >= 3 ? a[2] : 0;
-            int sb = b.length >= 3 ? b[2] : 0;
-            return Integer.compare(sa, sb); // 升序，让 expand 的 remove(size-1) 取出最高分
-        });
-        return moves;
     }
 
     /**

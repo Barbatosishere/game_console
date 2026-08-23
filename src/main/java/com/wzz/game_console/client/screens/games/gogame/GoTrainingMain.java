@@ -34,7 +34,7 @@ public final class GoTrainingMain {
             for (int generation = 0; generation < generations; generation++) {
                 double currentLR;
                 if (warmup > 0 && generation < warmup) {
-                    // 预热阶段：LR 从 0 线性升到目标值，配合 Momentum 稳定起步
+                    // 预热阶段：LR 从 LR/warmup 线性升到目标值，配合 Momentum 稳定起步
                     currentLR = learningRate * (generation + 1.0) / warmup;
                 } else {
                     // 余弦退火学习率调度：从初始 LR 平滑衰减

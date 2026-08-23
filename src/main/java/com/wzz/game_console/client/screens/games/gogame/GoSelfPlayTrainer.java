@@ -226,7 +226,7 @@ public final class GoSelfPlayTrainer {
             for (int start = 0; start < samples.size(); start += batchLimit) {
                 int end = Math.min(samples.size(), start + batchLimit);
                 int baseCount = end - start;
-                double[][][][] planes = new double[baseCount * symCount][4][BOARD_SIZE][BOARD_SIZE];
+                double[][][][] planes = new double[baseCount * symCount][][][];
                 double[][] aux = new double[baseCount * symCount][AUX_FEATURES];
                 double[] values = new double[baseCount * symCount];
                 double[][] policies = new double[baseCount * symCount][362];
