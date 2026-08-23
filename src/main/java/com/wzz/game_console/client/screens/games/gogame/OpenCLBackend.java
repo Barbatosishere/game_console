@@ -56,7 +56,7 @@ public class OpenCLBackend implements AutoCloseable {
         int be = calli("clBuildProgram", program, 0, null, null, null, null);
         if (be != 0) { String log = getBuildLog(program); throw new Exception("编译失败: " + log); }
 
-        for (String name : "sub_fwd,block_fwd,top_fwd,policy_fwd,value_fwd,fwd_reduce,matmul,matmul_tA,sgd".split(",")) {
+        for (String name : "sub_fwd,block_fwd,top_fwd,policy_fwd,value_fwd,matmul,matmul_tA,sgd".split(",")) {
             try { Pointer k = callp("clCreateKernel", program, name, ec); if (k != null) kernels.put(name, k); }
             catch (Exception e) {}
         }
@@ -76,16 +76,21 @@ public class OpenCLBackend implements AutoCloseable {
             double[][][] subIn = extractSubInputs(planes, B);
             // 子块 GPU 前向
             double[][][] subOut = gpuSubFwd(subIn, subW, subB, B);
+            if (subOut == null) return -1;
             // 字块 GPU 前向
             double[][][] blkIn = buildBlkIn(subOut, B);
             double[][][] blkOut = gpuBlockFwd(blkIn, blkW, blkB, B);
+            if (blkOut == null) return -1;
             // 顶级 GPU 前向
             double[][] topIn = buildTopIn(blkOut, aux, B);
             double[][] shared = gpuTopFwd(topIn, topW, topB, B);
+            if (shared == null) return -1;
             // 策略头 GPU
             double[][] policy = gpuPolicyFwd(shared, polW, polB, B);
+            if (policy == null) return -1;
             // 价值头 GPU
             double[] value = gpuValueFwd(shared, valW1, valB1, valW2, valB2, B);
+            if (value == null) return -1;
             // Loss + 梯度（CPU，轻量）
             double loss = 0;
             double[][] dLogit = new double[B][362];
@@ -409,6 +414,9 @@ public class OpenCLBackend implements AutoCloseable {
         calli("clFinish", queue);
     }
     private void launch3D(Pointer k, int x, int y, int z) throws Exception {
+        // x（块索引维度）保持裸值：sub_fwd=81, block_fwd=9，缓冲区按 S 精确分配，
+        // 工作项 s=0..S-1 恰好覆盖，内核未做 s 越界检查因此不能取整。
+        // y/z 取整到 16 的倍数由内核的 r>=B/c>=N 边界检查兜底。
         Memory g = new Memory(24); g.setLong(0, x); g.setLong(8, ceil(y, 16)*16); g.setLong(16, ceil(z, 16)*16);
         calli("clEnqueueNDRangeKernel", queue, k, 3, null, g, null, 0, null, null);
         calli("clFinish", queue);
@@ -489,7 +497,7 @@ public class OpenCLBackend implements AutoCloseable {
     "  double l[362]; double mx=-1e30;\n" +
     "  for(int j=0;j<362;j++){ double s=b[j]; for(int k=0;k<256;k++) s+=in[r*256+k]*w[k*362+j]; l[j]=s; if(s>mx)mx=s; }\n" +
     "  double se=0; for(int j=0;j<362;j++){ double e=exp(l[j]-mx); l[j]=e; se+=e; }\n" +
-    "  for(int j=0;j<362;j++) out[r*362+j]=l[j]/se;\n" +
+    "  double ise=1.0/max(se,1e-30); for(int j=0;j<362;j++) out[r*362+j]=l[j]*ise;\n" +
     "}\n" +
     "__kernel void value_fwd(__global double* in, __global double* w1, __global double* b1, __global double* w2, __global double* out, int B, double b2) {\n" +
     "  int r=get_global_id(0); if(r>=B)return;\n" +
