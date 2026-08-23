@@ -155,6 +155,17 @@ public class GoGame implements AutoCloseable {
     }
 
     /**
+     * 返回上一手落子位置 {x,y}；无上一手或上一手是弃权时返回 null。
+     * 供 MCTS 根节点构造 plane 3（上一手位置）时使用，保证 train/serve 一致。
+     */
+    public int[] getLastMove() {
+        if (moveHistory.isEmpty()) return null;
+        GoMove last = moveHistory.get(moveHistory.size() - 1);
+        if (last.x < 0 || last.y < 0) return null; // 弃权
+        return new int[]{last.x, last.y};
+    }
+
+    /**
      * 获取当前回合数（落子数 / 2 + 1）。
      */
     public int moveHistorySize() {

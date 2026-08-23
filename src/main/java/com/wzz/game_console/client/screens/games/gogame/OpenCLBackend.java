@@ -43,7 +43,7 @@ public class OpenCLBackend implements AutoCloseable {
         context = callp("clCreateContext", null, 1, devs, null, null, ec);
         if (context == null) throw new Exception("clCreateContext 失败");
         try { queue = callp("clCreateCommandQueueWithProperties", context, device, null, ec); }
-        catch (Exception e) { queue = callp("clCreateCommandQueue", context, device, 0L, ec); }
+        catch (Throwable e) { queue = callp("clCreateCommandQueue", context, device, 0L, ec); }
         if (queue == null) throw new Exception("clCreateCommandQueue 失败");
 
         byte[] src = KERNEL_SOURCE.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -300,11 +300,12 @@ public class OpenCLBackend implements AutoCloseable {
     private double[] gpuValueFwd(double[][] in, double[][] w1, double[] b1, double[] w2, double b2, int B) throws Exception {
         Pointer k = kernels.get("value_fwd"); if (k == null) return null;
         Pointer dInG = null, dW1G = null, dB1G = null, dW2G = null, dOut = null;
+        Memory dIn = null, dW1 = null, dB1 = null, dW2 = null;
         try {
-            Memory dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
-            Memory dW1 = flatten2D(w1); dW1G = alloc(dW1.size()); writeG(dW1G, dW1);
-            Memory dB1 = flatten1D(b1); dB1G = alloc(dB1.size()); writeG(dB1G, dB1);
-            Memory dW2 = flatten1D(w2); dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW1 = flatten2D(w1); dW1G = alloc(dW1.size()); writeG(dW1G, dW1);
+            dB1 = flatten1D(b1); dB1G = alloc(dB1.size()); writeG(dB1G, dB1);
+            dW2 = flatten1D(w2); dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
             dOut = alloc((long)B * 8);
             setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
             setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
@@ -313,6 +314,8 @@ public class OpenCLBackend implements AutoCloseable {
             return out;
         } finally {
             free(dInG, dW1G, dB1G, dW2G, dOut);
+            if (dIn != null) dIn.close(); if (dW1 != null) dW1.close();
+            if (dB1 != null) dB1.close(); if (dW2 != null) dW2.close();
         }
     }
 
@@ -358,10 +361,11 @@ public class OpenCLBackend implements AutoCloseable {
     private double[][][] run3D(String kName, double[][][] in, double[][][] w, double[][] b, int S, int K, int N, int B) throws Exception {
         Pointer k = kernels.get(kName); if (k == null) return null;
         Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
         try {
-            Memory dIn = flatten3D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
-            Memory dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dB = flatten2D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dIn = flatten3D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten2D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
             dOut = alloc((long)S * B * N * 8);
             setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
             launch3D(k, S, B, N);
@@ -369,15 +373,17 @@ public class OpenCLBackend implements AutoCloseable {
             return out;
         } finally {
             free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
         }
     }
     private double[][] run2D(String kName, double[][] in, double[][] w, double[] b, int K, int N, int B) throws Exception {
         Pointer k = kernels.get(kName); if (k == null) return null;
         Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
         try {
-            Memory dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
-            Memory dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
             dOut = alloc((long)B * N * 8);
             setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
             launch(k, B, N);
@@ -385,6 +391,7 @@ public class OpenCLBackend implements AutoCloseable {
             return out;
         } finally {
             free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
         }
     }
 

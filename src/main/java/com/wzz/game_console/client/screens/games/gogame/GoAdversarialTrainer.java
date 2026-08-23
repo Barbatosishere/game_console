@@ -204,8 +204,6 @@ public final class GoAdversarialTrainer {
 
             // 对弈
             GoGame game = GoGame.rulesOnly();
-            NeuralEvaluator gameEvaluator = new NeuralEvaluator();
-            gameEvaluator.apply(model);
 
             try {
                 int moves = 0;
@@ -221,23 +219,29 @@ public final class GoAdversarialTrainer {
                         double[] policyTarget = ourAI.getVisitDistribution();
                         samples.add(new Sample(boardCopy, currentPlayer, lastMoveOnBoard, policyTarget));
 
+                        // 实际落子的坐标（fallback 时可能与 AI 建议不一致，必须用实际落子同步 KataGo）
+                        int[] actuallyPlayed = null;
                         boolean played = move != null && move.length >= 2 && game.placeStone(move[0], move[1]);
-                        if (!played) {
+                        if (played) {
+                            actuallyPlayed = new int[]{move[0], move[1]};
+                        } else {
+                            int fx = -1, fy = -1;
                             for (int x = 0; x < game.getBoardSize() && !played; x++)
                                 for (int y = 0; y < game.getBoardSize() && !played; y++)
-                                    played = game.placeStone(x, y);
+                                    if (game.placeStone(x, y)) { played = true; fx = x; fy = y; }
+                            if (played) actuallyPlayed = new int[]{fx, fy};
                         }
                         if (!played) {
                             game.pass();
                             lastMoveOnBoard = null;
                         } else {
-                            lastMoveOnBoard = move != null && move.length >= 2 ? new int[]{move[0], move[1]} : null;
+                            lastMoveOnBoard = actuallyPlayed;
                         }
 
-                        // 同步到 KataGo
-                        if (move != null && move.length >= 2) {
+                        // 同步到 KataGo（用实际落子，避免 fallback 时两盘棋分叉）
+                        if (actuallyPlayed != null) {
                             String color = ourIsBlack ? "black" : "white";
-                            sendGTP(writer, reader, "play " + color + " " + formatMove(move[0], move[1]));
+                            sendGTP(writer, reader, "play " + color + " " + formatMove(actuallyPlayed[0], actuallyPlayed[1]));
                         } else {
                             String color = ourIsBlack ? "black" : "white";
                             sendGTP(writer, reader, "play " + color + " pass");

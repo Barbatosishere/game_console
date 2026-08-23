@@ -102,9 +102,11 @@ public class MCTSGoAI implements GoAI {
         this.maxIterations = maxIterations;
         this.parallelThreads = parallelThreads;
         this.random = new Random();
-        this.neuralEvaluator = new NeuralEvaluator();
+        // 用 fromWeights 跳过随机 init（省去 init+apply 双重开销）
         if (model != null) {
-            this.neuralEvaluator.apply(model);
+            this.neuralEvaluator = NeuralEvaluator.fromWeights(model);
+        } else {
+            this.neuralEvaluator = new NeuralEvaluator();
         }
     }
 
@@ -261,17 +263,17 @@ public class MCTSGoAI implements GoAI {
 
         // 杀棋检测：优先处理威胁
         int[] killerMove = findKillerMove(board, currentPlayer, validMoves);
-        if (killerMove != null) { this.lastMove = killerMove; return killerMove; }
+        if (killerMove != null) { this.lastMove = killerMove; this.currentRoot = null; return killerMove; }
 
         // 开局定式库
         int[] bookMove = getOpeningBookMove(board, currentPlayer, validMoves, moveCount);
-        if (bookMove != null) { this.lastMove = bookMove; return bookMove; }
+        if (bookMove != null) { this.lastMove = bookMove; this.currentRoot = null; return bookMove; }
 
         // 终局策略
         int stoneCount = countStones(board);
         if (stoneCount >= ENDGAME_STONES) {
             int[] endgameMove = getEndgameMove(board, currentPlayer, validMoves);
-            if (endgameMove != null) { this.lastMove = endgameMove; return endgameMove; }
+            if (endgameMove != null) { this.lastMove = endgameMove; this.currentRoot = null; return endgameMove; }
         }
 
         // 战术阅读：在 MCTS 之前处理中盘复杂战斗（限时预算，避免拖延）
@@ -279,12 +281,14 @@ public class MCTSGoAI implements GoAI {
         int[] tacticalMove = tacticalReading(board, currentPlayer, System.currentTimeMillis() + tacticalBudget);
         if (tacticalMove != null && isLegalMove(board, tacticalMove[0], tacticalMove[1], currentPlayer)) {
             this.lastMove = tacticalMove;
+            this.currentRoot = null;
             return tacticalMove;
         }
 
         if (validMoves.size() == 1) {
             int[] m = validMoves.get(0);
             this.lastMove = new int[]{m[0], m[1]};
+            this.currentRoot = null;
             return new int[]{m[0], m[1]};
         }
 
@@ -295,13 +299,15 @@ public class MCTSGoAI implements GoAI {
         MCTSNode reusedRoot = tryReuseTree(board, currentPlayer);
         // super-ko 历史：从 GoGame 同步全部历史局面哈希（含当前局面）
         this.koHistory = game.getPositionHistory();
+        // 上一手位置（plane 3）：新鲜根节点需要设置 move 以保证与训练分布一致
+        int[] gameLastMove = game.getLastMove();
         if (reusedRoot != null) {
             this.currentRoot = reusedRoot;
             this.currentRoot.player = currentPlayer;
             this.currentRoot.parent = null;
         } else {
             // 启发式排序候选点（getAllValidMoves 已按价值升序排好）
-            this.currentRoot = new MCTSNode(board, currentPlayer, null, null, validMoves);
+            this.currentRoot = new MCTSNode(board, currentPlayer, null, gameLastMove, validMoves);
         }
         this.currentRoot.hash = game.getCurrentHash();
 
@@ -490,7 +496,8 @@ public class MCTSGoAI implements GoAI {
                 }
             }
         }
-        return bestWinRate;
+        // 无任何子节点有访问时返回 0，避免 NEGATIVE_INFINITY 污染局势评估
+        return bestWinRate == Double.NEGATIVE_INFINITY ? 0 : bestWinRate;
     }
 
     /**
