@@ -306,9 +306,11 @@ public class OpenCLBackend implements AutoCloseable {
         for (int n = 0; n < B; n++) {
             double[][][] p = planes[n];
             for (int b = 0; b < 9; b++) {
-                int bx = (b % 3) * 6, by = (b / 3) * 6;
+                // 与 NeuralEvaluator.BLOCK_STARTS 一致：x=(b/3)*6, y=(b%3)*6
+                int bx = (b / 3) * 6, by = (b % 3) * 6;
                 for (int s = 0; s < 9; s++) {
-                    int sx = bx + (s % 3) * 2, sy = by + (s / 3) * 2, si = b * 9 + s, idx = 0;
+                    // 与 NeuralEvaluator.SUB_OFFSETS 一致：x=(s/3)*2, y=(s%3)*2
+                    int sx = bx + (s / 3) * 2, sy = by + (s % 3) * 2, si = b * 9 + s, idx = 0;
                     for (int pp = 0; pp < 4; pp++)
                         for (int dx = 0; dx < 3; dx++)
                             for (int dy = 0; dy < 3; dy++)

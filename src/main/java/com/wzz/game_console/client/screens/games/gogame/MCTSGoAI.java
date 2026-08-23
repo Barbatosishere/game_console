@@ -195,7 +195,8 @@ public class MCTSGoAI implements GoAI {
 
         for (MCTSNode child : children) {
             if (child.visits > 0) {
-                double winRate = child.totalScore / child.visits;
+                // 子节点是"对手行棋方"视角，父节点视角需取反（节点存自身行棋方视角）
+                double winRate = -child.totalScore / child.visits;
                 if (winRate > bestWinRate) {
                     secondWinRate = bestWinRate;
                     bestWinRate = winRate;
@@ -205,6 +206,10 @@ public class MCTSGoAI implements GoAI {
             }
         }
 
+        // 无任何子节点有访问时，bestWinRate 保持 -INF，不能当作必败触发提前终止
+        if (bestWinRate == Double.NEGATIVE_INFINITY) {
+            return false;
+        }
         // 必胜/必败检测
         if (bestWinRate > WIN_THRESHOLD) {
             return true;
@@ -253,28 +258,30 @@ public class MCTSGoAI implements GoAI {
 
         // 杀棋检测：优先处理威胁
         int[] killerMove = findKillerMove(board, currentPlayer, validMoves);
-        if (killerMove != null) return killerMove;
+        if (killerMove != null) { this.lastMove = killerMove; return killerMove; }
 
         // 开局定式库
         int[] bookMove = getOpeningBookMove(board, currentPlayer, validMoves, moveCount);
-        if (bookMove != null) return bookMove;
+        if (bookMove != null) { this.lastMove = bookMove; return bookMove; }
 
         // 终局策略
         int stoneCount = countStones(board);
         if (stoneCount >= ENDGAME_STONES) {
             int[] endgameMove = getEndgameMove(board, currentPlayer, validMoves);
-            if (endgameMove != null) return endgameMove;
+            if (endgameMove != null) { this.lastMove = endgameMove; return endgameMove; }
         }
 
         // 战术阅读：在 MCTS 之前处理中盘复杂战斗（限时预算，避免拖延）
         int tacticalBudget = Math.max(200, Math.min(800, baseSearchTime / 4));
         int[] tacticalMove = tacticalReading(board, currentPlayer, System.currentTimeMillis() + tacticalBudget);
         if (tacticalMove != null && isLegalMove(board, tacticalMove[0], tacticalMove[1], currentPlayer)) {
+            this.lastMove = tacticalMove;
             return tacticalMove;
         }
 
         if (validMoves.size() == 1) {
             int[] m = validMoves.get(0);
+            this.lastMove = new int[]{m[0], m[1]};
             return new int[]{m[0], m[1]};
         }
 
@@ -331,7 +338,16 @@ public class MCTSGoAI implements GoAI {
         double[] dist = new double[362];
         MCTSNode root = currentRoot;
         if (root == null || root.children == null || root.children.isEmpty()) {
-            // 无子节点时全部概率给 pass
+            // 无 MCTS 分布（早退路径：杀棋/定式/终局/战术/唯一走法）。
+            // 返回 lastMove 的 one-hot，避免全 pass 污染策略目标。
+            if (lastMove != null && lastMove.length >= 2) {
+                int idx = lastMove[0] * BOARD_SIZE + lastMove[1];
+                if (idx >= 0 && idx < 361) {
+                    dist[idx] = 1.0;
+                    return dist;
+                }
+            }
+            // 连 lastMove 都没有（理论上不会走到），退化为全 pass
             dist[361] = 1.0;
             return dist;
         }
@@ -461,7 +477,8 @@ public class MCTSGoAI implements GoAI {
         double bestWinRate = Double.NEGATIVE_INFINITY;
         for (MCTSNode child : currentRoot.children) {
             if (child.visits > 0) {
-                double winRate = child.totalScore / child.visits;
+                // 子节点是"对手行棋方"视角，根视角需取反
+                double winRate = -child.totalScore / child.visits;
                 if (winRate > bestWinRate) {
                     bestWinRate = winRate;
                 }
@@ -497,30 +514,27 @@ public class MCTSGoAI implements GoAI {
 
                     MCTSNode node = selectNode(currentRoot);
 
-                    // virtual loss：标记此节点正被评估，降低 UCB 吸引其他线程去其他分支
-                    // 只增加访问数不改变总分（额外访问降低 PUCT 探索加成，足够分流）
-                    synchronized (node) {
-                        node.visits++;
-                    }
-
+                    // 线程分流由 selectBestChild 的 child.visits==0 提前返回天然实现；
+                    // 不再加虚拟损失（否则叶子 visits 双倍膨胀、胜率被稀释）
                     if (!node.untriedMoves.isEmpty()) {
                         expand(node);
                     }
                     double score = simulate(node);
 
-                    // 回传（含 virtual loss 的净效果：visits +1, totalScore + score）
+                    // 回传（含价值视角每层取反）
                     backpropagate(node, score);
                 }
                 return null;
             }));
         }
 
-        // 等待所有线程完成（或超时）
+        // 完全等待所有线程退出（worker 循环检查 deadline，会在截止后很快自行退出）。
+        // 若只用短超时，残留线程可能在下一次搜索时继续写 currentRoot，导致竞态。
         for (Future<Void> f : futures) {
             try {
-                f.get(Math.max(500, deadline - System.currentTimeMillis() + 1000), TimeUnit.MILLISECONDS);
+                f.get(30, TimeUnit.SECONDS);
             } catch (Exception ignored) {
-                // 超时或中断：忽略该线程
+                // 极罕见：worker 卡死则放弃等待（不阻塞调用方）
             }
         }
         // 共享线程池不关闭（线程设为 daemon，随进程退出）
@@ -682,13 +696,17 @@ public class MCTSGoAI implements GoAI {
         board[x][y] = player;
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         int captures = 0;
-
+        // 用已计数集合去重：同一对手棋群若环绕 (x,y) 从两个方向相邻，只计一次
+        Set<Long> counted = new HashSet<>();
         for (int[] dir : DIRS) {
             int nx = x + dir[0], ny = y + dir[1];
             if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent) {
+                long key = (long) nx * BOARD_SIZE + ny;
+                if (counted.contains(key)) continue; // 该棋群已被计入
                 Set<int[]> group = getGroup(board, nx, ny);
                 if (!hasLiberty(board, group)) {
                     captures += group.size();
+                    for (int[] pos : group) counted.add((long) pos[0] * BOARD_SIZE + pos[1]);
                 }
             }
         }
@@ -799,7 +817,8 @@ public class MCTSGoAI implements GoAI {
         for (MCTSNode child : children) {
             if (child.visits == 0) return child;
 
-            double winRate = child.totalScore / child.visits;
+            // 子节点是"对手行棋方"视角，父节点视角需取反（Q 项为 -child.Q）
+            double winRate = -child.totalScore / child.visits;
             // PUCT: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)
             double ucb = winRate
                     + UCB_C * child.prior * Math.sqrt(logParentVisits / (1.0 + child.visits));
@@ -833,11 +852,15 @@ public class MCTSGoAI implements GoAI {
     }
 
     private void backpropagate(MCTSNode node, double score) {
+        // score 是 node（叶子）行棋方视角的价值。
+        // 每往上一层，行棋方交替，价值取反 —— 这样每个节点存的是"该节点行棋方视角"。
+        // （价值头输出为当前行棋方视角，见 valueTarget = (s.player==BLACK ? margin : -margin)）
         while (node != null) {
             synchronized (node) {
                 node.visits++;
                 node.totalScore += score;
             }
+            score = -score;
             node = node.parent;
         }
     }
@@ -857,6 +880,10 @@ public class MCTSGoAI implements GoAI {
 
         for (MCTSNode child : lastRoot.children) {
             if (child.move != null && child.move[0] == lastMove[0] && child.move[1] == lastMove[1]) {
+                // 校验棋盘一致：重用的子节点必须是"当前局面恰好是上一步之后"。
+                // 自对弈（AI 每步都走）时匹配；对抗/人机对局中对手插了一手，
+                // 子节点棋盘与当前棋盘不同，跳过重用避免旧位置子树污染搜索。
+                if (!boardsEqual(child.board, board)) continue;
                 // 使用 deepCopyNode 递归复制子树，避免破坏兄弟节点的棋盘引用
                 MCTSNode newRoot = deepCopyNode(child, board);
                 newRoot.parent = null;
@@ -876,7 +903,7 @@ public class MCTSGoAI implements GoAI {
                 node.player,
                 null, // parent 稍后设置
                 node.move,
-                null  // untriedMoves 不需要复制
+                node.untriedMoves // 复用未展开走法（棋盘已按走法重建，合法走法集合一致）
         );
         copy.visits = node.visits;
         copy.totalScore = node.totalScore;
@@ -912,7 +939,8 @@ public class MCTSGoAI implements GoAI {
 
         for (MCTSNode child : root.children) {
             if (child.visits > 0) {
-                double winRate = child.totalScore / child.visits;
+                // 子节点是"对手行棋方"视角，根视角需取反
+                double winRate = -child.totalScore / child.visits;
                 if (winRate > bestScore) {
                     bestScore = winRate;
                     best = child;
@@ -1827,6 +1855,16 @@ public class MCTSGoAI implements GoAI {
             copy[x] = board[x].clone();
         }
         return copy;
+    }
+
+    /** 判断两块棋盘是否完全一致（用于树重用前的棋盘匹配校验） */
+    private static boolean boardsEqual(GoPlayer[][] a, GoPlayer[][] b) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                if (a[x][y] != b[x][y]) return false;
+            }
+        }
+        return true;
     }
 
     // ══════════════════════════════════════════════════════════════════

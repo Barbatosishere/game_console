@@ -54,11 +54,13 @@ public final class GoAdversarialTrainer {
     private static final class Sample {
         final GoPlayer[][] board;
         final GoPlayer player;
+        final int[] lastMove;           // 上一手位置（plane 3，与推理对齐）
         final double[] policyTarget;
         double valueTarget;
-        Sample(GoPlayer[][] board, GoPlayer player, double[] policyTarget) {
+        Sample(GoPlayer[][] board, GoPlayer player, int[] lastMove, double[] policyTarget) {
             this.board = board;
             this.player = player;
+            this.lastMove = lastMove;
             this.policyTarget = policyTarget;
         }
     }
@@ -207,6 +209,7 @@ public final class GoAdversarialTrainer {
 
             try {
                 int moves = 0;
+                int[] lastMoveOnBoard = null; // 上一手（plane 3），追踪双方落子
                 while (!game.isGameOver() && moves < Math.max(1, config.maxMoves)) {
                     GoPlayer currentPlayer = game.getCurrentPlayer();
                     boolean ourTurn = (currentPlayer == GoPlayer.BLACK) == ourIsBlack;
@@ -216,7 +219,7 @@ public final class GoAdversarialTrainer {
                         GoPlayer[][] boardCopy = game.getBoardCopy();
                         int[] move = ourAI.getBestMove(game);
                         double[] policyTarget = ourAI.getVisitDistribution();
-                        samples.add(new Sample(boardCopy, currentPlayer, policyTarget));
+                        samples.add(new Sample(boardCopy, currentPlayer, lastMoveOnBoard, policyTarget));
 
                         boolean played = move != null && move.length >= 2 && game.placeStone(move[0], move[1]);
                         if (!played) {
@@ -224,7 +227,12 @@ public final class GoAdversarialTrainer {
                                 for (int y = 0; y < game.getBoardSize() && !played; y++)
                                     played = game.placeStone(x, y);
                         }
-                        if (!played) game.pass();
+                        if (!played) {
+                            game.pass();
+                            lastMoveOnBoard = null;
+                        } else {
+                            lastMoveOnBoard = move != null && move.length >= 2 ? new int[]{move[0], move[1]} : null;
+                        }
 
                         // 同步到 KataGo
                         if (move != null && move.length >= 2) {
@@ -243,8 +251,12 @@ public final class GoAdversarialTrainer {
                         boolean played = false;
                         if (move != null) {
                             played = game.placeStone(move[0], move[1]);
+                            lastMoveOnBoard = new int[]{move[0], move[1]};
                         }
-                        if (!played) game.pass();
+                        if (!played) {
+                            game.pass();
+                            lastMoveOnBoard = null;
+                        }
                     }
                     moves++;
                 }
@@ -385,7 +397,13 @@ public final class GoAdversarialTrainer {
                     Sample s = samples.get(k);
                     for (int t = 0; t < symCount; t++) {
                         GoPlayer[][] tb = applySymmetry(s.board, SYMM_PERMS[t]);
-                        planes[n] = evaluator.buildInputPlanes(tb, s.player, null);
+                        // 上一手随对称变换（plane 3 与推理对齐）
+                        int[] tLastMove = null;
+                        if (s.lastMove != null && s.lastMove.length >= 2) {
+                            int dstIdx = SYMM_PERMS[t][s.lastMove[0] * BOARD_SIZE + s.lastMove[1]];
+                            tLastMove = new int[]{dstIdx / BOARD_SIZE, dstIdx % BOARD_SIZE};
+                        }
+                        planes[n] = evaluator.buildInputPlanes(tb, s.player, tLastMove);
                         aux[n] = evaluator.extractAuxFeatures(tb, s.player);
                         values[n] = s.valueTarget;
                         if (t == 0) {

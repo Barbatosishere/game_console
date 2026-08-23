@@ -70,12 +70,14 @@ public final class GoSelfPlayTrainer {
     private static final class Sample {
         final GoPlayer[][] board;       // 存储棋盘供训练时重建平面
         final GoPlayer player;
+        final int[] lastMove;           // 上一手位置（plane 3，推理时也使用，保证 train/serve 一致）
         final double[] policyTarget;    // 362 维 MCTS 访问分布
         double valueTarget;
 
-        Sample(GoPlayer[][] board, GoPlayer player, double[] policyTarget) {
+        Sample(GoPlayer[][] board, GoPlayer player, int[] lastMove, double[] policyTarget) {
             this.board = board;
             this.player = player;
+            this.lastMove = lastMove;
             this.policyTarget = policyTarget;
         }
     }
@@ -171,6 +173,7 @@ public final class GoSelfPlayTrainer {
         ai.setExplorationScale(explorationScale);
         try {
             int moves = 0;
+            int[] lastMoveOnBoard = null; // 上一手（构建 plane 3，与推理的 node.move 对齐）
             while (!game.isGameOver() && moves < Math.max(1, config.maxMoves)) {
                 GoPlayer player = game.getCurrentPlayer();
                 // 获取当前棋盘副本
@@ -181,8 +184,8 @@ public final class GoSelfPlayTrainer {
                 // 从 MCTS 获取访问分布（访问数 / 总访问数）
                 double[] policyTarget = ai.getVisitDistribution();
 
-                // 存储样本：棋盘 + 当前玩家 + 策略目标（价值目标在终局后统一设置）
-                samples.add(new Sample(boardCopy, player, policyTarget));
+                // 存储样本：棋盘 + 当前玩家 + 上一手 + 策略目标（价值目标在终局后统一设置）
+                samples.add(new Sample(boardCopy, player, lastMoveOnBoard, policyTarget));
 
                 // 执行走法
                 boolean played = move != null && move.length >= 2 && game.placeStone(move[0], move[1]);
@@ -193,7 +196,12 @@ public final class GoSelfPlayTrainer {
                         }
                     }
                 }
-                if (!played) game.pass();
+                if (!played) {
+                    game.pass();
+                    lastMoveOnBoard = null; // 弃权无位置，plane 3 置空
+                } else {
+                    lastMoveOnBoard = move != null && move.length >= 2 ? new int[]{move[0], move[1]} : null;
+                }
                 moves++;
             }
             if (!game.isGameOver()) game.pass();
@@ -239,8 +247,15 @@ public final class GoSelfPlayTrainer {
                     for (int t = 0; t < symCount; t++) {
                         // 对棋盘应用对称变换
                         GoPlayer[][] transformedBoard = applySymmetry(s.board, SYMM_PERMS[t]);
+                        // 上一手坐标随对称变换同步（plane 3 与推理的 node.move 对齐）
+                        int[] tLastMove = null;
+                        if (s.lastMove != null && s.lastMove.length >= 2) {
+                            int srcIdx = s.lastMove[0] * BOARD_SIZE + s.lastMove[1];
+                            int dstIdx = SYMM_PERMS[t][srcIdx];
+                            tLastMove = new int[]{dstIdx / BOARD_SIZE, dstIdx % BOARD_SIZE};
+                        }
                         // 构建输入平面
-                        planes[n] = evaluator.buildInputPlanes(transformedBoard, s.player, null);
+                        planes[n] = evaluator.buildInputPlanes(transformedBoard, s.player, tLastMove);
                         // 辅助特征（对称不变，复用）
                         aux[n] = baseAux;
                         // 价值目标

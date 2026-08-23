@@ -539,6 +539,10 @@ public class NeuralEvaluator {
      */
     public double evaluate(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
         long hash = computeZobristHash(board, player);
+        // 上一手位置影响 plane 3，必须纳入缓存键，避免不同 lastMove 碰撞
+        if (lastMove != null && lastMove.length >= 2) {
+            hash ^= ((long) lastMove[0] * 31 + lastMove[1]) * 0x9E3779B97F4A7C15L;
+        }
         CacheKey key = new CacheKey(hash, modelVersion);
         synchronized (evaluationCache) {
             Double cached = evaluationCache.get(key);
@@ -1339,7 +1343,9 @@ public class NeuralEvaluator {
             copyInto(m.policyW, policyW); copyInto(m.policyB, policyB);
             copyInto(m.valueW1, valueW1); copyInto(m.valueB1, valueB1);
             copyInto(m.valueW2, valueW2); this.valueB2 = m.valueB2;
-            modelVersion++;
+            // 恢复持久化版本号（避免加载 checkpoint 后版本被重置为 1，
+            // 导致模型版本与缓存键不一致）
+            modelVersion = m.version;
             synchronized (evaluationCache) { evaluationCache.clear(); }
             // 加载新权重后重置动量缓冲，避免旧动量污染新权重
             resetVelocities();
