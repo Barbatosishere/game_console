@@ -74,8 +74,16 @@ public class OpenCLBackend implements AutoCloseable {
         try {
             // 子块输入提取（CPU）
             double[][][] subIn = extractSubInputs(planes, B);
+            // 子块权重从 [9][36][16] 展开为 GPU 内核期望的 [81][36][16]（每块内 9 子块共享）
+            double[][][] subWGpu = new double[81][36][16];
+            double[][] subBGpu = new double[81][16];
+            for (int si = 0; si < 81; si++) {
+                int b = si / 9;
+                subWGpu[si] = subW[b];
+                subBGpu[si] = subB[b];
+            }
             // 子块 GPU 前向
-            double[][][] subOut = gpuSubFwd(subIn, subW, subB, B);
+            double[][][] subOut = gpuSubFwd(subIn, subWGpu, subBGpu, B);
             if (subOut == null) return -1;
             // 字块 GPU 前向
             double[][][] blkIn = buildBlkIn(subOut, B);
@@ -221,18 +229,19 @@ public class OpenCLBackend implements AutoCloseable {
         int n = 0;
         for (double[][] mm : w) for (double[] r : mm) n += r.length;
         if (n == 0) return false;
+        Pointer dWG = null, dGG = null;
         try {
-            Memory dW = flatten3D(w); Pointer dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten3D(g); Pointer dGG = alloc(dG.size()); writeG(dGG, dG);
+            Memory dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            Memory dG = flatten3D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
             setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
             launch1D(k, n);
             double[] flat = new double[n];
             readBack1D(dWG, flat, n);
             int off = 0;
             for (double[][] mm : w) for (double[] r : mm) { System.arraycopy(flat, off, r, 0, r.length); off += r.length; }
-            free(dWG, dGG);
             return true;
         } catch (Exception e) { return false; }
+        finally { free(dWG, dGG); }
     }
     /** 2D 权重 [a][b] */
     public boolean batchWeightUpdate(double[][] w, double[][] g, double lr, double l2) {
@@ -242,18 +251,19 @@ public class OpenCLBackend implements AutoCloseable {
         int n = 0;
         for (double[] r : w) n += r.length;
         if (n == 0) return false;
+        Pointer dWG = null, dGG = null;
         try {
-            Memory dW = flatten2D(w); Pointer dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten2D(g); Pointer dGG = alloc(dG.size()); writeG(dGG, dG);
+            Memory dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            Memory dG = flatten2D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
             setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
             launch1D(k, n);
             double[] flat = new double[n];
             readBack1D(dWG, flat, n);
             int off = 0;
             for (double[] r : w) { System.arraycopy(flat, off, r, 0, r.length); off += r.length; }
-            free(dWG, dGG);
             return true;
         } catch (Exception e) { return false; }
+        finally { free(dWG, dGG); }
     }
     /** 1D 权重 [a] */
     public boolean batchWeightUpdate(double[] w, double[] g, double lr, double l2) {
@@ -262,15 +272,16 @@ public class OpenCLBackend implements AutoCloseable {
         if (k == null) return false;
         int n = w.length;
         if (n == 0) return false;
+        Pointer dWG = null, dGG = null;
         try {
-            Memory dW = flatten1D(w); Pointer dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten1D(g); Pointer dGG = alloc(dG.size()); writeG(dGG, dG);
+            Memory dW = flatten1D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            Memory dG = flatten1D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
             setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
             launch1D(k, n);
             readBack1D(dWG, w, n);
-            free(dWG, dGG);
             return true;
         } catch (Exception e) { return false; }
+        finally { free(dWG, dGG); }
     }
 
     // ── GPU 前向方法 ──
@@ -288,16 +299,21 @@ public class OpenCLBackend implements AutoCloseable {
     }
     private double[] gpuValueFwd(double[][] in, double[][] w1, double[] b1, double[] w2, double b2, int B) throws Exception {
         Pointer k = kernels.get("value_fwd"); if (k == null) return null;
-        Memory dIn = flatten2D(in); Pointer dInG = alloc(dIn.size()); writeG(dInG, dIn);
-        Memory dW1 = flatten2D(w1); Pointer dW1G = alloc(dW1.size()); writeG(dW1G, dW1);
-        Memory dB1 = flatten1D(b1); Pointer dB1G = alloc(dB1.size()); writeG(dB1G, dB1);
-        Memory dW2 = flatten1D(w2); Pointer dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
-        Pointer dOut = alloc((long)B * 8);
-        setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
-        setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
-        launch(k, B, 1);
-        double[] out = new double[B]; readBack(dOut, out);
-        free(dInG, dW1G, dB1G, dW2G, dOut); return out;
+        Pointer dInG = null, dW1G = null, dB1G = null, dW2G = null, dOut = null;
+        try {
+            Memory dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            Memory dW1 = flatten2D(w1); dW1G = alloc(dW1.size()); writeG(dW1G, dW1);
+            Memory dB1 = flatten1D(b1); dB1G = alloc(dB1.size()); writeG(dB1G, dB1);
+            Memory dW2 = flatten1D(w2); dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
+            dOut = alloc((long)B * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
+            setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
+            launch(k, B, 1);
+            double[] out = new double[B]; readBack(dOut, out);
+            return out;
+        } finally {
+            free(dInG, dW1G, dB1G, dW2G, dOut);
+        }
     }
 
     // ── 数据提取 ──
@@ -341,30 +357,40 @@ public class OpenCLBackend implements AutoCloseable {
     // ── GPU 前向辅助 ──
     private double[][][] run3D(String kName, double[][][] in, double[][][] w, double[][] b, int S, int K, int N, int B) throws Exception {
         Pointer k = kernels.get(kName); if (k == null) return null;
-        Memory dIn = flatten3D(in); Pointer dInG = alloc(dIn.size()); writeG(dInG, dIn);
-        Memory dW = flatten3D(w); Pointer dWG = alloc(dW.size()); writeG(dWG, dW);
-        Memory dB = flatten2D(b); Pointer dBG = alloc(dB.size()); writeG(dBG, dB);
-        Pointer dOut = alloc((long)S * B * N * 8);
-        setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
-        launch3D(k, S, B, N);
-        double[][][] out = new double[S][B][N]; readBack3D(dOut, out, S, B, N);
-        free(dInG, dWG, dBG, dOut); return out;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        try {
+            Memory dIn = flatten3D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            Memory dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            Memory dB = flatten2D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)S * B * N * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch3D(k, S, B, N);
+            double[][][] out = new double[S][B][N]; readBack3D(dOut, out, S, B, N);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+        }
     }
     private double[][] run2D(String kName, double[][] in, double[][] w, double[] b, int K, int N, int B) throws Exception {
         Pointer k = kernels.get(kName); if (k == null) return null;
-        Memory dIn = flatten2D(in); Pointer dInG = alloc(dIn.size()); writeG(dInG, dIn);
-        Memory dW = flatten2D(w); Pointer dWG = alloc(dW.size()); writeG(dWG, dW);
-        Memory dB = flatten1D(b); Pointer dBG = alloc(dB.size()); writeG(dBG, dB);
-        Pointer dOut = alloc((long)B * N * 8);
-        setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
-        launch(k, B, N);
-        double[][] out = new double[B][N]; readBack2D(dOut, out, B, N);
-        free(dInG, dWG, dBG, dOut); return out;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        try {
+            Memory dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            Memory dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            Memory dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)B * N * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch(k, B, N);
+            double[][] out = new double[B][N]; readBack2D(dOut, out, B, N);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+        }
     }
 
     // ── GPU 内存/执行 ──
     private Pointer alloc(long bytes) throws Exception { return callp("clCreateBuffer", context, CL_MEM_READ_WRITE, bytes, null, null); }
-    private void free(Pointer... ps) { for (Pointer p : ps) safe("clReleaseMemObject", p); }
+    private void free(Pointer... ps) { for (Pointer p : ps) if (p != null) safe("clReleaseMemObject", p); }
     private void writeG(Pointer dst, Memory src) throws Exception { calli("clEnqueueWriteBuffer", queue, dst, 1, 0L, src.size(), src, 0, null, null); }
     private void readBack(Pointer src, double[] out) throws Exception {
         Memory m = new Memory((long)out.length * 8);

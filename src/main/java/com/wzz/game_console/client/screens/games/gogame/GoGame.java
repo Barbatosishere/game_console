@@ -140,6 +140,21 @@ public class GoGame implements AutoCloseable {
     }
 
     /**
+     * 获取全部历史局面哈希集合（含当前局面），供 MCTS 搜索做 super-ko 检查。
+     * 返回副本，避免外部修改影响内部状态。
+     */
+    public Set<Long> getPositionHistory() {
+        return new HashSet<>(positionHistory);
+    }
+
+    /**
+     * 当前局面的 Zobrist 哈希（供 MCTS 根节点初始化 super-ko 检查用）。
+     */
+    public long getCurrentHash() {
+        return boardHash();
+    }
+
+    /**
      * 获取当前回合数（落子数 / 2 + 1）。
      */
     public int moveHistorySize() {

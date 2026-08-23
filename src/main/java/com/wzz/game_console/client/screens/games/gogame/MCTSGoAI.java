@@ -58,6 +58,9 @@ public class MCTSGoAI implements GoAI {
     /** 自对弈训练模式：启用根节点 Dirichlet 噪声增强探索（对局模式禁用） */
     private volatile boolean selfPlayMode = false;
 
+    /** 当前对局的全部历史局面哈希（super-ko 全局同型检测），从 GoGame 同步 */
+    private volatile Set<Long> koHistory = null;
+
     /** 上一手评估值（用于趋势判断） */
     private double lastEvaluation = 0;
     /** 连续优势/劣势回合数 */
@@ -290,6 +293,8 @@ public class MCTSGoAI implements GoAI {
 
         // 树重用
         MCTSNode reusedRoot = tryReuseTree(board, currentPlayer);
+        // super-ko 历史：从 GoGame 同步全部历史局面哈希（含当前局面）
+        this.koHistory = game.getPositionHistory();
         if (reusedRoot != null) {
             this.currentRoot = reusedRoot;
             this.currentRoot.player = currentPlayer;
@@ -298,6 +303,7 @@ public class MCTSGoAI implements GoAI {
             // 启发式排序候选点（getAllValidMoves 已按价值升序排好）
             this.currentRoot = new MCTSNode(board, currentPlayer, null, null, validMoves);
         }
+        this.currentRoot.hash = game.getCurrentHash();
 
         // 根节点 Dirichlet 噪声（仅在自对弈训练时启用，对局模式关闭以保证棋力）
         if (selfPlayMode) {
@@ -612,9 +618,15 @@ public class MCTSGoAI implements GoAI {
 
         GoPlayer[][] childBoard = deepCopyBoard(node.board);
         if (simulatePlaceStone(childBoard, move[0], move[1], node.player)) {
+            // super-ko 全局同型：落子后局面若与任何历史局面重复则禁止（含单劫回提）
+            long childHash = GoGame.boardHash(childBoard);
+            if (koHistory != null && (koHistory.contains(childHash) || isAncestorKoRepeat(node, childHash))) {
+                return; // 跳过该走法（不放回 untriedMoves，视为已消费）
+            }
             GoPlayer nextPlayer = node.player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
             List<int[]> childMoves = getAllValidMoves(childBoard, nextPlayer);
             MCTSNode child = new MCTSNode(childBoard, nextPlayer, node, move, childMoves);
+            child.hash = childHash;
 
             // 策略先验：从缓存中查找该走法的概率
             double prior = 1.0;
@@ -912,6 +924,8 @@ public class MCTSGoAI implements GoAI {
         copy.policyCache = node.policyCache; // 只读共享，线程安全（行为复用）
         copy.valueCache = node.valueCache;
         copy.valueCached = node.valueCached;
+        // 复制局面哈希（deepCopyNode 递归应用走法重建棋盘，哈希需从子节点棋盘重新计算）
+        copy.hash = GoGame.boardHash(boardCopy);
 
         if (node.children != null) {
             copy.children = new ArrayList<>();
@@ -1867,6 +1881,19 @@ public class MCTSGoAI implements GoAI {
         return true;
     }
 
+    /**
+     * 沿父链检查目标哈希是否与任一祖先局面重复（super-ko 全局同型）。
+     * 根节点哈希由 getBestMove 初始化，子节点哈希在 expand 时设置。
+     */
+    private boolean isAncestorKoRepeat(MCTSNode node, long targetHash) {
+        MCTSNode ancestor = node;
+        while (ancestor != null) {
+            if (ancestor.hash != 0 && ancestor.hash == targetHash) return true;
+            ancestor = ancestor.parent;
+        }
+        return false;
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  MCTS 节点
     // ══════════════════════════════════════════════════════════════════
@@ -1879,6 +1906,9 @@ public class MCTSGoAI implements GoAI {
         int[] linkedMove;
         List<MCTSNode> children;
         List<int[]> untriedMoves;
+
+        /** 本节点局面的 Zobrist 哈希（用于 super-ko 全局同型检测） */
+        long hash;
 
         double visits = 0;
         double totalScore = 0;
