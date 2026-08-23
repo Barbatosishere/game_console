@@ -108,7 +108,7 @@ public final class GoSelfPlayTrainer {
         if (games < 0 || epochs < 0 || learningRate <= 0) throw new IllegalArgumentException("Invalid generation parameters");
         if (games == 0) return new Result(0, 0, 0, 0, evaluator);
         generation++; // 递增代次，供探索衰减使用
-        // 探索强度随训练代次衰减：gen 0→1.0, gen 40→0.2
+        // 探索强度随训练代次衰减：gen 1→1.0, gen 41→0.2（下限 0.2）
         final double expScale = Math.max(0.2, 1.0 - 0.02 * (generation - 1));
         int workers = Math.max(1, Math.min(parallelism <= 0 ? config.parallelism : parallelism, games));
         final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
