@@ -814,6 +814,8 @@ public class MCTSGoAI implements GoAI {
     // ══════════════════════════════════════════════════════════════════
 
     private static final double UCB_C = 1.414;
+    /** FPU（First Play Urgency）：未访问子节点的默认价值，0 表示假设均势 */
+    private static final double FPU_VALUE = 0.0;
 
     /** 共享线程池（复用线程，避免每次搜索都创建/销毁） */
     private static final ExecutorService SHARED_POOL;
@@ -843,10 +845,16 @@ public class MCTSGoAI implements GoAI {
         }
 
         for (MCTSNode child : children) {
-            if (child.visits == 0) return child;
-
             // 子节点是"对手行棋方"视角，父节点视角需取反（Q 项为 -child.Q）
-            double winRate = -child.totalScore / child.visits;
+            double winRate;
+            if (child.visits == 0) {
+                // FPU：未访问子节点用 FPU_VALUE（默认 0 表示均势），替代强制展开。
+                // 避免宽局面（100+ 合法走法）下前 100 次迭代全花在"点一遍每个点"，
+                // 已访问高胜率走法可被立即重访，搜索深度显著提升。
+                winRate = FPU_VALUE;
+            } else {
+                winRate = -child.totalScore / child.visits;
+            }
             // PUCT: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)
             double ucb = winRate
                     + UCB_C * child.prior * Math.sqrt(logParentVisits / (1.0 + child.visits));

@@ -11,6 +11,11 @@ public final class GoTrainingMain {
 
     public static void main(String[] args) throws Exception {
         Map<String, String> options = parse(args);
+        // GPU 可选：--gpu true/false（默认 true），通过系统属性传递给 NeuralEvaluator
+        String gpuVal = options.get("gpu");
+        if (gpuVal != null) {
+            System.setProperty("go.gpu", gpuVal);
+        }
         GoSelfPlayTrainer.Config config = new GoSelfPlayTrainer.Config();
         config.searchTimeMillis = intOption(options, "searchTime", config.searchTimeMillis);
         config.maxIterations = intOption(options, "iterations", config.maxIterations);

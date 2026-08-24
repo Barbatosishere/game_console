@@ -2,6 +2,7 @@ package com.wzz.game_console.client.screens.games.gogame;
 
 import java.util.*;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import com.wzz.game_console.util.GameSettings;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -405,10 +406,34 @@ public class NeuralEvaluator {
     //  前向传播
     // ══════════════════════════════════════════════════════════════════════
 
+    /** GPU 加速是否启用（可选配置 go.gpu，默认开）。false 时一律走 CPU，不初始化 OpenCL。 */
+    private static volatile Boolean gpuEnabledCache = null;
+
+    private static boolean isGpuEnabled() {
+        Boolean v = gpuEnabledCache;
+        if (v != null) return v;
+        // 1) 系统属性 -Dgo.gpu=false（训练 CLI 用）
+        String prop = System.getProperty("go.gpu");
+        if (prop != null) {
+            v = Boolean.parseBoolean(prop);
+            gpuEnabledCache = v;
+            return v;
+        }
+        // 2) GameSettings 配置文件（MC 对局用）
+        try {
+            v = GameSettings.getBoolean("go", "gpu", true);
+        } catch (Exception e) {
+            v = true;
+        }
+        gpuEnabledCache = v;
+        return v;
+    }
+
     /**
-     * 懒初始化 OpenCL 后端（失败自动回退，仅使用一次）。
+     * 懒初始化 OpenCL 后端（GPU 启用且成功才使用，失败自动回退 CPU）。
      */
     private OpenCLBackend ensureOpenCL() {
+        if (!isGpuEnabled()) return null; // GPU 可选：配置关闭时走 CPU
         if (opencl == null) {
             synchronized (this) {
                 if (opencl == null) {
