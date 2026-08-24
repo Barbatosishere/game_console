@@ -18,6 +18,8 @@ public class GoGame implements AutoCloseable {
     private final boolean initializeAi;
     /** 历史局面哈希：劫争判定（禁止全局同型，中国规则），新局面不得与任何历史局面重复 */
     private final Set<Long> positionHistory = new HashSet<>();
+    /** 对局状态锁：placeStone/pass 写、getMoveHistory/getPositionHistory 读，跨线程同步 */
+    private final Object stateLock = new Object();
     /** 调试开关：为 true 时输出劫争判定的详细追踪信息（默认关闭，正常对局不刷屏） */
     private static final boolean DEBUG_KO = false;
 
@@ -136,7 +138,9 @@ public class GoGame implements AutoCloseable {
      * 获取历史走法列表（供 KataGo 等外部引擎同步棋盘用）。
      */
     public List<GoMove> getMoveHistory() {
-        return Collections.unmodifiableList(moveHistory);
+        synchronized (stateLock) {
+            return Collections.unmodifiableList(new ArrayList<>(moveHistory));
+        }
     }
 
     /**
@@ -144,7 +148,9 @@ public class GoGame implements AutoCloseable {
      * 返回副本，避免外部修改影响内部状态。
      */
     public Set<Long> getPositionHistory() {
-        return new HashSet<>(positionHistory);
+        synchronized (stateLock) {
+            return new HashSet<>(positionHistory);
+        }
     }
 
     /**
@@ -238,13 +244,15 @@ public class GoGame implements AutoCloseable {
             blackCaptured += capturedStones;
         }
 
+        // 记录移动与局面（记录当前玩家——落子者，与 pass() 一致）
+        synchronized (stateLock) {
+            moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
+            positionHistory.add(newHash);
+        }
+        consecutivePasses = 0;
+
         // 切换玩家
         switchPlayer();
-
-        // 记录移动与局面（记录切换后的玩家状态）
-        moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
-        positionHistory.add(newHash);
-        consecutivePasses = 0;
 
         return true;
     }
@@ -273,7 +281,8 @@ public class GoGame implements AutoCloseable {
     }
 
     private void restoreBoard(GoPlayer[][] backup) {
-        for (int i = 0; i < BOARD_SIZE; i++) board[i] = backup[i].clone();
+        // backup 是刚刚 copyBoardInternal() 深拷贝的独立副本，直接整行赋回即可，无需再 clone
+        System.arraycopy(backup, 0, board, 0, BOARD_SIZE);
     }
     
     public boolean canPlaceStone(int x, int y) {
@@ -289,7 +298,9 @@ public class GoGame implements AutoCloseable {
         if (gameOver) return;
 
         // 先按当前玩家记录弃权（原先在switchPlayer之后记录，会把弃权记到对手名下）
-        moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
+        synchronized (stateLock) {
+            moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
+        }
 
         consecutivePasses++;
         if (consecutivePasses >= 2) {
@@ -305,13 +316,26 @@ public class GoGame implements AutoCloseable {
     }
     
     public void makeAiMove() {
-        if (!aiMode || ai == null || gameOver || currentPlayer == GoPlayer.BLACK) {
+        applyAiMove(computeAiMove());
+    }
+
+    /** 计算 AI 走法（不落子），返回 {x,y} 或 null（表示建议弃权）。供后台线程计算使用。 */
+    public int[] computeAiMove() {
+        if (!aiMode || ai == null || gameOver) {
+            return null;
+        }
+        return ai.getBestMove(this);
+    }
+
+    /** 将 AI 走法应用到棋盘（含非法回退扫描），应在客户端线程调用。 */
+    public void applyAiMove(int[] move) {
+        if (move == null) {
+            // AI 返回 null 表示建议弃权（KataGo 的 pass/resign），尊重 AI 选择，不得强行落子
+            pass();
             return;
         }
-
-        int[] move = ai.getBestMove(this);
         // 最优落子非法（劫争/自杀）时，扫描棋盘找第一个合法点，避免直接弃权
-        if (move != null && placeStone(move[0], move[1])) {
+        if (placeStone(move[0], move[1])) {
             return;
         }
         for (int x = 0; x < BOARD_SIZE; x++) {
@@ -319,6 +343,7 @@ public class GoGame implements AutoCloseable {
                 if (placeStone(x, y)) return;
             }
         }
+        // 全盘无合法落子则弃权
         pass();
     }
     
@@ -422,7 +447,8 @@ public class GoGame implements AutoCloseable {
         boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
         int blackT = 0, whiteT = 0;
 
-        // 先统计棋盘上的活子数
+        // 先统计棋盘上的活子数（死子不计入得分；但活子数只需数黑/白总数，
+        // 领地统计用空点相邻判定，对死子已通过 visited 排除）
         for (int x = 0; x < BOARD_SIZE; x++)
             for (int y = 0; y < BOARD_SIZE; y++) {
                 GoPlayer s = board[x][y];

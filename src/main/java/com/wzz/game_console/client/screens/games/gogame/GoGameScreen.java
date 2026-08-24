@@ -50,6 +50,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     /** 设置界面中当前的 KataGo 路径 */
     private String settingsKatagoPath = GameSettings.getString("go", "katagoPath", "");
 
+    /** AI 后台思考标记（防止重复启动线程） */
+    private volatile boolean aiThinking = false;
+    /** AI 后台思考产生走法（null=建议弃权）；aiComputed=true 时有效 */
+    private volatile int[] aiPendingMove = null;
+    /** AI 后台是否已完成思考（待客户端线程消费） */
+    private volatile boolean aiComputed = false;
+
     /** 单机 / AI 构造 */
     public GoGameScreen(GoGame game) {
         super(Component.literal("围棋"));
@@ -186,7 +193,27 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         // AI 模式：AI 执白，黑棋下完后触发
         if (state == State.PLAYING && lanMode == LAN_NONE && game.isAiMode()
                 && !game.isGameOver() && game.getCurrentPlayer() == GoPlayer.WHITE) {
-            game.makeAiMove();
+            // 后台线程计算 AI 走法，避免阻塞客户端线程（MCTS 搜索 1~12 秒）
+            if (!aiThinking && !aiComputed) {
+                aiThinking = true;
+                new Thread(() -> {
+                    try {
+                        aiPendingMove = game.computeAiMove(); // null = 建议弃权
+                    } catch (Exception e) {
+                        aiPendingMove = null; // 异常时弃权
+                    } finally {
+                        aiThinking = false;
+                        aiComputed = true;
+                    }
+                }, "go-ai-worker").start();
+            }
+        }
+        // 客户端线程消费 AI 结果并落子
+        if (aiComputed) {
+            aiComputed = false;
+            int[] move = aiPendingMove;
+            aiPendingMove = null;
+            game.applyAiMove(move);
             if (game.isGameOver()) finishGame();
         }
     }
