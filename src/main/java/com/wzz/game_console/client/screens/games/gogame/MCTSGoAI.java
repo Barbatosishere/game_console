@@ -258,6 +258,10 @@ public class MCTSGoAI implements GoAI {
         GoPlayer currentPlayer = game.getCurrentPlayer();
         int moveCount = game.moveHistorySize();
 
+        // super-ko 历史：从 GoGame 同步全部历史局面哈希（含当前局面），
+        // 必须在 getAllValidMoves 之前设置，使根节点走法也经过 super-ko 过滤
+        this.koHistory = game.getPositionHistory();
+
         List<int[]> validMoves = getAllValidMoves(board, currentPlayer);
         if (validMoves.isEmpty()) return null;
 
@@ -297,8 +301,6 @@ public class MCTSGoAI implements GoAI {
 
         // 树重用
         MCTSNode reusedRoot = tryReuseTree(board, currentPlayer);
-        // super-ko 历史：从 GoGame 同步全部历史局面哈希（含当前局面）
-        this.koHistory = game.getPositionHistory();
         // 上一手位置（plane 3）：新鲜根节点需要设置 move 以保证与训练分布一致
         int[] gameLastMove = game.getLastMove();
         if (reusedRoot != null) {
@@ -1733,9 +1735,10 @@ public class MCTSGoAI implements GoAI {
     }
 
     /**
-     * 获取所有合法走法（带知识剪枝）。
+     * 获取所有合法走法（带知识剪枝 + super-ko 过滤）。
      * 返回 3 元素数组 [x, y, value]，value 用于剪枝和排序。
      * 去掉：角部/边部过于深入、无意义的尖、离对手太远的孤立点等。
+     * 并过滤会触发 super-ko（全局同型）的走法。
      */
     private List<int[]> getAllValidMoves(GoPlayer[][] board, GoPlayer player) {
         List<int[]> moves = new ArrayList<>();
@@ -1744,6 +1747,7 @@ public class MCTSGoAI implements GoAI {
             for (int y = 0; y < BOARD_SIZE; y++) {
                 if (board[x][y] != GoPlayer.NONE) continue;
                 if (!isLegalMove(board, x, y, player)) continue;
+                if (isKoIllegal(board, x, y, player)) continue; // super-ko 过滤
 
                 // 知识剪枝 + 完整排序分：一次计算（evaluateMoveScore 合并了剪枝和排序）
                 int value = evaluateMoveScore(board, x, y, player);
@@ -1754,10 +1758,11 @@ public class MCTSGoAI implements GoAI {
         }
 
         if (moves.isEmpty()) {
-            // 回退到全量搜索（不剪枝）
+            // 回退到全量搜索（不剪枝，但仍过滤 super-ko）
             for (int x = 0; x < BOARD_SIZE; x++) {
                 for (int y = 0; y < BOARD_SIZE; y++) {
-                    if (board[x][y] == GoPlayer.NONE && isLegalMove(board, x, y, player)) {
+                    if (board[x][y] == GoPlayer.NONE && isLegalMove(board, x, y, player)
+                            && !isKoIllegal(board, x, y, player)) {
                         moves.add(new int[]{x, y, 0});
                     }
                 }
@@ -1796,6 +1801,18 @@ public class MCTSGoAI implements GoAI {
         board[x][y] = GoPlayer.NONE;
         for (int[] pos : captured) board[pos[0]][pos[1]] = opponent;
         return legal;
+    }
+
+    /**
+     * super-ko 检查：落子后的局面若与全局历史（koHistory）中任何局面重复则非法。
+     * 注意：在棋盘副本上模拟（不修改传入棋盘），并通过祖先链（isAncestorKoRepeat）覆盖树内重复。
+     */
+    private boolean isKoIllegal(GoPlayer[][] board, int x, int y, GoPlayer player) {
+        if (koHistory == null) return false;
+        GoPlayer[][] test = deepCopyBoard(board);
+        if (!simulatePlaceStone(test, x, y, player)) return true; // 落子本身不合法（自杀等）
+        long h = GoGame.boardHash(test);
+        return koHistory.contains(h);
     }
 
     private int countStones(GoPlayer[][] board) {
