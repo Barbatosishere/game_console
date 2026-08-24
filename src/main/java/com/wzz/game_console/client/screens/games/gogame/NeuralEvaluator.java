@@ -260,7 +260,7 @@ public class NeuralEvaluator {
                     else if (libs == 1) planes[2][x][y] = 0.25;
                 }
                 // 上一步落子位置
-                if (lastMove != null && lastMove[0] == x && lastMove[1] == y) {
+                if (lastMove != null && lastMove.length >= 2 && lastMove[0] == x && lastMove[1] == y) {
                     planes[3][x][y] = 1.0;
                 }
             }
@@ -539,9 +539,11 @@ public class NeuralEvaluator {
      */
     public double evaluate(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
         long hash = computeZobristHash(board, player);
-        // 上一手位置影响 plane 3，必须纳入缓存键，避免不同 lastMove 碰撞
+        // 上一手位置影响 plane 3，必须纳入缓存键，避免不同 lastMove 碰撞。
+        // 用 (x+1,y+1) 编码避免 {0,0} 与 null 映射到 0 的碰撞。
         if (lastMove != null && lastMove.length >= 2) {
-            hash ^= ((long) lastMove[0] * 31 + lastMove[1]) * 0x9E3779B97F4A7C15L;
+            long lm = ((long)(lastMove[0] + 1) * 32 + (lastMove[1] + 1));
+            hash ^= lm * 0x9E3779B97F4A7C15L;
         }
         CacheKey key = new CacheKey(hash, modelVersion);
         synchronized (evaluationCache) {
@@ -794,6 +796,7 @@ public class NeuralEvaluator {
                 for (int i = 0; i < VALUE_HIDDEN; i++) {
                     gValueW2[i] += dValue * vh[i];
                     dVh[i] = dValue * valueW2[i] * (vhZ[i] > 0 ? 1 : 0);
+                    gValueB1[i] += dVh[i]; // 价值头隐藏层偏置梯度（此前遗漏，偏置永久冻结）
                 }
                 gValueB2 += dValue;
 
@@ -883,7 +886,8 @@ public class NeuralEvaluator {
                 updateMM(valueW1, gValueW1, vValueW1, r, l2, momentum);
                 updateM(valueB1, gValueB1, vValueB1, r, 0, momentum);
                 updateM(valueW2, gValueW2, vValueW2, r, l2, momentum);
-                vValueB2 = momentum * vValueB2 + r * (gValueB2 + l2 * valueB2);
+                // bias 不做 L2 正则（与 valueB1 等其它 bias 一致，避免 valueB2 被额外收缩）
+                vValueB2 = momentum * vValueB2 + r * gValueB2;
                 valueB2 -= vValueB2;
             } else {
                 updateMMM(subW1, gSubW, null, r, l2, 0);
@@ -897,7 +901,7 @@ public class NeuralEvaluator {
                 updateMM(valueW1, gValueW1, null, r, l2, 0);
                 updateM(valueB1, gValueB1, null, r, 0, 0);
                 updateM(valueW2, gValueW2, null, r, l2, 0);
-                valueB2 -= r * (gValueB2 + l2 * valueB2);
+                valueB2 -= r * gValueB2; // bias 不做 L2 正则（与其它 bias 一致）
             }
 
             modelVersion++;
@@ -1054,16 +1058,26 @@ public class NeuralEvaluator {
         double threat = 0;
         for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
             if (board[x][y] == GoPlayer.NONE) {
-                Set<Set<int[]>> connected = new HashSet<>();
+                // getGroup 返回的 Set<int[]> 中 int[] 是 identity 相等，同一棋群从多方向
+                // 相邻会被 Set<Set<int[]>> 当成多个。用棋群最小坐标的 Long 键规范化去重。
+                Set<Long> groupKeys = new HashSet<>();
                 for (int[] d : DIRS) {
                     int nx = x + d[0], ny = y + d[1];
-                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent)
-                        connected.add(getGroup(board, nx, ny));
+                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent) {
+                        Set<int[]> g = getGroup(board, nx, ny);
+                        long minKey = Long.MAX_VALUE;
+                        for (int[] p : g) {
+                            long key = (long) p[0] * BOARD_SIZE + p[1];
+                            if (key < minKey) minKey = key;
+                        }
+                        groupKeys.add(minKey);
+                    }
                 }
-                if (connected.size() >= 2) {
+                if (groupKeys.size() >= 2) {
                     int minLibs = Integer.MAX_VALUE;
-                    for (Set<int[]> g : connected) {
-                        int libs = countGroupLiberties(board, g);
+                    for (long key : groupKeys) {
+                        int px = (int)(key / BOARD_SIZE), py = (int)(key % BOARD_SIZE);
+                        int libs = countGroupLiberties(board, getGroup(board, px, py));
                         minLibs = Math.min(minLibs, libs);
                     }
                     threat += minLibs <= 3 ? 3.0 : 1.0;

@@ -223,10 +223,13 @@ public class MCTSGoAI implements GoAI {
             return true;
         }
 
-        // 置信区间判断：如果最佳走法显著优于次佳，可以提前终止
-        double margin = bestWinRate - secondWinRate;
-        if (margin > 0.3 && iterations > MIN_VISITS_FOR_TERMINATION * 2) {
-            return true;
+        // 置信区间判断：仅当至少两个子节点被访问（secondWinRate 有限）时才启用，
+        // 否则 bestWinRate - (-INF) = +INF 会导致搜索在第 1 个子节点被访问后立即提前终止
+        if (secondWinRate != Double.NEGATIVE_INFINITY) {
+            double margin = bestWinRate - secondWinRate;
+            if (margin > 0.3 && iterations > MIN_VISITS_FOR_TERMINATION * 2) {
+                return true;
+            }
         }
 
         return false;
@@ -263,7 +266,10 @@ public class MCTSGoAI implements GoAI {
         this.koHistory = game.getPositionHistory();
 
         List<int[]> validMoves = getAllValidMoves(board, currentPlayer);
-        if (validMoves.isEmpty()) return null;
+        if (validMoves.isEmpty()) {
+            this.currentRoot = null; // 无合法走法，清空树避免 getVisitDistribution 用旧树
+            return null;
+        }
 
         // 杀棋检测：优先处理威胁
         int[] killerMove = findKillerMove(board, currentPlayer, validMoves);
@@ -283,7 +289,8 @@ public class MCTSGoAI implements GoAI {
         // 战术阅读：在 MCTS 之前处理中盘复杂战斗（限时预算，避免拖延）
         int tacticalBudget = Math.max(200, Math.min(800, baseSearchTime / 4));
         int[] tacticalMove = tacticalReading(board, currentPlayer, System.currentTimeMillis() + tacticalBudget);
-        if (tacticalMove != null && isLegalMove(board, tacticalMove[0], tacticalMove[1], currentPlayer)) {
+        if (tacticalMove != null && isLegalMove(board, tacticalMove[0], tacticalMove[1], currentPlayer)
+                && !isKoIllegal(board, tacticalMove[0], tacticalMove[1], currentPlayer)) {
             this.lastMove = tacticalMove;
             this.currentRoot = null;
             return tacticalMove;
@@ -375,10 +382,10 @@ public class MCTSGoAI implements GoAI {
                 }
             }
         }
-        // pass 的访问数（当前根没有独立 pass 节点时按总访问数推算）
-        double passVisits = Math.max(root.visits - total, 0);
-        dist[361] = passVisits;
-        total += passVisits;
+        // 本 MCTS 从不模拟 pass（getAllValidMoves 不含 pass），pass 概率应为 0。
+        // 不能把 root.visits - sum(child.visits) 算作 pass：根展开阶段（selectNode 停在根、
+        // expand 但不评估子节点）会永久增加 root.visits 而不增加任何子节点，导致 pass 被虚高。
+        dist[361] = 0;
 
         if (total > 0) {
             for (int i = 0; i < 362; i++) dist[i] /= total;
@@ -1102,7 +1109,7 @@ public class MCTSGoAI implements GoAI {
             GoPlayer[][] next = deepCopyBoard(board);
             if (!simulatePlaceStone(next, move[0], move[1], attacker)) continue;
 
-            double score = -localAlphaBeta(next, target, defender, maxDepth - 1,
+            double score = -localAlphaBeta(next, target, defender, attacker, maxDepth - 1,
                     Double.NEGATIVE_INFINITY, -bestScore, region, deadline);
 
             if (score > bestScore) {
@@ -1122,12 +1129,16 @@ public class MCTSGoAI implements GoAI {
      * 通过 negamax 负号翻转处理交替行棋方。
      */
     private double localAlphaBeta(GoPlayer[][] board, Set<int[]> target,
-                                   GoPlayer player, int depth,
+                                   GoPlayer player, GoPlayer attacker, int depth,
                                    double alpha, double beta, Set<String> region, long deadline) {
         if (System.currentTimeMillis() > deadline) return 0;
 
         // 终局：目标棋群被完全提掉
-        if (targetIsCaptured(board, target)) return 1.0;
+        if (targetIsCaptured(board, target)) {
+            // negamax 约定：返回当前行棋方视角。
+            // 攻击方（player==attacker）成功提掉目标 → +1.0；防守方（player!=attacker）→ -1.0
+            return player == attacker ? 1.0 : -1.0;
+        }
 
         // 达到深度或目标活了（多气+安全）：神经网络评估
         if (depth <= 0) {
@@ -1149,7 +1160,7 @@ public class MCTSGoAI implements GoAI {
         for (int[] move : moves) {
             GoPlayer[][] next = deepCopyBoard(board);
             if (!simulatePlaceStone(next, move[0], move[1], player)) continue;
-            double v = -localAlphaBeta(next, target, opponent, depth - 1, -beta, -alpha, region, deadline);
+            double v = -localAlphaBeta(next, target, opponent, attacker, depth - 1, -beta, -alpha, region, deadline);
             if (v > alpha) alpha = v;
             if (alpha >= beta) break;
         }

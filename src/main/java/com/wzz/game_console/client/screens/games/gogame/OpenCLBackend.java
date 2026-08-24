@@ -295,7 +295,24 @@ public class OpenCLBackend implements AutoCloseable {
         return run2D("top_fwd", in, w, b, 600, 256, B);
     }
     private double[][] gpuPolicyFwd(double[][] in, double[][] w, double[] b, int B) throws Exception {
-        return run2D("policy_fwd", in, w, b, 256, 362, B);
+        // policy_fwd 内核只使用 get_global_id(0)（每行算全部 362 个输出），
+        // 必须 1D launch，避免 2D launch 的 y 维度产生 368 个冗余重复计算
+        Pointer k = kernels.get("policy_fwd"); if (k == null) return null;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
+        try {
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)B * 362 * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch1D(k, B);
+            double[][] out = new double[B][362]; readBack2D(dOut, out, B, 362);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
+        }
     }
     private double[] gpuValueFwd(double[][] in, double[][] w1, double[] b1, double[] w2, double b2, int B) throws Exception {
         Pointer k = kernels.get("value_fwd"); if (k == null) return null;
@@ -309,7 +326,8 @@ public class OpenCLBackend implements AutoCloseable {
             dOut = alloc((long)B * 8);
             setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
             setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
-            launch(k, B, 1);
+            // 内核只用 get_global_id(0)，1D launch 避免 y 维度 16 倍冗余
+            launch1D(k, B);
             double[] out = new double[B]; readBack(dOut, out);
             return out;
         } finally {
@@ -449,10 +467,10 @@ public class OpenCLBackend implements AutoCloseable {
         calli("clFinish", queue);
     }
     private void launch3D(Pointer k, int x, int y, int z) throws Exception {
-        // x（块索引维度）保持裸值：sub_fwd=81, block_fwd=9，缓冲区按 S 精确分配，
-        // 工作项 s=0..S-1 恰好覆盖，内核未做 s 越界检查因此不能取整。
-        // y/z 取整到 16 的倍数由内核的 r>=B/c>=N 边界检查兜底。
-        Memory g = new Memory(24); g.setLong(0, x); g.setLong(8, ceil(y, 16)*16); g.setLong(16, ceil(z, 16)*16);
+        // 三个维度都向上取整到 16 的倍数（sub_fwd/block_fwd 内核已加 s>=S 边界检查，
+        // 驱动向上填充全局尺寸时多余工作项会被拦截，不会越界写）。
+        Memory g = new Memory(24);
+        g.setLong(0, ceil(x, 16)*16); g.setLong(8, ceil(y, 16)*16); g.setLong(16, ceil(z, 16)*16);
         calli("clEnqueueNDRangeKernel", queue, k, 3, null, g, null, 0, null, null);
         calli("clFinish", queue);
     }
@@ -511,13 +529,13 @@ public class OpenCLBackend implements AutoCloseable {
     private static final String KERNEL_SOURCE = "" +
     "__kernel void sub_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
     "  int s=get_global_id(0), r=get_global_id(1), c=get_global_id(2);\n" +
-    "  if(r>=B||c>=16)return; double sum=b[s*16+c];\n" +
+    "  if(s>=81||r>=B||c>=16)return; double sum=b[s*16+c];\n" +
     "  for(int k=0;k<36;k++) sum+=in[(s*B+r)*36+k]*w[s*36*16+k*16+c];\n" +
     "  out[(s*B+r)*16+c] = sum>0?sum:0;\n" +
     "}\n" +
     "__kernel void block_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
     "  int s=get_global_id(0), r=get_global_id(1), c=get_global_id(2);\n" +
-    "  if(r>=B||c>=64)return; double sum=b[s*64+c];\n" +
+    "  if(s>=9||r>=B||c>=64)return; double sum=b[s*64+c];\n" +
     "  for(int k=0;k<144;k++) sum+=in[(s*B+r)*144+k]*w[s*144*64+k*64+c];\n" +
     "  out[(s*B+r)*64+c] = sum>0?sum:0;\n" +
     "}\n" +
