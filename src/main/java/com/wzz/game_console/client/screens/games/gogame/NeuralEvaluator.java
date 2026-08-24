@@ -1,6 +1,7 @@
 package com.wzz.game_console.client.screens.games.gogame;
 
 import java.util.*;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -121,7 +122,7 @@ public class NeuralEvaluator {
     private final double[] valueW2;     // [128]
     private double valueB2;
 
-    private final Object modelLock = new Object();
+    private final ReentrantReadWriteLock modelLock = new ReentrantReadWriteLock();
     private volatile long modelVersion;
 
     // 动量缓冲（惰性分配，首次 momentum > 0 训练时创建）
@@ -428,7 +429,8 @@ public class NeuralEvaluator {
      * 完整前向传播：三级分块 → 双头。
      */
     public ForwardResult forward(double[][][] planes, double[] auxFeatures) {
-        synchronized (modelLock) {
+        modelLock.readLock().lock();
+        try {
             // ── 第 1 级：二级子块 ──────────────────────────────────────
             // subOut[b][s][h] — 大块 b 的第 s 个子块的 16 维输出
             double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
@@ -524,6 +526,8 @@ public class NeuralEvaluator {
             double value = Math.tanh(valueSum);
 
             return new ForwardResult(value, policy);
+        } finally {
+            modelLock.readLock().unlock();
         }
     }
 
@@ -607,7 +611,8 @@ public class NeuralEvaluator {
         int batchSize = planes.length;
         if (batchSize == 0) return 0;
 
-        synchronized (modelLock) {
+        modelLock.writeLock().lock();
+        try {
             // 确保动量缓冲就绪
             if (momentum > 0) ensureVelocities();
             // ── 梯度累加器 ──────────────────────────────────────────────
@@ -907,6 +912,8 @@ public class NeuralEvaluator {
             modelVersion++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
             return totalLoss / batchSize;
+        } finally {
+            modelLock.writeLock().unlock();
         }
     }
 
@@ -1341,16 +1348,20 @@ public class NeuralEvaluator {
     }
 
     public ModelWeights snapshot() {
-        synchronized (modelLock) {
+        modelLock.readLock().lock();
+        try {
             return new ModelWeights(subW1, subB1, blockW1, blockB1,
                     topW1, topB1, policyW, policyB,
                     valueW1, valueB1, valueW2, valueB2, modelVersion);
+        } finally {
+            modelLock.readLock().unlock();
         }
     }
 
     public void apply(ModelWeights m) {
         if (m == null) throw new IllegalArgumentException("Null model");
-        synchronized (modelLock) {
+        modelLock.writeLock().lock();
+        try {
             copyInto(m.subW1, subW1); copyInto(m.subB1, subB1);
             copyInto(m.blockW1, blockW1); copyInto(m.blockB1, blockB1);
             copyInto(m.topW1, topW1); copyInto(m.topB1, topB1);
@@ -1363,6 +1374,8 @@ public class NeuralEvaluator {
             synchronized (evaluationCache) { evaluationCache.clear(); }
             // 加载新权重后重置动量缓冲，避免旧动量污染新权重
             resetVelocities();
+        } finally {
+            modelLock.writeLock().unlock();
         }
     }
 
