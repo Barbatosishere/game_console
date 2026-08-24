@@ -27,21 +27,15 @@ public class MinesweeperScreen extends Screen {
     private int flagCount;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final Random random = new Random();
+    private boolean firstClick;
 
     public MinesweeperScreen() { super(Component.literal("扫雷")); }
 
     private void startGame() {
         grid = new Cell[gridSize][gridSize];
-        won = false; flagCount = 0;
+        won = false; flagCount = 0; firstClick = true;
         for (int y = 0; y < gridSize; y++)
             for (int x = 0; x < gridSize; x++) grid[y][x] = new Cell();
-        int placed = 0;
-        while (placed < mineCount) {
-            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
-            if (!grid[y][x].mine) { grid[y][x].mine = true; placed++; }
-        }
-        for (int y = 0; y < gridSize; y++)
-            for (int x = 0; x < gridSize; x++) grid[y][x].adj = countAdj(x, y);
         state = State.PLAYING; particles.clear();
     }
 
@@ -52,6 +46,18 @@ public class MinesweeperScreen extends Screen {
             if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && grid[ny][nx].mine) c++;
         }
         return c;
+    }
+
+    private void placeMinesAvoiding(int avoidX, int avoidY) {
+        int placed = 0;
+        while (placed < mineCount) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
+            if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        for (int y = 0; y < gridSize; y++)
+            for (int x = 0; x < gridSize; x++) grid[y][x].adj = countAdj(x, y);
     }
 
     private void reveal(int x, int y) {
@@ -114,6 +120,7 @@ public class MinesweeperScreen extends Screen {
         if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) return super.mouseClicked(mx, my, btn);
 
         if (btn == 0) {
+            if (firstClick) { placeMinesAvoiding(gx, gy); firstClick = false; }
             reveal(gx, gy);
             if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.STONE_BUTTON_CLICK_ON, 0.5F, 1F);
         } else if (btn == 1 && !grid[gy][gx].revealed) {

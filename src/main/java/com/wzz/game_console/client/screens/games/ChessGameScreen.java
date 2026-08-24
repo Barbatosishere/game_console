@@ -286,6 +286,8 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             if (gameOver || showExitConfirm) g.flush();
             if (gameOver) drawGameOver(g);
             if (showExitConfirm) drawExitConfirm(g, mx, my);
+            // 再次flush确保弹窗内容在super.render的widget批处理之前完成提交
+            if (gameOver || showExitConfirm) g.flush();
             // 兜底：当前回合方无合法走法时立即判负结算（被将死/困毙），
             // 避免玩家卡死无任何提示（正常路径由 doMove 检测，此处兼顾悔棋等边缘情况）
             checkNoLegalMovesEnd();
@@ -567,6 +569,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(0,0,width,height,0x99000000);
         int ww=340,wh=160,wx=(width-ww)/2,wy=(height-wh)/2;
         g.fill(wx,wy,wx+ww,wy+wh,0xFF1A1200);
+        g.flush(); // 确保面板不透明背景已提交到GPU，再绘制文字防止棋子文字穿透
         for(int i=0;i<3;i++){
             g.fill(wx+i,wy+i,wx+ww-i,wy+i+1,0xFFFFAA00-i*0x001100);
             g.fill(wx+i,wy+wh-i-1,wx+ww-i,wy+wh-i,0xFFFFAA00);
@@ -589,6 +592,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         int ww=240, wh=90;
         int wx=cx-ww/2, wy=cy-wh/2;
         g.fill(wx,wy,wx+ww,wy+wh,0xFF1A1A2E);
+        g.flush(); // 确保面板不透明背景已提交到GPU，再绘制边框和文字防止穿透
         g.fill(wx,wy,wx+ww,wy+1,0xFFFFAA00);
         g.fill(wx,wy+wh-1,wx+ww,wy+wh,0xFFFFAA00);
         g.fill(wx,wy,wx+1,wy+wh,0xFFFFAA00);

@@ -20,8 +20,7 @@ import org.slf4j.LoggerFactory;
 public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger(GomokuScreen.class);
     boolean showExitConfirm = false;
-    private static final int BOARD_SIZE = 15;
-    /** 四方向偏移（横、竖、两对角线），避免每次评估重复创建 */
+        /** 四方向偏移（横、竖、两对角线），避免每次评估重复创建 */
     private static final int[][] DIRS = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
     private State state = State.MENU;
     private int[][] board = new int[15][15];
@@ -35,6 +34,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private int lastMoveX = -1;
     private int lastMoveY = -1;
     private GomokuAI.Difficulty difficulty = GomokuAI.Difficulty.NORMAL;
+    private int boardSize = 15;
     private GomokuAI ai;
     private int lanMode = 0;
     private UUID remotePeer = null;
@@ -130,6 +130,20 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
     }
 
+    private int cycleBoardSize() {
+        if (this.boardSize == 9) return 13;
+        if (this.boardSize == 13) return 15;
+        if (this.boardSize == 15) return 19;
+        return 9;
+    }
+
+    private int[] getStarPoints() {
+        if (this.boardSize == 9) return new int[]{2, 6};
+        if (this.boardSize == 13) return new int[]{3, 7, 11};
+        if (this.boardSize == 19) return new int[]{3, 9, 15};
+        return new int[]{3, 7, 11};
+    }
+
     private void startGame() {
         synchronized (this) {
             this.aiGeneration++;
@@ -137,7 +151,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             this.aiDone = false;
             this.aiComputing = false;
         }
-        this.board = new int[15][15];
+        this.board = new int[this.boardSize][this.boardSize];
         this.playerTurn = true;
         this.winner = 0;
         this.state = State.PLAYING;
@@ -209,8 +223,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private boolean isBoardFull() {
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
+        for (int i = 0; i < this.boardSize; i++) {
+            for (int j = 0; j < this.boardSize; j++) {
                 if (this.board[i][j] == 0) {
                     return false;
                 }
@@ -221,7 +235,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private boolean inBoard(int x, int y) {
-        return x >= 0 && x < 15 && y >= 0 && y < 15;
+        return x >= 0 && x < this.boardSize && y >= 0 && y < this.boardSize;
     }
 
     private boolean checkWin(int player) {
@@ -275,6 +289,11 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 }
 
                 return true;
+            } else if (key == 83) {
+                if (this.state == State.MENU) {
+                    this.boardSize = this.cycleBoardSize();
+                }
+                return true;
             } else if (key == 72) {
                 if (this.state == State.MENU) {
                     this.difficulty = this.difficulty.next();
@@ -307,6 +326,11 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
 
             if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 73 && my <= cy + 95) {
+                this.boardSize = this.cycleBoardSize();
+                return true;
+            }
+
+            if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 95 && my <= cy + 117) {
                 this.difficulty = this.difficulty.next();
                 return true;
             }
@@ -344,7 +368,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
             int hx = ((int)mx - this.boardStartX) / this.cellSize;
             int hy = ((int)my - this.boardStartY) / this.cellSize;
-            if (hx >= 0 && hx < 15 && hy >= 0 && hy < 15 && this.board[hx][hy] == 0) {
+            if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int myPiece = this.lanMode == 2 ? 2 : 1;
                 this.board[hx][hy] = myPiece;
                 this.lastMoveX = hx;
@@ -389,9 +413,9 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public void render(GuiGraphics g, int mx, int my, float pt) {
-        this.cellSize = GameRenderHelper.calcCellSize(this.width, this.height, 17, 17, 40);
-        this.boardStartX = (this.width - 15 * this.cellSize) / 2;
-        this.boardStartY = (this.height - 15 * this.cellSize) / 2;
+        this.cellSize = GameRenderHelper.calcCellSize(this.width, this.height, this.boardSize + 2, this.boardSize + 2, 40);
+        this.boardStartX = (this.width - this.boardSize * this.cellSize) / 2;
+        this.boardStartY = (this.height - this.boardSize * this.cellSize) / 2;
         GameRenderHelper.fillDarkBackground(g, this.width, this.height);
         switch (this.state) {
             case MENU:
@@ -423,23 +447,25 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         GameRenderHelper.drawPrimaryButton(g, this.font, "开始游戏", cx - 60, cy + 45, 120, 22, mx, my);
+        String sizeLabel = "棋盘大小: " + this.boardSize + "x" + this.boardSize + " [S]";
+        GameRenderHelper.drawSecondaryButton(g, this.font, sizeLabel, cx - 60, cy + 73, 120, 18, mx, my);
         String diffLabel = "难度: " + this.difficulty.label + " [H]";
-        GameRenderHelper.drawSecondaryButton(g, this.font, diffLabel, cx - 60, cy + 73, 120, 18, mx, my);
+        GameRenderHelper.drawSecondaryButton(g, this.font, diffLabel, cx - 60, cy + 95, 120, 18, mx, my);
     }
 
     private void renderPlaying(GuiGraphics g, int mx, int my) {
-        int bw = 15 * this.cellSize;
+        int bw = this.boardSize * this.cellSize;
         g.fill(this.boardStartX - 4, this.boardStartY - 4, this.boardStartX + bw + 4, this.boardStartY + bw + 4, -12965360);
         g.fill(this.boardStartX - 2, this.boardStartY - 2, this.boardStartX + bw + 2, this.boardStartY + bw + 2, -2968436);
 
-        for (int i = 0; i < 15; i++) {
+        for (int i = 0; i < this.boardSize; i++) {
             int x = this.boardStartX + i * this.cellSize + this.cellSize / 2;
             int y = this.boardStartY + i * this.cellSize + this.cellSize / 2;
             g.fill(x, this.boardStartY + this.cellSize / 2, x + 1, this.boardStartY + bw - this.cellSize / 2, -16777216);
             g.fill(this.boardStartX + this.cellSize / 2, y, this.boardStartX + bw - this.cellSize / 2, y + 1, -16777216);
         }
 
-        int[] stars = new int[]{3, 7, 11};
+        int[] stars = this.getStarPoints();
 
         for (int sx : stars) {
             for (int sy : stars) {
@@ -451,8 +477,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         int stoneR = this.cellSize / 2 - 2;
 
-        for (int x = 0; x < 15; x++) {
-            for (int y = 0; y < 15; y++) {
+        for (int x = 0; x < this.boardSize; x++) {
+            for (int y = 0; y < this.boardSize; y++) {
                 if (this.board[x][y] != 0) {
                     int scx = this.boardStartX + x * this.cellSize + this.cellSize / 2;
                     int scy = this.boardStartY + y * this.cellSize + this.cellSize / 2;
@@ -472,7 +498,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         if (this.playerTurn && this.winner == 0) {
             int hx = (mx - this.boardStartX) / this.cellSize;
             int hy = (my - this.boardStartY) / this.cellSize;
-            if (hx >= 0 && hx < 15 && hy >= 0 && hy < 15 && this.board[hx][hy] == 0) {
+            if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int scx = this.boardStartX + hx * this.cellSize + this.cellSize / 2;
                 int scy = this.boardStartY + hy * this.cellSize + this.cellSize / 2;
                 GameRenderHelper.drawCircle(g, scx, scy, stoneR, 1712394513);
@@ -494,7 +520,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         g.drawString(this.font, turnText + modeTag, 8, 7, 16777215);
         GameRenderHelper.drawBottomBar(
-                g, this.font, this.width, this.height, "ESC 菜单  R 重开  H 切换难度  鼠标点击落子"
+                g, this.font, this.width, this.height, "ESC 菜单  R 重开  H 切换难度  S 棋盘大小  鼠标点击落子"
         );
     }
 

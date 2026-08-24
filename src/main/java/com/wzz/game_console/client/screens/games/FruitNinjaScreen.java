@@ -156,15 +156,22 @@ public class FruitNinjaScreen extends Screen {
         for (float[] f : fruits) {
             if (f[5] == 0) {
                 if ((int)f[4] == -1) {
-                    // 炸弹：黑色圆 + 红色引线
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2, 0xFF111111);
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2 - 2, 0xFF2A2A2A);
-                    // 引线
-                    g.fill((int)f[0], (int)f[1] - FRUIT_SIZE/2 - 4, (int)f[0]+2, (int)f[1] - FRUIT_SIZE/2, 0xFFFF4400);
+                    // 炸弹：黑色方形 + 红色十字标记（与圆形水果明显区分）
+                    int bx = (int)f[0], by = (int)f[1];
+                    int half = FRUIT_SIZE / 2;
+                    // 黑色方形主体（区别于圆形水果，轮廓更锐利）
+                    g.fill(bx - half, by - half, FRUIT_SIZE, FRUIT_SIZE, 0xFF111111);
+                    g.fill(bx - half + 3, by - half + 3, FRUIT_SIZE - 6, FRUIT_SIZE - 6, 0xFF2A2A2A);
+                    // 红色十字危险标记
+                    g.fill(bx - 2, by - half + 4, 4, FRUIT_SIZE - 8, 0xFFFF2200);
+                    g.fill(bx - half + 4, by - 2, FRUIT_SIZE - 8, 4, 0xFFFF2200);
+                    // 引线（顶部，更明显）
+                    g.fill(bx - 1, by - half - 8, 3, 8, 0xFFFF6600);
+                    g.fill(bx - 4, by - half - 10, 9, 3, 0xFFFF6600);
                     // 警告圈（红色闪烁轮廓）
                     int bombPulse = (int)(System.currentTimeMillis() / 300) % 2 == 0 ? 0xFFFF2200 : 0xFF880000;
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2 + 2, bombPulse);
-                    g.drawCenteredString(font, "💣", (int)f[0], (int)f[1] - 4, 0xFFFFFFFF);
+                    GameRenderHelper.drawCircle(g, bx, by, half + 3, bombPulse);
+                    g.drawCenteredString(font, "💣", bx, by - 4, 0xFFFFFFFF);
                 } else {
                     int color = FRUIT_COLORS[(int)f[4]];
                     GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2, color);

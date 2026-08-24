@@ -369,9 +369,9 @@ public class WhackAMoleScreen extends Screen {
     }
 
     private void renderHammer(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        // 简单的锤子图标（使用方块模拟）
-        guiGraphics.fill(mouseX - 2, mouseY - 8, mouseX + 2, mouseY - 4, 0xFF8B4513); // 锤柄
-        guiGraphics.fill(mouseX - 6, mouseY - 10, mouseX + 6, mouseY - 6, 0xFF696969); // 锤头
+        // 锤子图标：锤头置于鼠标光标处（底部为打击面），锤柄向上延伸
+        guiGraphics.fill(mouseX - 6, mouseY - 6, mouseX + 6, mouseY, 0xFF696969); // 锤头（底边与光标对齐）
+        guiGraphics.fill(mouseX - 2, mouseY - 14, mouseX + 2, mouseY - 6, 0xFF8B4513); // 锤柄
     }
 
     private void renderGameOver(GuiGraphics guiGraphics) {
@@ -527,11 +527,12 @@ public class WhackAMoleScreen extends Screen {
 
                 try {
                     ResourceLocation texture = moleType.getTexture();
-                    // 渲染地鼠头像（从怪物纹理中截取头部）
+                    // 渲染地鼠头像（从怪物纹理中截取头部，采样8x8区域缩放至32x32）
                     guiGraphics.blit(texture,
                             moleRenderX, moleRenderY,
-                            8, 8, // 纹理上头部的位置
                             MOLE_SIZE, MOLE_SIZE,
+                            8, 8, // 纹理上头部的位置
+                            8, 8, // 采样区域大小（头部正面为8x8像素）
                             64, 64); // MC皮肤纹理尺寸
                 } catch (Exception e) {
                     // 备用渲染

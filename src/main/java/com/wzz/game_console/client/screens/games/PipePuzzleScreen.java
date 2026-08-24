@@ -77,8 +77,10 @@ public class PipePuzzleScreen extends Screen {
         gameWon = false; moves = 0; winTick = -1;
         flowPath = new ArrayList<>(); flowProg = 0f;
         PipeType[] rots = {PipeType.STRAIGHT, PipeType.CORNER, PipeType.T_SHAPE};
-        // 生成棋盘直到存在至少一条可行通路，避免随机无解软锁
+        // 生成棋盘：保证初始状态未连通，但存在可解路径
+        int attempts = 0;
         do {
+            if (attempts++ > 100) break;
             grid = new PipeTile[gridSize][gridSize];
             for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
                 grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
@@ -88,7 +90,8 @@ public class PipePuzzleScreen extends Screen {
                 PipeTile t=grid[y][x];
                 if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
             }
-        } while (findFlowPath().isEmpty());
+            // 初始起终点不直接连通 & 存在理论上可解的路径
+        } while (!findFlowPath().isEmpty() || !isSolvable());
         updateFlow();
     }
 
@@ -133,6 +136,49 @@ public class PipePuzzleScreen extends Screen {
                 if (dfs(nx,ny,v,path)) return true;
         }
         path.remove(path.size()-1); return false;
+    }
+
+    /** 检查是否存在某种旋转方案使起点到终点有通路（忽略当前旋转，只看管道类型是否支持） */
+    private boolean isSolvable() {
+        boolean[][] visited = new boolean[gridSize][gridSize];
+        return solvableDFS(0, 0, null, visited);
+    }
+
+    private boolean solvableDFS(int x, int y, Direction from, boolean[][] visited) {
+        if (x == gridSize - 1 && y == gridSize - 1) return true;
+        if (x < 0 || x >= gridSize || y < 0 || y >= gridSize || visited[y][x]) return false;
+        visited[y][x] = true;
+        PipeTile tile = grid[y][x];
+        for (Direction d : Direction.values()) {
+            int nx = x + d.dx, ny = y + d.dy;
+            if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && !visited[ny][nx]) {
+                Direction opposite = d.getOpposite();
+                // 当前管道需在同一旋转下同时接纳"来向"与"去向"
+                if (canHandle(tile, from, d) && canOpenInDirection(grid[ny][nx], opposite)) {
+                    if (solvableDFS(nx, ny, opposite, visited)) return true;
+                }
+            }
+        }
+        visited[y][x] = false;
+        return false;
+    }
+
+    /** 管道是否存在一个旋转同时支持"来向"与"去向"（from 为 null 表示起点，无来向约束） */
+    private boolean canHandle(PipeTile tile, Direction from, Direction out) {
+        for (int rot = 0; rot < tile.type.rotations.length; rot++) {
+            List<Direction> openings = tile.type.getOpenings(rot);
+            boolean hasFrom = from == null || openings.contains(from);
+            if (hasFrom && openings.contains(out)) return true;
+        }
+        return false;
+    }
+
+    /** 管道类型是否允许在某个方向上开口（尝试所有旋转） */
+    private boolean canOpenInDirection(PipeTile tile, Direction d) {
+        for (int rot = 0; rot < tile.type.rotations.length; rot++) {
+            if (tile.type.getOpenings(rot).contains(d)) return true;
+        }
+        return false;
     }
 
     @Override public void tick() {

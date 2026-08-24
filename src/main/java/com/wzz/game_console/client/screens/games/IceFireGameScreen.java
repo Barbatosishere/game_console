@@ -694,8 +694,11 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             particles.removeIf(p -> !p.alive);
             for (Particle p : particles) p.update();
 
-            // 死亡检测
-            if (ice.checkHazard(map) || fire.checkHazard(map)) {
+            // 死亡检测：危险方块（熔岩/水）
+            // 坠落出地图由 GamePlayer.update 直接置 dead=true（y > GAME_H+20），
+            // 而 checkHazard 对已 dead 的玩家会提前返回 false，因此需显式把 dead 纳入结束条件，
+            // 否则掉出地图底部的角色不会触发关卡失败/死亡结算。
+            if (ice.checkHazard(map) || fire.checkHazard(map) || ice.dead || fire.dead) {
                 gameOver = true; victory = false; return;
             }
 

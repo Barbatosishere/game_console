@@ -193,7 +193,7 @@ public class JumpGameScreen extends Screen {
         // 玩家站在第一个平台上
         Platform p0 = platforms.get(0);
         player = new Player();
-        player.wx = p0.wx; player.wy = 0; player.wz = p0.wz;
+        player.wx = p0.wx; player.wy = PLAT_H; player.wz = p0.wz;
         player.dirX = 1; player.dirZ = 0; // 默认朝右
 
         updateCamera(true);
@@ -205,6 +205,7 @@ public class JumpGameScreen extends Screen {
         float nx = last.wx + DIST_MAX, nz = last.wz + DIST_MAX;
         float hw  = PLAT_MIN_W + rng.nextFloat()*(PLAT_MAX_W-PLAT_MIN_W);
         PlatType t= PlatType.values()[rng.nextInt(PlatType.values().length)];
+        boolean placed = false;
         // 尝试生成不与旧平台重叠的位置（跳过相邻平台，间距由 DIST 控制）
         for (int attempt = 0; attempt < 25; attempt++) {
             float angle = rng.nextFloat() * (float)Math.PI / 2f
@@ -224,7 +225,26 @@ public class JumpGameScreen extends Screen {
                 float minD = hw + p.hw + 1.5f; // 额外间距防止方块角部视觉重叠
                 if (dx*dx + dz*dz < minD*minD) { ok = false; break; }
             }
-            if (ok) break;
+            if (ok) { placed = true; break; }
+        }
+        // 保底：所有尝试都重叠时，在最远距离用最小半宽再试（极罕见，仅密集布局时触发）
+        if (!placed) {
+            for (int attempt = 0; attempt < 10 && !placed; attempt++) {
+                float angle = rng.nextFloat() * (float)Math.PI / 2f - (float)Math.PI / 4f;
+                float dist = 6.4f + attempt * 0.5f;
+                float finalAngle = (float)Math.PI / 4f + angle;
+                nx = last.wx + dist * (float)Math.cos(finalAngle);
+                nz = last.wz + dist * (float)Math.sin(finalAngle);
+                hw = PLAT_MIN_W;
+                boolean ok = true;
+                for (int i = Math.max(0, platforms.size()-6); i < platforms.size()-1; i++) {
+                    Platform p = platforms.get(i);
+                    float dx = nx - p.wx, dz = nz - p.wz;
+                    float minD = hw + p.hw + 1.8f;
+                    if (dx*dx + dz*dz < minD*minD) { ok = false; break; }
+                }
+                if (ok) placed = true;
+            }
         }
         Platform np = new Platform(nx, nz, hw, t);
         np.lit = false;
@@ -303,6 +323,7 @@ public class JumpGameScreen extends Screen {
         if ((float)Math.sqrt(dxCur*dxCur+dzCur*dzCur) <= cur.hw) {
             player.onGround = true;
             player.wx = cur.wx; player.wz = cur.wz; // 归位到平台中心
+            player.wy = PLAT_H; // 站在平台顶面
             player.vy = 0; player.vx = 0; player.vz = 0;
             player.scaleY = 1f; player.scaleXZ = 1f;
             player.landBounce = 0.15f;
@@ -333,6 +354,7 @@ public class JumpGameScreen extends Screen {
         if (landed != null) {
             // 成功落地
             player.onGround = true;
+            player.wy = PLAT_H; // 站在平台顶面
             player.vy = 0; player.vx = 0; player.vz = 0;
             player.scaleY = 1f; player.scaleXZ = 1f;
             player.landBounce = 0.25f;
@@ -618,7 +640,7 @@ public class JumpGameScreen extends Screen {
 
     void renderBlock(GuiGraphics g, float wx, float wz, float hw, float h,
                      int col, int top, boolean next) {
-        // 等轴方块：左面、右面、顶面
+        // 等轴方块：左面、前面、顶面
         // 顶面
         float[] tfl=project(wx-hw,h,wz-hw), tfr=project(wx+hw,h,wz-hw);
         float[] tbr=project(wx+hw,h,wz+hw), tbl=project(wx-hw,h,wz+hw);
@@ -627,14 +649,10 @@ public class JumpGameScreen extends Screen {
         float[] bfl=project(wx-hw,0,wz-hw), bbr2=project(wx-hw,0,wz+hw);
         float[] lT1=project(wx-hw,h,wz-hw), lT2=project(wx-hw,h,wz+hw);
         fillQuad(g,bfl,bbr2,lT2,lT1,shadeColor(col,0.55f));
-        // 右侧面（中）
-        float[] bfr=project(wx+hw,0,wz-hw);
-        // 右前侧
-        float[] bbl=project(wx-hw,0,wz-hw), rT1=project(wx-hw,h,wz-hw), rT2=project(wx+hw,h,wz-hw);
-        float[] rfB=project(wx+hw,0,wz-hw);
-        // 右后侧
-        float[] rB2=project(wx+hw,0,wz+hw), rT3=project(wx+hw,h,wz+hw), rT4=project(wx+hw,h,wz-hw);
-        fillQuad(g, rfB, rB2, rT3, rT4, shadeColor(col, 0.75f));
+        // 前侧面（中亮）
+        float[] bbl=project(wx-hw,0,wz-hw), bfr=project(wx+hw,0,wz-hw);
+        float[] rT1=project(wx-hw,h,wz-hw), rT2=project(wx+hw,h,wz-hw);
+        fillQuad(g,bbl,bfr,rT2,rT1,shadeColor(col,0.75f));
     }
 
     void renderBook(GuiGraphics g, float wx, float wz, float hw, float h) {
@@ -653,25 +671,27 @@ public class JumpGameScreen extends Screen {
         float[] t0=project(wx-hw,h,wz-hw),t1=project(wx+hw,h,wz-hw);
         float[] t2=project(wx+hw,h,wz+hw),t3=project(wx-hw,h,wz+hw);
         fillQuad(g,t0,t1,t2,t3,0xFFEFF6FF);
-        // 书脊线
-        float[] s0=project(wx,h+0.01f,wz-hw), s1=project(wx,h+0.01f,wz+hw);
-        drawIsoLine(g,s0,s1,0xFF93C5FD);
+        // 书脊（深蓝色细条，替代原来点状线）
+        float[] spine0 = project(wx - hw * 0.08f, h + 0.01f, wz - hw);
+        float[] spine1 = project(wx + hw * 0.08f, h + 0.01f, wz - hw);
+        float[] spine2 = project(wx + hw * 0.08f, h + 0.01f, wz + hw);
+        float[] spine3 = project(wx - hw * 0.08f, h + 0.01f, wz + hw);
+        fillQuad(g, spine0, spine1, spine2, spine3, 0xFF1E40AF);
     }
 
     void renderMusicBlock(GuiGraphics g, float wx, float wz, float hw, float h) {
         // 绿色音符方块
         int col=0xFF065F46, top=0xFF059669;
         renderBlock(g,wx,wz,hw,h,col,top,false);
-        // 音符符号（顶面中心画两个小方块）
-        float[] n1=project(wx-0.2f,h+0.02f,wz);
-        float[] n2=project(wx+0.2f,h+0.02f,wz);
-        int ns=4;
-        g.fill((int)n1[0]-ns,(int)n1[1]-ns,(int)n1[0]+ns,(int)n1[1]+ns,0xFF6EE7B7);
-        g.fill((int)n2[0]-ns,(int)n2[1]-ns,(int)n2[0]+ns,(int)n2[1]+ns,0xFF6EE7B7);
-        float[] n3=project(wx-0.2f,h+0.3f,wz);
-        float[] n4=project(wx+0.2f,h+0.3f,wz);
-        g.fill((int)n3[0]-2,(int)n3[1],(int)n3[0]+2,(int)n1[1],0xFF6EE7B7);
-        g.fill((int)n4[0]-2,(int)n4[1],(int)n4[0]+2,(int)n2[1],0xFF6EE7B7);
+        // 音符符号（顶面中心画一个音符头+符干）
+        float[] nh = project(wx, h + 0.02f, wz);
+        int ns = 5;
+        int noteColor = 0xFF6EE7B7;
+        g.fill((int)nh[0] - ns, (int)nh[1] - ns, (int)nh[0] + ns, (int)nh[1] + ns, noteColor); // 符头
+        // 符干（粗2px竖线）
+        float[] stemTop = project(wx, h + 0.35f, wz);
+        int stemX = (int)nh[0];
+        g.fill(stemX - 1, (int)stemTop[1], stemX + 1, (int)nh[1] - ns, noteColor);
     }
 
     // ── 预测轨迹 ────────────────────────────────────

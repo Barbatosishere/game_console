@@ -28,8 +28,14 @@ public class MazeGameScreen extends Screen {
     private boolean gameOver;
     private boolean gameWon;
     private int startX, startY;
+    private int currentLevel = 1;
     private long lastGhostMoveTime;
-    private final long ghostMoveInterval = 500; // 鬼魂移动间隔(毫秒)
+    private long ghostMoveInterval = 500; // 鬼魂移动间隔(毫秒)
+    private int ghostVisionRange = 12; // 鬼魂视野范围(曼哈顿距离)
+    private long lastPathFindTime = 0;
+    private static final long PATH_FIND_INTERVAL = 1000; // 寻路冷却(毫秒)
+    private long gameWonTime = 0; // 胜利时间戳，用于自动进入下一关
+    private static final long LEVEL_ADVANCE_DELAY = 2000; // 自动进入下一关的延迟(毫秒)
     private List<int[]> ghostPath = new ArrayList<>();
     private final Random random = new Random();
 
@@ -50,6 +56,7 @@ public class MazeGameScreen extends Screen {
 
         int centerX = this.width / 2;
         this.addRenderableWidget(Button.builder(Component.literal("重新开始"), b -> {
+            currentLevel = 1;
             generateMaze();
         }).pos(centerX - 50, this.height - 30).size(100, 20).build());
 
@@ -111,8 +118,13 @@ public class MazeGameScreen extends Screen {
         // 在玩家后方生成鬼魂
         placeGhostBehindPlayer();
 
+        // 根据等级调整难度：等级越高鬼魂视野越远、移动越快
+        ghostVisionRange = Math.min(MAZE_WIDTH, 6 + (currentLevel - 1) * 2);
+        ghostMoveInterval = Math.max(200, 500 - (currentLevel - 1) * 30);
+
         gameOver = false;
         gameWon = false;
+        gameWonTime = 0;
         lastGhostMoveTime = System.currentTimeMillis();
         ghostPath.clear();
     }
@@ -209,8 +221,9 @@ public class MazeGameScreen extends Screen {
             graphics.drawCenteredString(this.font, "游戏结束! 被鬼抓住了!", this.width / 2, 30, 0xFFFF0000);
         } else if (gameWon) {
             graphics.drawCenteredString(this.font, "恭喜! 你逃出了迷宫!", this.width / 2, 30, 0xFF00FF00);
+            graphics.drawCenteredString(this.font, "即将进入第" + (currentLevel + 1) + "关...", this.width / 2, 50, 0xFFFFFF00);
         } else {
-            graphics.drawCenteredString(this.font, "WASD移动 - 找到出口并避开鬼魂!", this.width / 2, 30, 0xFFFFFF);
+            graphics.drawCenteredString(this.font, "第" + currentLevel + "关 - WASD移动 - 找到出口并避开鬼魂!", this.width / 2, 30, 0xFFFFFF);
             // 显示鬼魂距离
             int distance = Math.abs(playerX - ghostX) + Math.abs(playerY - ghostY);
             graphics.drawCenteredString(this.font, "鬼魂距离: " + distance, this.width / 2, 50,
@@ -225,8 +238,21 @@ public class MazeGameScreen extends Screen {
     public void tick() {
         super.tick();
 
+        // 胜利后自动进入下一关（退出弹窗期间暂停，避免干扰）
+        if (gameWon && !showExitConfirm) {
+            long now = System.currentTimeMillis();
+            if (gameWonTime == 0) {
+                gameWonTime = now;
+            } else if (now - gameWonTime > LEVEL_ADVANCE_DELAY) {
+                currentLevel++;
+                gameWonTime = 0;
+                generateMaze();
+            }
+            return;
+        }
+
         // 定期移动鬼魂（退出弹窗期间暂停，避免弹窗时被鬼抓住）
-        if (!gameOver && !gameWon && !showExitConfirm
+        if (!gameOver && !showExitConfirm
                 && System.currentTimeMillis() - lastGhostMoveTime > ghostMoveInterval) {
             moveGhost();
             lastGhostMoveTime = System.currentTimeMillis();
@@ -272,6 +298,7 @@ public class MazeGameScreen extends Screen {
             // 检查是否到达出口
             if (maze[playerY][playerX] == 'E') {
                 gameWon = true;
+                gameWonTime = System.currentTimeMillis(); // 开始计时，准备进入下一关
                 if (Minecraft.getInstance().player != null) {
                     Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
                 }
@@ -287,17 +314,61 @@ public class MazeGameScreen extends Screen {
     }
 
     private void moveGhost() {
-        // 使用A*寻路算法找到最短路径
-        ghostPath = findPath(ghostX, ghostY, playerX, playerY);
+        int distance = Math.abs(playerX - ghostX) + Math.abs(playerY - ghostY);
 
-        if (ghostPath != null && ghostPath.size() > 1) {
-            // 沿着路径移动一步
-            int[] nextStep = ghostPath.get(1);
-            ghostX = nextStep[0];
-            ghostY = nextStep[1];
+        if (distance <= ghostVisionRange) {
+            // 玩家在视野范围内：追击模式
+            long now = System.currentTimeMillis();
+            boolean shouldRecalculate = ghostPath.isEmpty() || (now - lastPathFindTime > PATH_FIND_INTERVAL);
+
+            if (shouldRecalculate) {
+                ghostPath = findPath(ghostX, ghostY, playerX, playerY);
+                lastPathFindTime = now;
+            }
+
+            if (ghostPath != null && ghostPath.size() > 1) {
+                // 30%概率不走最优路径，让玩家有机会逃脱
+                if (random.nextDouble() < 0.3) {
+                    List<int[]> moves = getAvailableMoves();
+                    if (!moves.isEmpty()) {
+                        int[] move = moves.get(random.nextInt(moves.size()));
+                        ghostX = move[0];
+                        ghostY = move[1];
+                        return;
+                    }
+                }
+                // 走最优路径
+                int[] nextStep = ghostPath.get(1);
+                ghostX = nextStep[0];
+                ghostY = nextStep[1];
+            } else {
+                simpleChase();
+            }
         } else {
-            // 如果找不到路径，使用简单追踪
-            simpleChase();
+            // 玩家在视野外：巡逻模式（随机游走）
+            wanderRandomly();
+        }
+    }
+
+    private List<int[]> getAvailableMoves() {
+        List<int[]> moves = new ArrayList<>();
+        int[][] directions = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+        for (int[] dir : directions) {
+            int nx = ghostX + dir[0];
+            int ny = ghostY + dir[1];
+            if (nx >= 0 && nx < MAZE_WIDTH && ny >= 0 && ny < MAZE_HEIGHT && maze[ny][nx] != '#') {
+                moves.add(new int[]{nx, ny});
+            }
+        }
+        return moves;
+    }
+
+    private void wanderRandomly() {
+        List<int[]> moves = getAvailableMoves();
+        if (!moves.isEmpty()) {
+            int[] move = moves.get(random.nextInt(moves.size()));
+            ghostX = move[0];
+            ghostY = move[1];
         }
     }
 

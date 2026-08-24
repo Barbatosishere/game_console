@@ -45,6 +45,7 @@ public class MouseTunnelGameScreen extends Screen {
     private long survivalTime = 0;
     private int score = 0;
     private int bestScore = 0;
+    private boolean isWin = false;
 
     // 通道数据
     private List<TunnelSegment> tunnelSegments = new ArrayList<>();
@@ -163,6 +164,7 @@ public class MouseTunnelGameScreen extends Screen {
         // 重置难度计时基准与宽限计时，避免开局瞬间触发难度提升或误判游戏结束
         lastDifficultyIncrease = System.currentTimeMillis();
         outOfTunnelSince = 0;
+        isWin = false;
 
         generateInitialTunnel();
 
@@ -264,7 +266,7 @@ public class MouseTunnelGameScreen extends Screen {
         graphics.drawString(this.font, title, (this.width - titleWidth) / 2, this.height / 2 - 50, 0xFFFFFF);
 
         if (gameState == GameState.GAME_OVER) {
-            String gameOverText = "游戏结束!";
+            String gameOverText = isWin ? "胜利!" : "游戏结束!";
             String finalScoreText = "最终分数: " + score;
             String bestScoreText = "最佳分数: " + bestScore;
 
@@ -332,7 +334,11 @@ public class MouseTunnelGameScreen extends Screen {
         this.startButton.visible = true;
         this.exitButton.visible = true;
 
-        playFailSound();
+        if (isWin) {
+            playSuccessSound();
+        } else {
+            playFailSound();
+        }
     }
 
     @Override
@@ -344,6 +350,13 @@ public class MouseTunnelGameScreen extends Screen {
             long currentTime = System.currentTimeMillis();
             survivalTime = currentTime - gameStartTime;
             score = (int)(survivalTime / 100); // 每100毫秒1分
+
+            // 达到100分时胜利结算
+            if (score >= 100) {
+                isWin = true;
+                gameOver();
+                return;
+            }
 
             // 滚动通道
             scrollOffset += SCROLL_SPEED + (difficulty - 1);

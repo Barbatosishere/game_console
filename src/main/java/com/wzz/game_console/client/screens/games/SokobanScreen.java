@@ -12,9 +12,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.Random;
 
 @OnlyIn(Dist.CLIENT)
 public class SokobanScreen extends Screen {
@@ -25,171 +23,128 @@ public class SokobanScreen extends Screen {
     private int levelWidth, levelHeight;
     private int startX, startY;
     private int currentLevel = 1;
-    private final List<char[][]> levels = new ArrayList<>();
 
     public SokobanScreen() {
         super(Component.literal("推箱子游戏"));
-        initializeLevels();
-        loadLevel(currentLevel);
+        generateLevel(currentLevel);
     }
 
-    private void initializeLevels() {
-        levels.add(new char[][]{
-                {'#','#','#','#','#'},
-                {'#',' ',' ',' ','#'},
-                {'#',' ','$','.','#'},
-                {'#','@',' ',' ','#'},
-                {'#','#','#','#','#'}
-        });
+    private void generateLevel(int levelNum) {
+        Random rand = new Random(levelNum * 7919L + 271L);
 
-        levels.add(new char[][]{
-                {'#','#','#','#','#'},
-                {'#','.','#',' ','#'},
-                {'#',' ','$',' ','#'},
-                {'#','@',' ',' ','#'},
-                {'#','#','#','#','#'}
-        });
+        // 难度参数随关卡序号递增
+        int gridSize = Math.min(5 + levelNum / 3, 12);
+        int boxCount = Math.min(1 + levelNum / 4, 5);
+        int obstacleCount = Math.min(levelNum / 3, 6);
 
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#'},
-                {'#',' ',' ',' ','.','#'},
-                {'#','.','$','$','@','#'},
-                {'#',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#'}
-        });
+        // 创建网格
+        char[][] grid = new char[gridSize][gridSize];
+        levelWidth = gridSize;
+        levelHeight = gridSize;
 
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#'},
-                {'#','.',' ',' ',' ','#'},
-                {'#',' ','#','$','@','#'},
-                {'#',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#'}
-        });
+        // 填充边界墙
+        for (int y = 0; y < gridSize; y++)
+            for (int x = 0; x < gridSize; x++)
+                grid[y][x] = (x == 0 || x == gridSize - 1 || y == 0 || y == gridSize - 1) ? '#' : ' ';
 
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#',' ',' ',' ','.',' ','#'},
-                {'#',' ',' ','$','#',' ','#'},
-                {'#','.','$','@','$','.','#'},
-                {'#',' ','#',' ','#',' ','#'},
-                {'#',' ',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#','.',' ','#',' ','.','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#',' ',' ','@',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','.',' ','#',' ','.','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#',' ','.',' ','.','.','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','$',' ','@',' ','$','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','.','.',' ','.',' ','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#','.','#',' ','#','.',' ','#'},
-                {'#',' ','$',' ','$',' ',' ','#'},
-                {'#',' ',' ','@',' ',' ',' ','#'},
-                {'#',' ','$',' ','$',' ',' ','#'},
-                {'#','.','#',' ','#','.',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#'},
-                {'#',' ','.','#','.','.',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','$',' ','#'},
-                {'#',' ',' ','@',' ',' ',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','$',' ','#'},
-                {'#',' ','.','#','.','.',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#','#'},
-                {'#','.',' ','.','.','.',' ','.','.','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','$','$','$','$','$','$',' ','#'},
-                {'#',' ',' ',' ','@',' ',' ',' ',' ','#'},
-                {'#',' ','$','$','$','$','$','$',' ','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#','.',' ','.','.','.','.','.',' ','#'},
-                {'#','#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#','#'},
-                {'#','.','#',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#',' ',' ',' ',' ',' ','#','#'},
-                {'#',' ',' ','$',' ','#',' ','$',' ','#'},
-                {'#',' ',' ',' ','@','#',' ','#',' ','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#','$','#',' ',' ',' ',' ','#'},
-                {'#','.','#',' ',' ',' ','.',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#','.','#','#',' ',' ','.','#'},
-                {'#',' ','#',' ','$',' ',' ','#'},
-                {'#',' ','$','@',' ',' ','#','#'},
-                {'#',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#',' ','#',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#',' ',' ','#',' ',' ',' ','#'}, // 修复：末列原为'.'缺右墙，导致关卡不可解
-                {'#',' ','.','$',' ',' ',' ','#'}, // 同步补目标点：左上封闭区的箱子只能推到此格，保证2箱2目标可通关
-                {'#',' ','#',' ','#',' ','#','#'},
-                {'#',' ',' ','@',' ',' ','#','#'},
-                {'#',' ','$','#',' ',' ',' ','#'},
-                {'#',' ',' ','.','#',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-    }
-
-    private void loadLevel(int levelNum) {
-        if (levelNum < 1 || levelNum > levels.size()) {
-            currentLevel = 1; // 循环回到第一关
-        } else {
-            currentLevel = levelNum;
-        }
-
-        level = copyLevel(levels.get(currentLevel - 1));
-        levelWidth = level[0].length;
-        levelHeight = level.length;
-
-        // 查找玩家位置
-        for (int y = 0; y < levelHeight; y++) {
-            for (int x = 0; x < levelWidth; x++) {
-                if (level[y][x] == '@') {
-                    playerX = x;
-                    playerY = y;
+        // 放置内部障碍物
+        for (int i = 0; i < obstacleCount; i++) {
+            for (int attempt = 0; attempt < 30; attempt++) {
+                int wx = 1 + rand.nextInt(gridSize - 2);
+                int wy = 1 + rand.nextInt(gridSize - 2);
+                if (grid[wy][wx] == ' ') {
+                    grid[wy][wx] = '#';
+                    break;
                 }
             }
         }
+
+        // 初始状态：箱子全部在目标点上（已解决状态 '+'）
+        int placed = 0;
+        for (int attempt = 0; attempt < 500 && placed < boxCount; attempt++) {
+            int bx = 1 + rand.nextInt(gridSize - 2);
+            int by = 1 + rand.nextInt(gridSize - 2);
+            if (grid[by][bx] == ' ') {
+                grid[by][bx] = '+';
+                placed++;
+            }
+        }
+        boxCount = Math.max(placed, 1);
+        if (placed == 0) {
+            grid[gridSize / 2][gridSize / 2] = '+';
+            boxCount = 1;
+        }
+
+        // 放置玩家在左上角空地
+        playerX = 1;
+        playerY = 1;
+        if (grid[1][1] != ' ') {
+            outer:
+            for (int y = 1; y < gridSize - 1; y++)
+                for (int x = 1; x < gridSize - 1; x++)
+                    if (grid[y][x] == ' ') { playerX = x; playerY = y; break outer; }
+        }
+        grid[playerY][playerX] = '@';
+
+        // 打乱阶段：随机移动玩家来推动箱子离开目标点
+        // 此方法保证生成的关卡一定可解（逆向操作即为解）
+        // 使用固定种子确保同一关卡序号生成相同地图
+        int[] dx = {1, -1, 0, 0};
+        int[] dy = {0, 0, 1, -1};
+        int pushes = 0;
+        for (int step = 0; step < 300 && pushes < boxCount; step++) {
+            int dir = rand.nextInt(4);
+            int nx = playerX + dx[dir];
+            int ny = playerY + dy[dir];
+            if (nx <= 0 || nx >= gridSize - 1 || ny <= 0 || ny >= gridSize - 1) continue;
+            if (grid[ny][nx] == '#') continue;
+
+            if (grid[ny][nx] == '+' || grid[ny][nx] == '$') {
+                boolean wasOnTarget = (grid[ny][nx] == '+');
+                int bx = nx + dx[dir];
+                int by = ny + dy[dir];
+                if (bx <= 0 || bx >= gridSize - 1 || by <= 0 || by >= gridSize - 1) continue;
+                if (grid[by][bx] == '#' || grid[by][bx] == '+' || grid[by][bx] == '$') continue;
+
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                grid[ny][nx] = wasOnTarget ? '*' : '@';
+                grid[by][bx] = '$';
+                playerX = nx;
+                playerY = ny;
+                if (wasOnTarget) pushes++;
+            } else if (grid[ny][nx] == '.') {
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                playerX = nx;
+                playerY = ny;
+                grid[playerY][playerX] = '*';
+            } else if (grid[ny][nx] == ' ') {
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                playerX = nx;
+                playerY = ny;
+                grid[playerY][playerX] = '@';
+            }
+        }
+
+        // 最终安全处理：如果仍有 '+' 未被推动，转为 '.'（移除未打乱的箱子）
+        // 确保不会出现开局即胜利的情况
+        for (int y = 1; y < gridSize - 1; y++) {
+            for (int x = 1; x < gridSize - 1; x++) {
+                if (grid[y][x] == '+') {
+                    grid[y][x] = '.';
+                }
+            }
+        }
+
+        level = grid;
     }
 
-    private char[][] copyLevel(char[][] original) {
-        char[][] copy = new char[original.length][];
-        for (int i = 0; i < original.length; i++) {
-            copy[i] = Arrays.copyOf(original[i], original[i].length);
-        }
-        return copy;
+    private void loadLevel(int levelNum) {
+        if (levelNum < 1) levelNum = 1;
+        currentLevel = levelNum;
+        generateLevel(currentLevel);
     }
 
     @Override
@@ -306,7 +261,7 @@ public class SokobanScreen extends Screen {
         }
 
         // 显示当前关卡和操作提示
-        guiGraphics.drawCenteredString(font, "关卡: " + currentLevel + "/" + levels.size(),
+        guiGraphics.drawCenteredString(font, "关卡: " + currentLevel,
                 width / 2, startY - 30, 0xFFFFFF);
         guiGraphics.drawCenteredString(font, "WASD移动 | R重置 | N下一关",
                 width / 2, startY - 15, 0xAAAAAA);

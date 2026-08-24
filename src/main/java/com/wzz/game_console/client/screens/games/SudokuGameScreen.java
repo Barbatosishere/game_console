@@ -34,6 +34,7 @@ public class SudokuGameScreen extends Screen {
     private boolean gameCompleted = false;
     private boolean rewardGiven = false; // 新增：防止重复给奖励
     private long startTime;
+    private long completedTimeMs; // 通关时的总用时，通关后不再累加
     private int hintsUsed = 0;
     private int maxHints = 3;
 
@@ -121,6 +122,7 @@ public class SudokuGameScreen extends Screen {
         gameCompleted = false;
         rewardGiven = false; // 重置奖励状态
         startTime = System.currentTimeMillis();
+        completedTimeMs = 0;
         hintsUsed = 0;
         clearArrays();
 
@@ -326,6 +328,10 @@ public class SudokuGameScreen extends Screen {
         if (errors[row][col]) {
             return 0xFFFFFFFF; // 错误数字用白色
         }
+        // 选中格子背景为蓝色，用白色数字确保对比度
+        if (row == selectedRow && col == selectedCol) {
+            return 0xFFFFFFFF;
+        }
         if (fixed[row][col]) {
             return 0xFF000000; // 固定数字用黑色
         }
@@ -361,7 +367,7 @@ public class SudokuGameScreen extends Screen {
         guiGraphics.drawString(font, title, titleX, gameStartY - 40, 0xFFFFFFFF);
 
         // 游戏信息
-        long playTime = (System.currentTimeMillis() - startTime) / 1000;
+        long playTime = gameCompleted ? completedTimeMs / 1000 : (System.currentTimeMillis() - startTime) / 1000;
         String timeText = String.format("时间: %02d:%02d", playTime / 60, playTime % 60);
         String hintsText = "剩余提示: " + (maxHints - hintsUsed);
 
@@ -392,7 +398,7 @@ public class SudokuGameScreen extends Screen {
 
         // 完成文本
         String congratsText = "恭喜完成!";
-        long totalTime = (System.currentTimeMillis() - startTime) / 1000;
+        long totalTime = gameCompleted ? completedTimeMs / 1000 : (System.currentTimeMillis() - startTime) / 1000;
         String timeText = String.format("用时: %02d:%02d", totalTime / 60, totalTime % 60);
         String difficultyText = "难度: " + currentDifficulty.name;
         String hintsText = "使用提示: " + hintsUsed + "/" + maxHints;
@@ -501,6 +507,7 @@ public class SudokuGameScreen extends Screen {
 
         if (isPuzzleComplete()) {
             gameCompleted = true;
+            completedTimeMs = System.currentTimeMillis() - startTime;
             playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
             giveReward(); // 修复：调用统一的奖励方法
         }
@@ -550,6 +557,7 @@ public class SudokuGameScreen extends Screen {
 
             if (isPuzzleComplete()) {
                 gameCompleted = true;
+                completedTimeMs = System.currentTimeMillis() - startTime;
                 playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
                 giveReward(); // 修复：使用提示完成游戏时也给奖励
             }
