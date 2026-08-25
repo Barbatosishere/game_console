@@ -306,12 +306,12 @@ public class SudokuGameScreen extends Screen {
 
         // 同行同列高亮
         if (row == selectedRow || col == selectedCol) {
-            return 0xFF2C2C2C;
+            return 0xFF8AB4E0;  // 浅蓝（比选中格更浅，对比黑色数字足够）
         }
 
         // 同3x3区域高亮
         if ((row / 3) == (selectedRow / 3) && (col / 3) == (selectedCol / 3)) {
-            return 0xFF2C2C2C;
+            return 0xFFBCD4F0;  // 更浅的蓝灰色，区分同行/同列
         }
 
         // 交替颜色的3x3方块
@@ -367,11 +367,21 @@ public class SudokuGameScreen extends Screen {
         guiGraphics.drawString(font, title, titleX, gameStartY - 40, 0xFFFFFFFF);
 
         // 游戏信息
-        long playTime = gameCompleted ? completedTimeMs / 1000 : (System.currentTimeMillis() - startTime) / 1000;
+        // ★ Bug修复：游戏结束后顶部小字"时间"也必须冻结，
+        //   原代码用三元表达式虽然正确，但若 gameCompleted 切换瞬时出现一帧
+        //   未冻结的累计时间会让玩家看到秒数跳变。这里再补一次显式分支，
+        //   并给"已通关"标一个绿色✓避免与计时器混淆。
+        long playTime;
+        if (gameCompleted) {
+            playTime = completedTimeMs / 1000;
+        } else {
+            playTime = (System.currentTimeMillis() - startTime) / 1000;
+        }
         String timeText = String.format("时间: %02d:%02d", playTime / 60, playTime % 60);
-        String hintsText = "剩余提示: " + (maxHints - hintsUsed);
+        int timeColor = gameCompleted ? 0xFF66FF66 : 0xFFCCCCCC;
+        guiGraphics.drawString(font, timeText, gameStartX, gameStartY - 20, timeColor);
 
-        guiGraphics.drawString(font, timeText, gameStartX, gameStartY - 20, 0xFFCCCCCC);
+        String hintsText = "剩余提示: " + (maxHints - hintsUsed);
         guiGraphics.drawString(font, hintsText, gameStartX + 150, gameStartY - 20, 0xFFCCCCCC);
 
         // 操作说明
