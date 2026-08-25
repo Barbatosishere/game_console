@@ -88,8 +88,13 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         }
         try {
             String[] p = data.split(",");
-            int row = Integer.parseInt(p[0]), col = Integer.parseInt(p[1]);
-            game.makeMove(row, col); // 此时 currentPlayer 是对方，直接落子
+            // ★ Bug修复：原版无越界校验,畸形报文"99,99" 抛 AIOOBE 被吞,
+            //   仍执行 isMyTurn=true,玩家误以为能下子空过一回合
+            if (p.length < 2) return;
+            int row = Integer.parseInt(p[0]);
+            int col = Integer.parseInt(p[1]);
+            if (row < 0 || row > 2 || col < 0 || col > 2) return;
+            if (!game.makeMove(row, col)) return; // 失败(已落子)不翻 turn
             isMyTurn = true;
         } catch (Exception ignored) {}
     }
