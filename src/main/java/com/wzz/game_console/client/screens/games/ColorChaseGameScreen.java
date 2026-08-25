@@ -782,8 +782,10 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     // ══════════════════════════════════════
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        // 修复：弹窗打开时不注册按键（此前add在拦截检查之前，导致弹窗期间仍能移动）
-        if (key != GLFW.GLFW_KEY_ESCAPE && showExitConfirm) return true;
+        // ★ Bug修复：弹窗期按 R(82) 无法关闭弹窗只能按 ESC,违反常见约定
+        //   (R 在 Minecraft 大多数屏都用作"重开/取消弹窗")。弹窗期仅拦截
+        //   非 ESC/非 R 的输入,让玩家可用 R 关闭弹窗
+        if (key != GLFW.GLFW_KEY_ESCAPE && key != GLFW.GLFW_KEY_R && showExitConfirm) return true;
 
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
@@ -799,18 +801,23 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             return true;
         }
 
-        heldKeys.add(key);
-
-        if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
-
+        // R 键优先处理:弹窗期关闭弹窗,游戏期重开。R 不入 heldKeys
         if (key == GLFW.GLFW_KEY_R) {
-            if (lanMode == LAN_CLIENT) return true; // CLIENT 不能单方面重开
-            initGame(gameMode == GameMode.TWO_PLAYER);
-            // HOST 重开后，下一帧的 sendState 会自动同步新状态给 CLIENT
-            // 但 CLIENT 的 gameOver 还是 true，需要发一个明确的重开信号
-            if (lanMode == LAN_HOST) sendInput("RESTART");
+            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (lanMode == LAN_CLIENT) return true;
+            if (gameMode != GameMode.MENU) {
+                initGame(gameMode == GameMode.TWO_PLAYER);
+                if (lanMode == LAN_HOST) sendInput("RESTART");
+            }
             return true;
         }
+
+        heldKeys.add(key);
+        // ★ Bug修复：gameOver 状态下不应累积按键,否则 HOST 复活瞬间
+        //   processHeldKeys 会立即消费旧按键导致角色瞬移一格
+        if (gameOver || !gameRunning) return true;
+
+        if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
 
         return super.keyPressed(key, scan, mods);
     }
