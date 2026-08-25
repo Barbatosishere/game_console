@@ -131,15 +131,23 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private int cycleBoardSize() {
-        if (this.boardSize == 9) return 13;
+        // ★ 用户需求：9~19 全档可选。原版只有 9/13/15/19 四档,缺 11/17。
+        // 循环顺序：9 → 11 → 13 → 15 → 17 → 19 → 9 ...
+        if (this.boardSize == 9)  return 11;
+        if (this.boardSize == 11) return 13;
         if (this.boardSize == 13) return 15;
-        if (this.boardSize == 15) return 19;
+        if (this.boardSize == 15) return 17;
+        if (this.boardSize == 17) return 19;
         return 9;
     }
 
     private int[] getStarPoints() {
-        if (this.boardSize == 9) return new int[]{2, 6};
+        // 各档星位（按 1-based 算的奇数坐标；与原版 9/13/19 一致，新增 11/17 用近似中心点）
+        if (this.boardSize == 9)  return new int[]{2, 6};
+        if (this.boardSize == 11) return new int[]{2, 5, 8};
         if (this.boardSize == 13) return new int[]{3, 7, 11};
+        if (this.boardSize == 15) return new int[]{3, 7, 11};
+        if (this.boardSize == 17) return new int[]{3, 8, 13};
         if (this.boardSize == 19) return new int[]{3, 9, 15};
         return new int[]{3, 7, 11};
     }
