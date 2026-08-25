@@ -160,11 +160,11 @@ public class FruitNinjaScreen extends Screen {
                     int bx = (int)f[0], by = (int)f[1];
                     int half = FRUIT_SIZE / 2;
                     // 黑色方形主体（区别于圆形水果，轮廓更锐利）
-                    g.fill(bx - half, by - half, FRUIT_SIZE, FRUIT_SIZE, 0xFF111111);
-                    g.fill(bx - half + 3, by - half + 3, FRUIT_SIZE - 6, FRUIT_SIZE - 6, 0xFF2A2A2A);
+                    g.fill(bx - half, by - half, bx + half, by + half, 0xFF111111);
+                    g.fill(bx - half + 3, by - half + 3, bx + half - 3, by + half - 3, 0xFF2A2A2A);
                     // 红色十字危险标记
-                    g.fill(bx - 2, by - half + 4, 4, FRUIT_SIZE - 8, 0xFFFF2200);
-                    g.fill(bx - half + 4, by - 2, FRUIT_SIZE - 8, 4, 0xFFFF2200);
+                    g.fill(bx - 2, by - half + 4, bx + 2, by + half - 4, 0xFFFF2200);
+                    g.fill(bx - half + 4, by - 2, bx + half - 4, by + 2, 0xFFFF2200);
                     // 引线（顶部，更明显）
                     g.fill(bx - 1, by - half - 8, 3, 8, 0xFFFF6600);
                     g.fill(bx - 4, by - half - 10, 9, 3, 0xFFFF6600);

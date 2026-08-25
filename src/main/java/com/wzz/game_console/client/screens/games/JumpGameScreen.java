@@ -500,6 +500,9 @@ public class JumpGameScreen extends Screen {
         renderPlatforms(g);
         renderPredictLine(g);
         renderParticles(g);
+        // 玩家绘制与平台批次分离，避免 GuiGraphics 批量渲染时眼睛/嘴巴等
+        // 文字与平台填充混合导致"绿色方块长眼睛"等 z-fighting 视觉
+        g.flush();
         renderPlayer(g);
         renderHUD(g);
         if (gameOver) renderGameOver(g);
