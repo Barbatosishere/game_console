@@ -58,8 +58,6 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     private volatile int receivedClientInput = 0;
     /** 独立的跳跃请求标志，防止被移动掩码覆盖导致跳跃丢失 */
     private volatile boolean clientJumpRequested = false;
-    /** 活跃实例（供静态网络回调使用） */
-    public static volatile IceFireGameScreen activeInstance = null;
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
 
@@ -353,7 +351,6 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void init() {
         super.init();
-        activeInstance = this;
         // LAN 联机：跳过菜单直接开始
         if (lanMode != LAN_NONE) startGame();
     }
@@ -361,7 +358,6 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void removed() {
         super.removed();
-        if (activeInstance == this) activeInstance = null;
     }
 
     @Override
