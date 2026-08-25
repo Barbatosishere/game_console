@@ -25,6 +25,11 @@ import java.util.Random;
 public class BlackHoleGameScreen extends Screen {
     boolean showExitConfirm = false;
     private static final ResourceLocation BACKGROUND = ResourceUtil.createMinecraftInstance("textures/block/obsidian.png");
+    // ★ Bug修复：原版每帧 render 中 new 3 个 ResourceLocation(60FPS=180次/s 反射),
+    //   提升为 static final,启动时创建一次
+    private static final ResourceLocation DIAMOND_TEX = ResourceUtil.createMinecraftInstance("textures/block/diamond_block.png");
+    private static final ResourceLocation REDSTONE_TEX = ResourceUtil.createMinecraftInstance("textures/block/redstone_block.png");
+    private static final ResourceLocation EMERALD_TEX = ResourceUtil.createMinecraftInstance("textures/block/emerald_block.png");
     
     private GameState gameState;
     private Player player;
@@ -340,16 +345,13 @@ public class BlackHoleGameScreen extends Screen {
         int y = (int) player.y - size / 2;
         
         // 使用钻石块纹理表示玩家
-        ResourceLocation diamond = ResourceUtil.createMinecraftInstance("textures/block/diamond_block.png");
-        graphics.blit(diamond, x, y, 0, 0, size, size, 16, 16);
+        graphics.blit(DIAMOND_TEX, x, y, 0, 0, size, size, 16, 16);
         
         // 绘制光环效果
         drawCircle(graphics, (int) player.x, (int) player.y, size / 2 + 2, 0x4400FFFF);
     }
     
     private void renderEnemies(GuiGraphics graphics, PoseStack poseStack) {
-        ResourceLocation redstone = ResourceUtil.createMinecraftInstance("textures/block/redstone_block.png");
-        
         for (Enemy enemy : enemies) {
             if (enemy.size <= 0) continue;
             
@@ -364,13 +366,11 @@ public class BlackHoleGameScreen extends Screen {
             int x = (int) enemy.x - size / 2;
             int y = (int) enemy.y - size / 2;
             
-            graphics.blit(redstone, x, y, 0, 0, size, size, 16, 16);
+            graphics.blit(REDSTONE_TEX, x, y, 0, 0, size, size, 16, 16);
         }
     }
     
     private void renderFoods(GuiGraphics graphics, PoseStack poseStack) {
-        ResourceLocation emerald = ResourceUtil.createMinecraftInstance("textures/block/emerald_block.png");
-        
         for (Food food : foods) {
             float distance = (float) Math.sqrt(
                 (food.x - cameraX) * (food.x - cameraX) + 
@@ -381,7 +381,7 @@ public class BlackHoleGameScreen extends Screen {
             int x = (int) food.x - size / 2;
             int y = (int) food.y - size / 2;
             
-            graphics.blit(emerald, x, y, 0, 0, size, size, 16, 16);
+            graphics.blit(EMERALD_TEX, x, y, 0, 0, size, size, 16, 16);
         }
     }
     
