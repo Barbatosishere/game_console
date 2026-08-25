@@ -556,17 +556,12 @@ public class WhackAMoleScreen extends Screen {
                 int mouthY = moleRenderY + 2 * MOLE_SIZE / 3;
                 guiGraphics.fill(moleRenderX + MOLE_SIZE / 3, mouthY,
                         moleRenderX + 2 * MOLE_SIZE / 3, mouthY + Math.max(2, eyeSize - 1), eyeColor);
-                // 备用：仍然尝试绘制一次纹理（用 7 参数 blit 渲染整图），
-                // 万一资源包里是 64x64 标准纹理，就能叠加更精细的"贴图感"。
-                try {
-                    ResourceLocation texture = moleType.getTexture();
-                    guiGraphics.blit(texture,
-                            moleRenderX, moleRenderY,
-                            8, 8,
-                            MOLE_SIZE, MOLE_SIZE);
-                } catch (Exception ignore) {
-                    // 资源包纹理异常时色块已正常显示，吞掉异常
-                }
+
+                // ★ 删除上一版"备用 blit 7 参数"逻辑：
+                //   blit 签名 (texture, x, y, uOffset, vOffset, uWidth, vHeight)
+                //   强制按 64x64 纹理 8,8 偏移裁 32x32，会在非 64x64 资源包下采样错位
+                //   导致头部像素显示在身体之外（"贴图错位"原 bug）。改用纯色块 + 表情符号
+                //   兜底，跨资源包/字体均一致。
 
                 // 如果被打中，渲染打击效果
                 if (isHit) {
