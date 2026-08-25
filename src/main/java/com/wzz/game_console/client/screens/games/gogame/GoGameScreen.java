@@ -98,9 +98,19 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         sendLeaveGame();
     }
 
+    /** 后台 AI 计算线程（onClose 时 interrupt 防止 screen 泄漏到 GC 之外） */
+    private volatile Thread aiWorker = null;
+
     @Override
     public void onClose() {
         sendLeaveGameOnce();
+        // ★ Bug修复：原版只发 LEAVE_GAME,后台 AI 线程仍在跑（MCTS 搜索 1-12s）
+        //   闭包持有 game/screen 引用 → screen 永不 GC → 神经网络/Zobrist/树内存
+        //   全部泄漏。interrupt 后 MCTS 主循环 deadline 检查外层加 Thread.interrupted()
+        //   加速回收；同时 close GoGame（AutoCloseable）释放 AI 资源。
+        Thread t = aiWorker;
+        if (t != null) t.interrupt();
+        try { if (game != null) game.close(); } catch (Exception ignored) {}
         super.onClose();
     }
 
@@ -196,8 +206,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             // 后台线程计算 AI 走法，避免阻塞客户端线程（MCTS 搜索 1~12 秒）
             if (!aiThinking && !aiComputed) {
                 aiThinking = true;
-                new Thread(() -> {
+                Thread t = new Thread(() -> {
                     try {
+                        // screen 关闭时会被 interrupt,这里快速退出
+                        if (Thread.currentThread().isInterrupted()) return;
                         aiPendingMove = game.computeAiMove(); // null = 建议弃权
                     } catch (Exception e) {
                         aiPendingMove = null; // 异常时弃权
@@ -205,7 +217,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                         aiThinking = false;
                         aiComputed = true;
                     }
-                }, "go-ai-worker").start();
+                }, "go-ai-worker");
+                aiWorker = t;
+                t.setDaemon(true);
+                t.start();
             }
         }
         // 客户端线程消费 AI 结果并落子
@@ -537,11 +552,26 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             // 读取现有设置
             java.util.Map<String, java.util.Map<String, Object>> allSettings = new java.util.HashMap<>();
             if (java.nio.file.Files.exists(settingsPath)) {
-                String content = java.nio.file.Files.readString(settingsPath, java.nio.charset.StandardCharsets.UTF_8);
-                com.google.gson.Gson gson = new com.google.gson.Gson();
-                java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<java.util.Map<String, java.util.Map<String, Object>>>(){}.getType();
-                java.util.Map<String, java.util.Map<String, Object>> loaded = gson.fromJson(content, type);
-                if (loaded != null) allSettings = loaded;
+                // ★ Bug修复：原版 Files.readString 整文件读入,无大小限制,settings 文件
+                //   被外部异常增长时瞬时占大块堆。改为 BufferedReader + try-with-resources,
+                //   并通过 size 预检拒绝 > 1MB 的文件
+                long size = java.nio.file.Files.size(settingsPath);
+                if (size > 1024 * 1024) {
+                    // 配置文件超 1MB,视为异常,直接跳过读取
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    try (java.io.BufferedReader br = java.nio.file.Files.newBufferedReader(
+                            settingsPath, java.nio.charset.StandardCharsets.UTF_8)) {
+                        char[] buf = new char[4096];
+                        int n;
+                        while ((n = br.read(buf)) > 0) sb.append(buf, 0, n);
+                    }
+                    String content = sb.toString();
+                    com.google.gson.Gson gson = new com.google.gson.Gson();
+                    java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<java.util.Map<String, java.util.Map<String, Object>>>(){}.getType();
+                    java.util.Map<String, java.util.Map<String, Object>> loaded = gson.fromJson(content, type);
+                    if (loaded != null) allSettings = loaded;
+                }
             }
 
             // 更新围棋设置
