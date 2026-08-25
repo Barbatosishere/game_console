@@ -50,12 +50,30 @@ public class MinesweeperScreen extends Screen {
 
     private void placeMinesAvoiding(int avoidX, int avoidY) {
         int placed = 0;
-        int maxAttempts = mineCount * 100; // 防御死循环：极端小棋盘+多雷+3x3避让时仍能跳出
+        // ★ Bug修复：原版用 mineCount*100 步上限 + 3x3 避让,极端小棋盘+多雷时
+        //   attempts 会提前耗尽 → placed < mineCount → 雷数偏少。
+        //   改为更宽松的上限,再补一道兜底:如果仍放不够,则从 firstClick 周围 3x3
+        //   之外的全 board 随机补雷(不会破坏 firstClick 的安全性)。
+        int maxAttempts = mineCount * 200;
         int attempts = 0;
         while (placed < mineCount && attempts++ < maxAttempts) {
             int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
             if (grid[y][x].mine) continue;
             if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        // 兜底:在避让区外继续补雷,确保雷数与配置一致
+        attempts = 0;
+        while (placed < mineCount && attempts++ < mineCount * 50) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
+            if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        // 终极兜底:若仍不足(理论上只发生在 3x3 >= gridSize*gridSize),从避让区补
+        while (placed < mineCount) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
             grid[y][x].mine = true; placed++;
         }
         for (int y = 0; y < gridSize; y++)
