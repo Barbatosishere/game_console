@@ -110,12 +110,12 @@ public class MouseTunnelGameScreen extends Screen {
         tunnelSegmentCount = (this.width / SEGMENT_WIDTH) + 20; // 额外20段作为缓冲
 
         this.startButton = Button.builder(Component.literal("开始游戏"), button -> startGame())
-                .bounds(this.width / 2 - 50, this.height / 2 + 50, 100, 20)
+                .bounds(this.width / 2 - 50, this.height / 2 + 30, 100, 20)
                 .build();
         this.addRenderableWidget(this.startButton);
 
         this.exitButton = Button.builder(Component.literal("返回"), button -> Minecraft.getInstance().setScreen(new GameSelectorScreen()))
-                .bounds(this.width / 2 - 50, this.height / 2 + 80, 100, 20)
+                .bounds(this.width / 2 - 50, this.height / 2 + 60, 100, 20)
                 .build();
         this.addRenderableWidget(this.exitButton);
         if (playing) {
