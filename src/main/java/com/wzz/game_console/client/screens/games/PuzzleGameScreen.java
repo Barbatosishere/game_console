@@ -33,6 +33,8 @@ public class PuzzleGameScreen extends Screen {
     private boolean gameWon;
     private int moves;
     private long startTime;
+    /** 游戏完成瞬间的耗时（秒），用于在 render 中冻结显示；-1 表示未完成 */
+    private long completedElapsedSeconds = -1;
     private ResourceLocation puzzleImage;
     private int startX, startY;
     private final Random random = new Random();
@@ -216,6 +218,8 @@ public class PuzzleGameScreen extends Screen {
         }
         if (!gameWon) {
             gameWon = true;
+            // ★ Bug修复：通关瞬间冻结时间,render 用 completedElapsedSeconds 而非实时计算
+            completedElapsedSeconds = (System.currentTimeMillis() - startTime) / 1000;
             if (Minecraft.getInstance().player != null) {
                 Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
             }
@@ -293,7 +297,10 @@ public class PuzzleGameScreen extends Screen {
         }
         
         // 显示游戏信息
-        long elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000;
+        // ★ Bug修复：通关后用 completedElapsedSeconds 冻结时间,不再每帧重算
+        long elapsedSeconds = completedElapsedSeconds >= 0
+                ? completedElapsedSeconds
+                : (System.currentTimeMillis() - startTime) / 1000;
         graphics.drawString(font, "移动次数: " + moves, 10, 10, 0xFFFFFF, false);
         graphics.drawString(font, "时间: " + elapsedSeconds + "秒", 10, 25, 0xFFFFFF, false);
         
