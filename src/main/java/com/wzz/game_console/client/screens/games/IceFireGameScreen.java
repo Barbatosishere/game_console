@@ -377,6 +377,16 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         }
 
         if (session == null || gameState != GameState.PLAYING) return;
+        // ★ Bug修复：原版把 isGameOver 检查放在所有分支末尾,意味着如果弹窗期间
+        //   session 已 gameOver(玩家先掉下去再按 ESC),代码在 380 行就 return,
+        //   gameState 永远卡在 PLAYING + showExitConfirm,玩家退出弹窗后看到
+        //   "还在玩但人已经死了"的混乱状态。提前在弹窗早退前做检查:
+        if (session.isGameOver() && lanMode != LAN_CLIENT) {
+            gameState = GameState.GAME_OVER;
+            showExitConfirm = false;
+            heldKeys.clear();
+            return;
+        }
         if (showExitConfirm) {
             // 弹窗期间暂停本地模拟，但 HOST 仍须向 CLIENT 广播最新状态，避免 CLIENT 卡在过期状态
             if (lanMode == LAN_HOST) sendStateToClient();
@@ -402,13 +412,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 sendFireInputToHost();
             }
         }
-        if (session.isGameOver() && lanMode != LAN_CLIENT) {
-            // ★ Bug修复：玩家坠落 / 触到危险方块触发的 gameOver 必须立即结算；
-            //   同时强制收起退出确认弹窗，避免弹窗卡住 tick 导致游戏看似没结束
-            gameState = GameState.GAME_OVER;
-            showExitConfirm = false;
-            heldKeys.clear();
-        }
+        // (isGameOver 检查已前移至 380 行早退之前,这里不再重复)
     }
 
     /** 单机：冰人 WASD，火人方向键 */
