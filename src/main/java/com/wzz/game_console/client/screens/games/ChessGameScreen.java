@@ -45,6 +45,8 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     GameMode   gameMode   = GameMode.MENU;
     Difficulty difficulty = Difficulty.MEDIUM;
     boolean showExitConfirm = false;
+    /** AI 引擎最后一次失败原因（null 表示 OK），用于在 HUD 给玩家反馈 */
+    String aiErrorMessage = null;
 
     // ══════════════════════════════════════════════
     //  布局（自适应屏幕）
@@ -243,7 +245,9 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         };
         aiThread = new Thread(() -> {
             try {
-                if (chessAI == null) chessAI = ChessAI.create(); // 懒加载（首次AI落子才建引擎）
+                if (chessAI == null) {
+                    chessAI = ChessAI.create(); // 懒加载（首次AI落子才建引擎）
+                }
                 chessAI.setSearchTime(budgetMs);
                 chessAI.setMaxDepth(maxDepth);
                 int[] best = chessAI.getBestMove(snapshot, false); // false=黑方走
@@ -252,7 +256,14 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
                     // 引擎无合法走法（极端情况），标记静止避免 tick 死循环重启
                 }
                 aiPendingMove = best;
-            } catch (Exception ignored) {
+                aiErrorMessage = null; // 成功则清错
+            } catch (Throwable t) {
+                // ★ Bug修复：原版静默吞所有异常,玩家看到"AI 思考中…"但实际引擎崩了
+                //   永远不会落子。现把异常记到 aiErrorMessage,在 HUD 显示给玩家。
+                aiErrorMessage = "AI 引擎异常: " + t.getClass().getSimpleName() + " - " + t.getMessage();
+                // 强制销毁,下一手退回 BuiltInChessAI（ChessAI 接口无 close,
+                // 这里仅置 null,GC 回收 Pikafish 子进程资源,下一手 create() 会重建）
+                chessAI = null;
             } finally {
                 aiThinking.set(false);
             }
@@ -523,6 +534,15 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         String rSuf=redInCheck?"  ⚠ 将军！":(redTurn&&!gameOver?"  走棋中...":"");
         g.drawString(font,rLbl+rSuf,bx,botY+8,
             redInCheck?0xFFFF4444:redTurn?0xFFFFBB44:0xFF886644);
+
+        // AI 异常提示条（仅在引擎失败时显示）
+        if (aiErrorMessage != null && !gameOver && gameMode == GameMode.PVA) {
+            int errY = botY + 36;
+            String err = "⚠ " + aiErrorMessage;
+            int ew = font.width(err);
+            g.fill(bx - 2, errY - 2, bx + ew + 4, errY + 12, 0xCC550000);
+            g.drawString(font, err, bx, errY, 0xFFFF8888);
+        }
 
         // 列坐标
         String[] cl={"九","八","七","六","五","四","三","二","一"};
