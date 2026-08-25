@@ -26,24 +26,53 @@ public class AIPlayer {
             // 主动出牌，优先选择较小的组合
             return chooseActivePlay(hand);
         }
-        
-        // 被动出牌，尝试找能打过的最小组合
+        // ★ Bug修复：原版 findMinimalBeat 内部找不到压牌时回退到 findAnyBomb(炸),
+        //   即使"用炸弹压对方一张小牌"明显不划算,联机模式下 HOST 还会再被拒收
+        //   导致 AI 丢回合。先看压牌结果是否真的是 bomb,如果是且手牌较多,
+        //   走"过牌"分支避免无谓消耗。result==null 仍走主动出牌兜底(对手刚出炸等场景)。
         List<Card> result = findMinimalBeat(hand, lastCards);
-        
+
         // 如果手牌很少，更积极地出牌
         if (hand.size() <= 3) {
             return result != null ? result : new ArrayList<>();
         }
-        
+
         // 30%概率选择过牌（如果不是最后几张牌）
         if (result != null && hand.size() > 5 && random.nextDouble() < 0.3) {
             return new ArrayList<>(); // 过牌
         }
-        
+
+        // 若 result 是炸弹且压的是普通牌型,手牌仍较多时优先过牌(不无谓炸)
+        if (result != null && isBomb(result) && hand.size() > 5) {
+            return new ArrayList<>(); // 过牌
+        }
+
         return result != null ? result : new ArrayList<>();
+    }
+
+    /** 判断给定手牌组合是否为炸弹(4 张同 rank 或 王炸) */
+    private boolean isBomb(List<Card> cards) {
+        if (cards == null || cards.isEmpty()) return false;
+        if (cards.size() == 2) {
+            boolean hasJoker = false, hasBig = false;
+            for (Card c : cards) {
+                if (c.getValue() == 16) hasJoker = true;
+                if (c.getValue() == 17) hasBig = true;
+            }
+            return hasJoker && hasBig;
+        }
+        if (cards.size() == 4) {
+            int v = cards.get(0).getValue();
+            for (Card c : cards) if (c.getValue() != v) return false;
+            return true;
+        }
+        return false;
     }
     
     private List<Card> chooseActivePlay(List<Card> hand) {
+        // ★ Bug修复：原版无空手防御,game.getPlayerHand 返回空时 hand.get(0) 抛
+        //   IOOB 中断 tick 致 game 卡住
+        if (hand == null || hand.isEmpty()) return new ArrayList<>();
         Map<Integer, List<Card>> groups = groupByValue(hand);
         // 创建副本排序，避免修改原始手牌顺序
         hand = new ArrayList<>(hand);
