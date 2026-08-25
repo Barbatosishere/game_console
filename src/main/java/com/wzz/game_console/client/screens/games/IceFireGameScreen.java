@@ -503,8 +503,12 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             // 格式："基础字段...;x1_y1|x2_y2|..."
             String[] parts = st.split(";", 2);
             String[] p = parts[0].split(",");
-
+            // ★ Bug修复：原版无字段数/范围校验,畸形 STATE 报文(level=99999、
+            //   gameOver=1+victory=1)可直接让 CLIENT 跳结算/卡死。补防御：
+            if (p.length < 13) return; // 基础字段数不足
             int lv = Integer.parseInt(p[0]);
+            // 关卡合法性：限制在已知范围(具体上限看 GameMap 实现,这里 1~99 防御)
+            if (lv < 1 || lv > 99) return;
             // 关卡切换时重新加载地图（双端种子相同，初始钻石位置一致）
             if (lv != session.level) {
                 session.level = lv;
@@ -518,8 +522,11 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             session.fire.y = Integer.parseInt(p[6]) / 10f;
             session.fire.onGround = p[7].equals("1");
             session.fire.dead     = p[8].equals("1");
-            session.map.collected = Integer.parseInt(p[9]);
-            session.map.total     = Integer.parseInt(p[10]);
+            int collected = Integer.parseInt(p[9]);
+            int total = Integer.parseInt(p[10]);
+            if (collected < 0 || total < 0 || collected > total + 1) return; // 防御畸形数
+            session.map.collected = collected;
+            session.map.total     = total;
             if (p[11].equals("1")) {
                 session.gameOver = true;
                 session.victory  = p[12].equals("1");
@@ -541,6 +548,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                     if (xy.length == 2) {
                         int cx = Integer.parseInt(xy[0]);
                         int cy = Integer.parseInt(xy[1]);
+                        // 范围防御：cx/cy 必须在 map 范围内
+                        if (cx < 0 || cx >= MAP_COLS || cy < 0 || cy >= MAP_ROWS) continue;
                         // 只有当前仍是 DIAMOND 时才改（避免重复操作）
                         if (session.map.get(cx, cy) == Tile.DIAMOND) {
                             session.map.tiles[cx][cy] = Tile.AIR;
