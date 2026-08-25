@@ -132,7 +132,12 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         }
         try {
             String[] p = data.split(",");
-            int x = Integer.parseInt(p[0]), y = Integer.parseInt(p[1]);
+            // ★ Bug修复：原版 split 后直接 parseInt,1 字段/越界/畸形报文抛异常被吞
+            //   但 myTurn=true 已执行,玩家误以为轮到自己下子空过一回合
+            if (p.length < 2) return;
+            int x = Integer.parseInt(p[0]);
+            int y = Integer.parseInt(p[1]);
+            if (x < 0 || x >= 19 || y < 0 || y >= 19) return;
             game.placeStone(x, y);
             myTurn = true;
             if (game.isGameOver()) finishGame();
