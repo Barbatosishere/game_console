@@ -6,6 +6,7 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.io.IOException;
 
 /**
@@ -124,6 +125,14 @@ public final class GoAdversarialTrainer {
             return new Result(games, newSamples.size(), completed, loss, evaluator, ourWins);
         } finally {
             pool.shutdownNow();
+            // ★ Bug修复：等待 worker 释放 native 资源,见 GoSelfPlayTrainer 同改
+            try {
+                if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    System.err.println("[对抗训练] 训练线程池 5s 内未关闭,放弃等待");
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

@@ -7,6 +7,7 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /** Pure-Java self-play trainer for the local Go evaluator. */
 public final class GoSelfPlayTrainer {
@@ -138,6 +139,16 @@ public final class GoSelfPlayTrainer {
             return new Result(games, newSamples.size(), completed, loss, evaluator);
         } finally {
             pool.shutdownNow();
+            // ★ Bug修复：原版 shutdownNow 后立即返回,持有 JNI/native 资源
+            //   (NeuralEvaluator+OpenCLBackend) 的 worker 可能未释放完毕,
+            //   下次训练启动会拿半初始化状态
+            try {
+                if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    System.err.println("[自对弈] 训练线程池 5s 内未关闭,放弃等待");
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
