@@ -552,9 +552,15 @@ public class MCTSGoAI implements GoAI {
 
         // 完全等待所有线程退出（worker 循环检查 deadline，会在截止后很快自行退出）。
         // 若只用短超时，残留线程可能在下一次搜索时继续写 currentRoot，导致竞态。
+        // ★ Bug修复：原版 f.get(30s) 超时后只放弃等待,worker 仍在跑循环并
+        //   写 currentRoot,下一手 search 切根后旧 worker 仍占用 CPU 跑满 5s
+        //   硬截断(commit b5be0b4 引入)。这里改用 cancel(true) 中断,worker
+        //   内部已用 5s 硬截断,interrupt 只是加速回收。
         for (Future<Void> f : futures) {
             try {
-                f.get(30, TimeUnit.SECONDS);
+                f.get(10, TimeUnit.SECONDS);
+            } catch (TimeoutException te) {
+                f.cancel(true); // 中断 worker,让其尽快退出
             } catch (Exception ignored) {
                 // 极罕见：worker 卡死则放弃等待（不阻塞调用方）
             }
