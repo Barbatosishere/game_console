@@ -253,10 +253,13 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
                 int[] best = chessAI.getBestMove(snapshot, false); // false=黑方走
                 if (Thread.currentThread().isInterrupted()) return; // 新对局已开始，丢弃旧结果
                 if (best == null) {
-                    // 引擎无合法走法（极端情况），标记静止避免 tick 死循环重启
+                    // ★ Bug修复：引擎无合法走法时必须设 aiStalled=true,否则
+                    //   tick 下一帧再次启动 launchAI 死循环,玩家看到"思考中…"永不落子
+                    aiStalled = true;
+                    aiErrorMessage = "AI 引擎无合法走法";
                 }
                 aiPendingMove = best;
-                aiErrorMessage = null; // 成功则清错
+                if (best != null) aiErrorMessage = null; // 成功才清错
             } catch (Throwable t) {
                 // ★ Bug修复：原版静默吞所有异常,玩家看到"AI 思考中…"但实际引擎崩了
                 //   永远不会落子。现把异常记到 aiErrorMessage,在 HUD 显示给玩家。
