@@ -10,6 +10,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import org.lwjgl.glfw.GLFW;
 import net.minecraft.sounds.SoundSource;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
@@ -423,10 +424,15 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; }
             else if (gameState == GameState.MENU) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); } // 菜单态ESC直接退出，与其他游戏一致
             else { showExitConfirm = true; }
+            return true;
+        }
+        // ★ 用户体验：R 在 GAME_OVER 或 MENU 时直接重开,符合常见约定
+        if (keyCode == GLFW.GLFW_KEY_R && (gameState == GameState.GAME_OVER || gameState == GameState.MENU)) {
+            startGame();
             return true;
         }
         if (showExitConfirm) return true;
