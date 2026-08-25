@@ -1091,9 +1091,11 @@ public class MCTSGoAI implements GoAI {
         return null;
     }
 
-    /** 把棋群序列化为唯一字符串 key，用于 visited 集合去重 */
+    /** 把棋群序列化为唯一字符串 key，用于 visited 集合去重。
+     *  使用相对坐标（锚点 = 棋群最左上的子）+ 字典序排序，
+     *  使同形状但位置不同的棋群产生不同 key，避免被错误地合并；
+     *  同位置同形状的棋群（递归扫描时的重复）产生相同 key，被正确去重。 */
     private static String groupKey(Set<int[]> group) {
-        // 找最左上 (minX, minY) 作为锚点，再把所有点相对锚点写入
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
         for (int[] p : group) {
             if (p[0] < minX || (p[0] == minX && p[1] < minY)) {
@@ -1101,7 +1103,6 @@ public class MCTSGoAI implements GoAI {
             }
         }
         StringBuilder sb = new StringBuilder();
-        // 按相对坐标排序
         List<int[]> sorted = new ArrayList<>(group);
         sorted.sort((a, b) -> {
             int dx = a[0] - b[0], dy = a[1] - b[1];
