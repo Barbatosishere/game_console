@@ -102,9 +102,14 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         } else {
             try {
                 String[] p = data.split(",");
+                if (p.length < 2) return; // 报文不足两个字段,丢弃
                 int x = Integer.parseInt(p[0]);
                 int y = Integer.parseInt(p[1]);
-                if (this.board == null || this.board[x][y] != 0) {
+                // ★ Bug修复：远程报文越界防御——x/y 可能为负、>= boardSize、
+                //   或 boardSize 切换后旧报文指向不存在的下标。原始 AIOOBE 被
+                //   外层 try 静默吞,玩家看到"对手不动"。这里加双重范围校验。
+                if (this.board == null || x < 0 || x >= this.boardSize
+                        || y < 0 || y >= this.boardSize || this.board[x][y] != 0) {
                     return;
                 }
 
