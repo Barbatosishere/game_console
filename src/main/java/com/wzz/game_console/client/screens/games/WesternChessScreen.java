@@ -548,6 +548,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         if (abs==5) g.fill(cx2-1,sy+3,cx2+2,sy+5,w?0xFFDDAA00:0xFF886600);
     }
     private void renderPromoPanel(GuiGraphics g, int mx, int my) {
+        g.flush(); // 先提交已 batch 的棋盘/棋子，避免升变面板实心背景与之 z-fighting
         boolean w=(promoRow==0); int cx2=width/2, cy2=height/2;
         int pw=cellSize*4+20, px2=cx2-pw/2, py2=cy2-30;
         g.fill(px2-2,py2-2,px2+pw+2,py2+cellSize+44,0xFF000000);
@@ -562,6 +563,8 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
     }
     private void renderOver(GuiGraphics g, int mx, int my) {
+        // 先 flush 之前的棋盘/棋子批次，避免 z-fighting 与文字穿透
+        g.flush();
         GameRenderHelper.drawGameOverOverlay(g,width,height);
         int cx2=width/2, cy2=height/2; boolean win=resultMsg.contains("白方")&&vsAI;
         GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,win,resultMsg.replace("§c","").replace("§a","").replace("§e",""),vsAI?(win?"恭喜战胜AI！":"再接再厉！"):"精彩对局！");

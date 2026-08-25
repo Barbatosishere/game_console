@@ -566,6 +566,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     //  游戏结束
     // ══════════════════════════════════════════════
     void drawGameOver(GuiGraphics g){
+        g.flush(); // 半透明遮罩前先 flush，避免与下层棋盘/棋子批次混合导致 z-fighting
         g.fill(0,0,width,height,0x99000000);
         int ww=340,wh=160,wx=(width-ww)/2,wy=(height-wh)/2;
         g.fill(wx,wy,wx+ww,wy+wh,0xFF1A1200);
@@ -587,6 +588,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     void drawExitConfirm(GuiGraphics g, int mx, int my){
+        g.flush(); // 半透明遮罩前 flush，避免与下层棋盘/棋子批次混合导致 z-fighting
         g.fill(0,0,width,height,0xAA000000);
         int cx=width/2, cy=height/2;
         int ww=240, wh=90;
