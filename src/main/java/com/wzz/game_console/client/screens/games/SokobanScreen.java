@@ -32,10 +32,14 @@ public class SokobanScreen extends Screen {
     private void generateLevel(int levelNum) {
         Random rand = new Random(levelNum * 7919L + 271L);
 
-        // 难度参数随关卡序号递增
-        int gridSize = Math.min(5 + levelNum / 3, 12);
-        int boxCount = Math.min(1 + levelNum / 4, 5);
-        int obstacleCount = Math.min(levelNum / 3, 6);
+        // ★ Bug修复：原版关卡参数增速过缓（gridSize 每 3 关 +1，boxCount 每 4 关 +1），
+        //   玩家通关 5~6 关仍感觉不到明显难度提升。重新调参为：
+        //     gridSize   = 5 + (levelNum-1)/1.5   → 第 1 关 5x5，第 5 关 8x8，第 10 关 11x11
+        //     boxCount   = 1 + (levelNum-1)/2     → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
+        //     obstacleCount = 1 + (levelNum-1)/2  → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
+        int gridSize = Math.min(5 + (levelNum - 1) * 2 / 3, 14);
+        int boxCount = Math.min(1 + (levelNum - 1) / 2, 6);
+        int obstacleCount = Math.min(1 + (levelNum - 1) / 2, 8);
 
         // 创建网格
         char[][] grid = new char[gridSize][gridSize];

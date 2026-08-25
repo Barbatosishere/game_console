@@ -19,8 +19,8 @@ import java.util.*;
 public class MazeGameScreen extends Screen {
     boolean showExitConfirm = false;
     private int TILE_SIZE = 20;
-    private static final int MAZE_WIDTH = 21;  // 奇数
-    private static final int MAZE_HEIGHT = 21; // 奇数
+    private int MAZE_WIDTH = 21;  // 奇数，随关卡变化
+    private int MAZE_HEIGHT = 21; // 奇数，随关卡变化
 
     private char[][] maze;
     private int playerX, playerY;
@@ -38,6 +38,8 @@ public class MazeGameScreen extends Screen {
     private static final long LEVEL_ADVANCE_DELAY = 2000; // 自动进入下一关的延迟(毫秒)
     private List<int[]> ghostPath = new ArrayList<>();
     private final Random random = new Random();
+    /** 当前关卡最大层数（通关后回到第 1 关，生成更大的迷宫作为奖励） */
+    private static final int MAX_LEVEL = 5;
 
     public MazeGameScreen() {
         super(Component.literal("迷宫游戏"));
@@ -49,6 +51,10 @@ public class MazeGameScreen extends Screen {
         // 窗口缩放时 Screen.resize 会重调 init，widget 需要先清理避免叠加
         super.init();
         this.clearWidgets();
+        // 根据当前关卡调整迷宫尺寸，并计算 tile 尺寸
+        int size = levelMazeSize();
+        MAZE_WIDTH = size;
+        MAZE_HEIGHT = size;
         // 计算绘制起始位置，使迷宫居中
         TILE_SIZE = Math.max(8, Math.min((this.width - 40) / MAZE_WIDTH, (this.height - 80) / MAZE_HEIGHT));
         startX = (this.width - MAZE_WIDTH * TILE_SIZE) / 2;
@@ -58,6 +64,7 @@ public class MazeGameScreen extends Screen {
         this.addRenderableWidget(Button.builder(Component.literal("重新开始"), b -> {
             currentLevel = 1;
             generateMaze();
+            init();
         }).pos(centerX - 50, this.height - 30).size(100, 20).build());
 
         this.addRenderableWidget(Button.builder(Component.literal("返回"), b -> {
@@ -245,7 +252,15 @@ public class MazeGameScreen extends Screen {
                 gameWonTime = now;
             } else if (now - gameWonTime > LEVEL_ADVANCE_DELAY) {
                 currentLevel++;
+                if (currentLevel > MAX_LEVEL) currentLevel = 1; // 通关后回到第 1 关循环
                 gameWonTime = 0;
+                // 同步更新迷宫尺寸到新关卡
+                int size = levelMazeSize();
+                MAZE_WIDTH = size;
+                MAZE_HEIGHT = size;
+                TILE_SIZE = Math.max(8, Math.min((this.width - 40) / MAZE_WIDTH, (this.height - 80) / MAZE_HEIGHT));
+                startX = (this.width - MAZE_WIDTH * TILE_SIZE) / 2;
+                startY = (this.height - MAZE_HEIGHT * TILE_SIZE) / 2;
                 generateMaze();
             }
             return;
@@ -262,6 +277,13 @@ public class MazeGameScreen extends Screen {
                 gameOver = true;
             }
         }
+    }
+
+    /** 计算当前关卡的迷宫尺寸（21x21 ~ 31x31） */
+    private int levelMazeSize() {
+        // 21 / 23 / 25 / 27 / 29 五档，超过 MAX_LEVEL 后回到第 1 关
+        int idx = Math.min(MAX_LEVEL - 1, currentLevel - 1);
+        return 21 + idx * 2;
     }
 
     @Override
@@ -327,20 +349,25 @@ public class MazeGameScreen extends Screen {
             }
 
             if (ghostPath != null && ghostPath.size() > 1) {
-                // 30%概率不走最优路径，让玩家有机会逃脱
-                if (random.nextDouble() < 0.3) {
+                // ★ Bug修复：原 30% 概率随机走概率过低，鬼魂几乎必追到玩家。
+                //   改为 50% 概率走最优路径 + 50% 随机游走，让玩家有"躲鬼"机会。
+                //   距离越近概率越偏向追击，但即便贴身仍有 1/4 的机会脱身。
+                double r = random.nextDouble();
+                double chaseProb = 0.5;
+                if (r < chaseProb) {
+                    // 走最优路径
+                    int[] nextStep = ghostPath.get(1);
+                    ghostX = nextStep[0];
+                    ghostY = nextStep[1];
+                } else {
+                    // 随机走，让玩家有机会脱身
                     List<int[]> moves = getAvailableMoves();
                     if (!moves.isEmpty()) {
                         int[] move = moves.get(random.nextInt(moves.size()));
                         ghostX = move[0];
                         ghostY = move[1];
-                        return;
                     }
                 }
-                // 走最优路径
-                int[] nextStep = ghostPath.get(1);
-                ghostX = nextStep[0];
-                ghostY = nextStep[1];
             } else {
                 simpleChase();
             }

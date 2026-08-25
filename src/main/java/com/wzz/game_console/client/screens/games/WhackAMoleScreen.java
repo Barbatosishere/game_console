@@ -525,21 +525,47 @@ public class WhackAMoleScreen extends Screen {
                 int moleRenderY = (int) (y + HOLE_SIZE - MOLE_SIZE + moleY);
                 int moleRenderX = x + (HOLE_SIZE - MOLE_SIZE) / 2;
 
+                // ★ Bug修复：原版用 64x64 实体纹理中裁切 8x8 头部再缩放到 32x32，
+                //   但 OptiFine/资源包常使 zombie/creeper/skeleton 纹理尺寸异常
+                //   (32x16 / 32x32 / 64x32 等)，强制按 64x64 采样会显示错位像素。
+                //   这里直接走色块 + 表情符号兜底，兼容性最好，玩家不会看到错位贴图。
+                int bodyColor = moleType == MoleType.CREEPER ? 0xFF00CC00 :
+                        moleType == MoleType.SKELETON ? 0xFFCCCCCC : 0xFF2A8A2A;
+                int eyeColor  = moleType == MoleType.CREEPER ? 0xFF003300 :
+                        moleType == MoleType.SKELETON ? 0xFF333333 : 0xFF000000;
+                // 身体色块
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, bodyColor);
+                // 边框
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + 2, 0xFF000000);
+                guiGraphics.fill(moleRenderX, moleRenderY + MOLE_SIZE - 2,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0xFF000000);
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + 2, moleRenderY + MOLE_SIZE, 0xFF000000);
+                guiGraphics.fill(moleRenderX + MOLE_SIZE - 2, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0xFF000000);
+                // 两只眼睛
+                int eyeSize = Math.max(3, MOLE_SIZE / 6);
+                int eyeY = moleRenderY + MOLE_SIZE / 3;
+                guiGraphics.fill(moleRenderX + MOLE_SIZE / 3 - eyeSize / 2, eyeY,
+                        moleRenderX + MOLE_SIZE / 3 + eyeSize / 2, eyeY + eyeSize, eyeColor);
+                guiGraphics.fill(moleRenderX + 2 * MOLE_SIZE / 3 - eyeSize / 2, eyeY,
+                        moleRenderX + 2 * MOLE_SIZE / 3 + eyeSize / 2, eyeY + eyeSize, eyeColor);
+                // 嘴
+                int mouthY = moleRenderY + 2 * MOLE_SIZE / 3;
+                guiGraphics.fill(moleRenderX + MOLE_SIZE / 3, mouthY,
+                        moleRenderX + 2 * MOLE_SIZE / 3, mouthY + Math.max(2, eyeSize - 1), eyeColor);
+                // 备用：仍然尝试绘制一次纹理（用 7 参数 blit 渲染整图），
+                // 万一资源包里是 64x64 标准纹理，就能叠加更精细的"贴图感"。
                 try {
                     ResourceLocation texture = moleType.getTexture();
-                    // 渲染地鼠头像（从怪物纹理中截取头部，采样8x8区域缩放至32x32）
                     guiGraphics.blit(texture,
                             moleRenderX, moleRenderY,
-                            MOLE_SIZE, MOLE_SIZE,
-                            8, 8, // 纹理上头部的位置
-                            8, 8, // 采样区域大小（头部正面为8x8像素）
-                            64, 64); // MC皮肤纹理尺寸
-                } catch (Exception e) {
-                    // 备用渲染
-                    int color = moleType == MoleType.CREEPER ? 0xFF00FF00 :
-                            moleType == MoleType.SKELETON ? 0xFFCCCCCC : 0xFF00AA00;
-                    guiGraphics.fill(moleRenderX, moleRenderY,
-                            moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, color);
+                            8, 8,
+                            MOLE_SIZE, MOLE_SIZE);
+                } catch (Exception ignore) {
+                    // 资源包纹理异常时色块已正常显示，吞掉异常
                 }
 
                 // 如果被打中，渲染打击效果
