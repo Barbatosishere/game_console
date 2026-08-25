@@ -50,7 +50,9 @@ public class MinesweeperScreen extends Screen {
 
     private void placeMinesAvoiding(int avoidX, int avoidY) {
         int placed = 0;
-        while (placed < mineCount) {
+        int maxAttempts = mineCount * 100; // 防御死循环：极端小棋盘+多雷+3x3避让时仍能跳出
+        int attempts = 0;
+        while (placed < mineCount && attempts++ < maxAttempts) {
             int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
             if (grid[y][x].mine) continue;
             if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;

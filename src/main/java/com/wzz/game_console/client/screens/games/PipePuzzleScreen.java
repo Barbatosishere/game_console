@@ -80,7 +80,7 @@ public class PipePuzzleScreen extends Screen {
         // 生成棋盘：保证初始状态未连通，但存在可解路径
         int attempts = 0;
         do {
-            if (attempts++ > 100) break;
+            if (attempts++ > 200) break;
             grid = new PipeTile[gridSize][gridSize];
             for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
                 grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
@@ -90,9 +90,30 @@ public class PipePuzzleScreen extends Screen {
                 PipeTile t=grid[y][x];
                 if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
             }
-            // 初始起终点不直接连通 & 存在理论上可解的路径
-        } while (!findFlowPath().isEmpty() || !isSolvable());
+            // ★ Bug修复：在 do-while 里只检查"已连通"和"可解性"还不够，
+            //   由于小尺寸（如 4x4）随机排列中两端点可能同时连上导致开局即通，
+            //   即使路径未到终点，玩家旋转一次就会接通；这里额外要求 START 周围
+            //   至少 1 个相邻管口的"无效初始方向"——即 START.RIGHT / START.DOWN
+            //   没有被同向相邻管的开口接住，避免开局第一格/末格已经与管线合流。
+        } while (!findFlowPath().isEmpty() || !isSolvable() || startAlreadyHalfConnected());
         updateFlow();
+    }
+
+    /** START 与最近邻管的初始开口错开，强制玩家至少旋转一次才能联通 */
+    private boolean startAlreadyHalfConnected() {
+        if (gridSize < 2) return false;
+        // 起点 (0,0) 开口方向固定为 RIGHT+DOWN，只要任一邻格碰巧朝向 START 对应方向
+        // 就意味着旋转次数 < 即可连通；视为"开局即通"重排一次。
+        PipeTile right = grid[0][1];
+        if (right.type.isRotatable() && right.getOpenings().contains(Direction.LEFT)) {
+            // 起点 RIGHT 直接接上 (0,1) 的 LEFT，管线可一路向右
+            return true;
+        }
+        PipeTile down = grid[1][0];
+        if (down.type.isRotatable() && down.getOpenings().contains(Direction.UP)) {
+            return true;
+        }
+        return false;
     }
 
     private void rotatePipe(int x, int y) {

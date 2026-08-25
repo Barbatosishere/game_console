@@ -402,7 +402,13 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 sendFireInputToHost();
             }
         }
-        if (session.isGameOver() && lanMode != LAN_CLIENT) gameState = GameState.GAME_OVER;
+        if (session.isGameOver() && lanMode != LAN_CLIENT) {
+            // ★ Bug修复：玩家坠落 / 触到危险方块触发的 gameOver 必须立即结算；
+            //   同时强制收起退出确认弹窗，避免弹窗卡住 tick 导致游戏看似没结束
+            gameState = GameState.GAME_OVER;
+            showExitConfirm = false;
+            heldKeys.clear();
+        }
     }
 
     /** 单机：冰人 WASD，火人方向键 */

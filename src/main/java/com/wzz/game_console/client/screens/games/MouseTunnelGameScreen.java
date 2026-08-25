@@ -330,6 +330,11 @@ public class MouseTunnelGameScreen extends Screen {
             bestScore = score;
         }
 
+        // ★ Bug修复：100 分胜利 / 碰墙失败后确保退出弹窗状态被清掉，
+        //   否则开始/返回按钮可见但被 showExitConfirm 拦截点击，导致"100分后无反应"
+        showExitConfirm = false;
+        exitDialogOpenedAtMs = 0;
+
         // 显示按钮
         this.startButton.visible = true;
         this.exitButton.visible = true;
