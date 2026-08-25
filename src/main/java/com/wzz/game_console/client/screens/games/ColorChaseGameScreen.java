@@ -164,8 +164,12 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
                 String[] cells = parts[1].split(",");
                 int idx = 0;
                 for (int x = 0; x < GRID_SIZE && idx < cells.length; x++)
-                    for (int y = 0; y < GRID_SIZE && idx < cells.length; y++)
-                        grid[x][y] = Integer.parseInt(cells[idx++]);
+                    for (int y = 0; y < GRID_SIZE && idx < cells.length; y++) {
+                        // ★ Bug修复：cells 元素若非数字会抛 NumberFormatException 污染整盘。
+                        //   单独 try/catch 该格,坏格用 0 兜底而不是静默吞整盘
+                        try { grid[x][y] = Integer.parseInt(cells[idx++]); }
+                        catch (NumberFormatException nfe) { grid[x][y] = 0; idx++; }
+                    }
             }
         } catch (Exception ignored) {}
     }
@@ -181,6 +185,9 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         if (lanMode != LAN_HOST || p2Dead || !gameRunning) return;
         try {
             String[] p = data.split(",");
+            // ★ Bug修复：原版对 1 字段报文("1"或"")会抛 AIOOBE 静默吞,
+            //   玩家看不到任何反馈。加 length 校验：必须 4 字段才解析方向
+            if (p.length < 4) return;
             long now = System.currentTimeMillis();
             if (now - p2LastInput < INPUT_COOLDOWN) return;
             boolean moved = false;
