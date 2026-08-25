@@ -54,6 +54,10 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     private java.util.UUID remotePeer = null;
     /** CLIENT 收到的主机状态（逗号分隔整数） */
     private volatile String receivedState = null;
+    /** LAN_CLIENT 收到 STATE 的最后 tick 计数,用于检测 HOST 崩溃/掉线 */
+    private long lastStateReceivedTick = 0;
+    /** CLIENT 超过此 tick 数未收到 STATE 视为 HOST 已掉线(约 3 秒) */
+    private static final long CLIENT_STATE_TIMEOUT_TICKS = 60;
     /** HOST 收到的客户端输入掩码 (bit0=左 bit1=右 bit2=跳) */
     private volatile int receivedClientInput = 0;
     /** 独立的跳跃请求标志，防止被移动掩码覆盖导致跳跃丢失 */
@@ -370,6 +374,25 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 && receivedState != null && !receivedState.isEmpty()) {
             applyReceivedState(receivedState);
             receivedState = null;
+            lastStateReceivedTick = tickCount;
+        }
+
+        // ★ Bug修复：LAN_CLIENT 长时间未收到 HOST 状态 → HOST 崩溃/掉线
+        //   原版 CLIENT 会永远卡在原 gameState 上需按 ESC 才能退。
+        //   首次收到 STATE 时初始化 lastStateReceivedTick(防止刚启动就被超时踢出)
+        if (lanMode == LAN_CLIENT && lastStateReceivedTick == 0 && tickCount > 10) {
+            // 启动后 10 tick 仍没收到任何 STATE,认为 HOST 实际未联机
+            sendLeaveGameOnce();
+            Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            return;
+        }
+        if (lanMode == LAN_CLIENT && lastStateReceivedTick > 0
+                && tickCount - lastStateReceivedTick > CLIENT_STATE_TIMEOUT_TICKS
+                && gameState == GameState.PLAYING) {
+            // 游戏中长时间未收到 STATE,提示 HOST 已掉线并退出
+            sendLeaveGameOnce();
+            Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            return;
         }
 
         if (session == null || gameState != GameState.PLAYING) return;
@@ -706,8 +729,9 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 fire.update(map, ice, particles);
                 ice.update(map, fire, particles);
             }
-            particles.removeIf(p -> !p.alive);
             for (Particle p : particles) p.update();
+            // ★ Bug修复：removeIf 移到 for 之后,新增粒子能在本帧继续推进
+            particles.removeIf(p -> !p.alive);
 
             // 死亡检测：危险方块（熔岩/水）
             // 坠落出地图由 GamePlayer.update 直接置 dead=true（y > GAME_H+20），
