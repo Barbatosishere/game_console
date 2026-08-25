@@ -891,6 +891,18 @@ public class MCTSGoAI implements GoAI {
         // score 是 node（叶子）行棋方视角的价值。
         // 每往上一层，行棋方交替，价值取反 —— 这样每个节点存的是"该节点行棋方视角"。
         // （价值头输出为当前行棋方视角，见 valueTarget = (s.player==BLACK ? margin : -margin)）
+        // ★ Bug修复：神经网络在极端输入下可能输出 NaN/Infinity（如全 0 plane、batch
+        //   越界等），一旦回传将沿 parent 链把所有 totalScore 污染为 NaN，导致
+        //   shouldTerminateEarly 与 winrate 计算全部失效 → 中盘胜率坍塌。
+        //   这里加一道 finite 守卫：若 score 非有限值则跳过累加，但 visits 仍 +1，
+        //   避免一个坏叶子把整棵树打分全部"毒化"。
+        if (!Double.isFinite(score)) {
+            while (node != null) {
+                synchronized (node) { node.visits++; }
+                node = node.parent;
+            }
+            return;
+        }
         while (node != null) {
             synchronized (node) {
                 node.visits++;
@@ -1047,6 +1059,14 @@ public class MCTSGoAI implements GoAI {
      */
     private int[] tacticalReading(GoPlayer[][] board, GoPlayer player, long deadline) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
+        // ★ Bug修复（中盘算炸防御）：原版对每个 (x,y) 都重新取棋群并搜索，
+        //   中盘 200+ 步时濒死棋群密集，多个同色连体子被反复扫到，导致
+        //   O(361 × α-β深度5) 的组合爆炸 → 内存/时间耗尽。
+        //   1) 棋群去重：Set<int[]> 没有原生 hash，把 group 序列化为 "x,y" 串后
+        //      放入 visited 集合，已访问过的棋群整体跳过。
+        //   2) 候选点过载保护：collectLocalRegion 返回超过 30 个候选时直接跳过，
+        //      避免在松散棋形上启动深度 5 α-β。
+        Set<String> visited = new HashSet<>();
 
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {
@@ -1054,9 +1074,14 @@ public class MCTSGoAI implements GoAI {
                 Set<int[]> group = getGroup(board, x, y);
                 int libs = countGroupLiberties(board, group);
                 if (libs <= 3 && group.size() >= 2) {
+                    // 棋群去重（用最小 x,y 作为代表 key；group 自身按 x 升序排）
+                    String key = groupKey(group);
+                    if (visited.contains(key)) continue;
+                    visited.add(key);
                     // 收集局部区域
                     Set<String> region = collectLocalRegion(board, group);
                     if (region.isEmpty()) continue;
+                    if (region.size() > 30) continue; // 候选过载，跳过
                     int[] best = localAlphaBetaSearch(board, group, player, opponent,
                             libs <= 2 ? TACTICAL_DEPTH : 3, region, deadline);
                     if (best != null) return best;
@@ -1064,6 +1089,29 @@ public class MCTSGoAI implements GoAI {
             }
         }
         return null;
+    }
+
+    /** 把棋群序列化为唯一字符串 key，用于 visited 集合去重 */
+    private static String groupKey(Set<int[]> group) {
+        // 找最左上 (minX, minY) 作为锚点，再把所有点相对锚点写入
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
+        for (int[] p : group) {
+            if (p[0] < minX || (p[0] == minX && p[1] < minY)) {
+                minX = p[0]; minY = p[1];
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        // 按相对坐标排序
+        List<int[]> sorted = new ArrayList<>(group);
+        sorted.sort((a, b) -> {
+            int dx = a[0] - b[0], dy = a[1] - b[1];
+            return dx != 0 ? dx : dy;
+        });
+        for (int[] p : sorted) {
+            if (sb.length() > 0) sb.append(';');
+            sb.append(p[0] - minX).append(',').append(p[1] - minY);
+        }
+        return sb.toString();
     }
 
     /**
