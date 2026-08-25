@@ -446,7 +446,7 @@ public class LandlordGame {
         myHand.clear(); myHand.addAll(myCards);
         lastPlayedCards = deserializeCards(parts[5]);
         String[] cnts = parts[6].split(",");
-        // 更新其他玩家手牌数量（用空Card占位，渲染时只显示背面）
+        // 更新其他玩家手牌数量（用空Card占位，渲染时只显示数量）
         for (int i = 0; i < 3; i++) {
             if (i == myPlayerIndex) continue;
             int cnt = Integer.parseInt(cnts[i]);
@@ -457,6 +457,13 @@ public class LandlordGame {
         }
         String[] scs = parts[7].split(",");
         for (int i = 0; i < 3; i++) scores[i] = Integer.parseInt(scs[i]);
-        landlordCards = deserializeCards(parts[8]);
+        // ★ Bug修复：原版无条件用 parts[8] 覆盖 landlordCards，但 BID 阶段 HOST
+        //   端行 92 landlordCards.clear() 后序列化的就是空 list，覆盖后 CLIENT
+        //   getLandlordCards() 永远返回空、底牌不可见。改为仅在 BID 前
+        //   (landlordPlayer==-1 时 parts[8] 是有效底牌) 覆盖，已发牌阶段保留
+        //   本地状态（联机中途重入场景也能恢复底牌显示）。
+        if (landlordPlayer == -1) {
+            landlordCards = deserializeCards(parts[8]);
+        }
     }
 }
