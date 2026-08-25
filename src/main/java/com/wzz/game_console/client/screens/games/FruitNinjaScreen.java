@@ -171,7 +171,15 @@ public class FruitNinjaScreen extends Screen {
                     // 警告圈（红色闪烁轮廓）
                     int bombPulse = (int)(System.currentTimeMillis() / 300) % 2 == 0 ? 0xFFFF2200 : 0xFF880000;
                     GameRenderHelper.drawCircle(g, bx, by, half + 3, bombPulse);
-                    g.drawCenteredString(font, "💣", bx, by - 4, 0xFFFFFFFF);
+                    // ★ Bug修复：默认 Minecraft 字体不包含 emoji "💣"，豆腐块概率高。
+                    //   改用 ASCII 字符 "B"（黑底白字 + 红色描边），跨字体/语言包稳定可读。
+                    int bw = font.width("B");
+                    // 红色描边（4 方向各偏移 1px）
+                    g.drawString(font, "B", bx - bw / 2 - 1, by - 4,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2 + 1, by - 4,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 5,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 3,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 4,     0xFFFFFFFF);
                 } else {
                     int color = FRUIT_COLORS[(int)f[4]];
                     GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2, color);
