@@ -96,7 +96,13 @@ public class SokobanScreen extends Screen {
         int[] dx = {1, -1, 0, 0};
         int[] dy = {0, 0, 1, -1};
         int pushes = 0;
-        for (int step = 0; step < 300 && pushes < boxCount; step++) {
+        // ★ Bug修复：原版用固定 300 步上限，大关卡（gridSize=14 + boxCount=6）下
+        //   玩家推不完所有箱子，最终被安全处理降为少箱关，玩家感觉"难度没有递增"。
+        //   改为 1500 + boxCount*500 步（最大 ~4500 步），覆盖所有当前关卡配置；
+        //   同时若仍推不完，则按"实际推动的箱子数"动态下调 boxCount 目标点，
+        //   保持"已生成箱子 == 已设置目标点"，不会出现开局即通也不会无解。
+        int maxSteps = 1500 + boxCount * 500;
+        for (int step = 0; step < maxSteps && pushes < boxCount; step++) {
             int dir = rand.nextInt(4);
             int nx = playerX + dx[dir];
             int ny = playerY + dy[dir];
@@ -134,10 +140,12 @@ public class SokobanScreen extends Screen {
 
         // 最终安全处理：如果仍有 '+' 未被推动，转为 '.'（移除未打乱的箱子）
         // 确保不会出现开局即胜利的情况
+        // ★ 同步把 boxCount 调成实际成功推动数,避免"玩家推完原 boxCount 但还有多余目标点"导致无法通关
         for (int y = 1; y < gridSize - 1; y++) {
             for (int x = 1; x < gridSize - 1; x++) {
                 if (grid[y][x] == '+') {
                     grid[y][x] = '.';
+                    boxCount--;
                 }
             }
         }
