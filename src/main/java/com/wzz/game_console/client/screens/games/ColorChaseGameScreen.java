@@ -151,11 +151,24 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         try {
             String[] parts = data.split(";", 2);
             String[] f = parts[0].split(",");
-            p1X = Integer.parseInt(f[0]); p1Y = Integer.parseInt(f[1]); p1Dead = f[2].equals("1");
-            p2X = Integer.parseInt(f[3]); p2Y = Integer.parseInt(f[4]); p2Dead = f[5].equals("1");
-            targetColor = Integer.parseInt(f[6]);
+            // ★ Bug修复：原版无字段数/范围校验,level=-1/targetColor=99999
+            //   可让 CLIENT 状态错乱。补防御:
+            if (f.length < 11) return; // 基础字段数不足
+            int newP1X = Integer.parseInt(f[0]);
+            int newP1Y = Integer.parseInt(f[1]);
+            int newP2X = Integer.parseInt(f[3]);
+            int newP2Y = Integer.parseInt(f[4]);
+            int newTargetColor = Integer.parseInt(f[6]);
+            int newLevel = Integer.parseInt(f[9]);
+            if (newP1X < 0 || newP1X >= GRID_SIZE || newP1Y < 0 || newP1Y >= GRID_SIZE
+                    || newP2X < 0 || newP2X >= GRID_SIZE || newP2Y < 0 || newP2Y >= GRID_SIZE) return;
+            if (newLevel < 1 || newLevel > 99) return;
+            if (newTargetColor < 0 || newTargetColor >= 8) return; // 颜色枚举上界
+            p1X = newP1X; p1Y = newP1Y; p1Dead = f[2].equals("1");
+            p2X = newP2X; p2Y = newP2Y; p2Dead = f[5].equals("1");
+            targetColor = newTargetColor;
             p1Score = Integer.parseInt(f[7]); p2Score = Integer.parseInt(f[8]);
-            level = Integer.parseInt(f[9]);
+            level = newLevel;
             gameOver = f[10].equals("1");
             gameRunning = !gameOver;
             if (gameOver && f.length > 11) winnerText = f[11];
@@ -167,7 +180,11 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
                     for (int y = 0; y < GRID_SIZE && idx < cells.length; y++) {
                         // ★ Bug修复：cells 元素若非数字会抛 NumberFormatException 污染整盘。
                         //   单独 try/catch 该格,坏格用 0 兜底而不是静默吞整盘
-                        try { grid[x][y] = Integer.parseInt(cells[idx++]); }
+                        try {
+                            int c = Integer.parseInt(cells[idx++]);
+                            if (c < 0 || c >= 8) c = 0; // 颜色值也要校验
+                            grid[x][y] = c;
+                        }
                         catch (NumberFormatException nfe) { grid[x][y] = 0; idx++; }
                     }
             }
