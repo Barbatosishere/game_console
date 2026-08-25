@@ -99,8 +99,28 @@ public class ChessSimulationMain {
         }
 
         executor.shutdown();
+        // ★ Bug修复：原版 f.get() 无 try/catch,任一 worker 抛 ExecutionException
+        //   会终止整个仿真循环;且 shutdown 后无 awaitTermination,Pikafish 子进程
+        //   可能未完全关闭就退出 main
+        try {
+            if (!executor.awaitTermination(120, TimeUnit.SECONDS)) {
+                System.err.println("[警告] 仿真 120s 内未完成,强制 shutdownNow");
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException ie) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         for (Future<GameResult> f : futures) {
-            GameResult r = f.get();
+            GameResult r;
+            try {
+                r = f.get();
+            } catch (Exception ex) {
+                crashes.incrementAndGet();
+                int done = completed.incrementAndGet();
+                System.out.printf("  第%2d局: 异常崩溃 %s%n", done, ex.getClass().getSimpleName());
+                continue;
+            }
             switch (r.outcome) {
                 case "RED_WIN"   -> redWins.incrementAndGet();
                 case "BLACK_WIN" -> blackWins.incrementAndGet();
