@@ -154,6 +154,16 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     // ── 游戏逻辑 ──────────────────────────────────────────────
     private void resetGame() {
+        // ★ Bug修复：玩家在 AI 思考中按 N 重开,旧 AI 线程仍持有旧 game 引用,
+        //   写入的 aiPendingMove 可能是新 game 还没准备好的状态,后续落子错乱。
+        //   这里中断旧 AI 线程并清空 pending 状态
+        Thread old = aiWorker;
+        if (old != null) old.interrupt();
+        aiWorker = null;
+        aiThinking = false;
+        aiPendingMove = null;
+        aiComputed = false;
+
         game.reset();
         myTurn    = (lanMode != LAN_CLIENT);
         resultMsg = "";
