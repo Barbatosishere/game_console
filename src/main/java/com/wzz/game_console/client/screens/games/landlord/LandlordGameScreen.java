@@ -165,6 +165,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
                 List<Card> h=new ArrayList<>();
                 game.applyState(data.substring(6),myPlayerIdx,h);
                 if(cardSelected.length!=h.size())cardSelected=new boolean[h.size()];
+                // ★ Bug修复:applyState 后牌数变化,旧 selectedCards 列表残留旧索引,
+                //   玩家点击可能选中错误的牌。同步清空选牌列表
+                selectedCards.clear();
             }
         }catch(Exception e){
             // 远端状态报文防护：畸形数据不导致崩溃
