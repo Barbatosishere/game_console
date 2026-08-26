@@ -258,6 +258,15 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         gameStartY = (this.height - GAME_HEIGHT) / 2;
     }
 
+    @Override
+    public void removed() {
+        // ★ Bug修复：玩家按住 W/A/S/D 退出 ColorChase 切到 GameSelector,
+        //   新 screen 的 keyReleased 因 screen 切换被吞,旧 key 仍被判定为按住。
+        //   在 removed() 清空 heldKeys 防泄漏到其他屏
+        super.removed();
+        heldKeys.clear();
+    }
+
     // ══════════════════════════════════════
     //  初始化
     // ══════════════════════════════════════
