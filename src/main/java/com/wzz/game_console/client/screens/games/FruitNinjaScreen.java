@@ -194,7 +194,10 @@ public class FruitNinjaScreen extends Screen {
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "🍉 分数: " + score, 8, 7, 0xFF4444);
-        String livesStr = "❤".repeat(Math.max(0, lives));
+        // ★ Bug修复：lives 无上限时 "❤".repeat(lives) 字符串爆炸,font.width
+        //   返回极大值,width - width - 8 变成巨大负数,字符串渲染到屏幕外。
+        //   加 20 个上限,屏幕一行足够显示
+        String livesStr = "❤".repeat(Math.max(0, Math.min(lives, 20)));
         g.drawString(font, livesStr, width - font.width(livesStr) - 8, 7, 0xFF4444);
         if (comboCount >= 3) g.drawCenteredString(font, "✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
         GameRenderHelper.drawBottomBar(g, font, width, height, "按住鼠标滑动切水果  ESC 菜单  R 重开");
