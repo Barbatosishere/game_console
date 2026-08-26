@@ -1155,12 +1155,21 @@ public class MCTSGoAI implements GoAI {
         // 候选点排序（吃子优先）
         List<int[]> candidates = new ArrayList<>();
         for (String s : region) {
-            String[] p = s.split(",");
-            int x = Integer.parseInt(p[0]), y = Integer.parseInt(p[1]);
-            if (!isLegalMove(board, x, y, attacker)) continue;
-            int priority = countCaptures(board, x, y, attacker) * 20
-                         + countFriendlyNeighbors(board, x, y, attacker) * 5;
-            candidates.add(new int[]{x, y, priority});
+            // ★ Bug修复：region 里的字符串可能为 "x,"(缺 y)或 ","(空),split 后
+            //   p.length<2 会抛 AIOOBE;NumberFormatException 也可能。
+            //   防御性跳过,AI 线程不应因此崩
+            try {
+                String[] p = s.split(",");
+                if (p.length != 2) continue;
+                int x = Integer.parseInt(p[0]);
+                int y = Integer.parseInt(p[1]);
+                if (!isLegalMove(board, x, y, attacker)) continue;
+                int priority = countCaptures(board, x, y, attacker) * 20
+                             + countFriendlyNeighbors(board, x, y, attacker) * 5;
+                candidates.add(new int[]{x, y, priority});
+            } catch (NumberFormatException nfe) {
+                // 畸形坐标字符串,跳过
+            }
         }
         candidates.sort((a, b) -> b[2] - a[2]);
 
