@@ -407,13 +407,16 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             playColorChangeSound();
 
             int gained = level * 10;
-            if (!p1Dead) p1Score += gained;
-            if (gameMode == GameMode.TWO_PLAYER && !p2Dead) p2Score += gained;
+            // ★ Bug修复：原版分数/level 无限增长,3 小时极限对局后 p1Score
+            //   累加到 Integer.MAX_VALUE 后溢出翻负,UI 立即显示负数。
+            //   加饱和上限(单人 999999,双人各半)+level 上限 999
+            if (!p1Dead) p1Score = Math.min(p1Score + gained, 999_999);
+            if (gameMode == GameMode.TWO_PLAYER && !p2Dead) p2Score = Math.min(p2Score + gained, 999_999);
 
             // 升级
             int combined = (gameMode == GameMode.TWO_PLAYER) ? p1Score + p2Score : p1Score;
             if (combined > 0 && combined % (gameMode == GameMode.TWO_PLAYER ? 80 : 50) == 0) {
-                level++;
+                if (level < 999) level++;
                 colorChangeInterval = Math.max(500, colorChangeInterval - 200);
             }
         }
