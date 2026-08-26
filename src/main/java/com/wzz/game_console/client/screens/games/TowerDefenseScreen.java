@@ -75,8 +75,10 @@ public class TowerDefenseScreen extends Screen {
     
     @Override
     public void init() {
+        // ★ Bug修复：同 WhackAMoleScreen,缩放 init() 重复叠加 6 个按钮
+        this.clearWidgets();
         super.init();
-        
+
         // 塔选择按钮
         this.addRenderableWidget(Button.builder(Component.literal("弓箭塔 (10金币)"), button -> {
             if (coins >= 10) {
