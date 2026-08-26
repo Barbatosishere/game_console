@@ -76,6 +76,9 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
+        //   都会叠加 3 个新按钮,玩家点击可能被最底层旧按钮拦截
+        this.clearWidgets();
         super.init();
         calculateLayout();
         createButtons();
