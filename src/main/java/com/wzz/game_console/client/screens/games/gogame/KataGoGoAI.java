@@ -46,6 +46,11 @@ public class KataGoGoAI implements GoAI {
     private final int timeout;
     private volatile boolean connected = false;
     private final AtomicInteger commandId = new AtomicInteger(0);
+    /** ★ Bug修复：原版每个实例都 addShutdownHook,多次创建引擎会注册多个 hook,
+     *   进程退出时每个 hook 都尝试 process.destroy,前面的空转。改为类级共享 */
+    private static final java.util.Set<KataGoGoAI> LIVE_INSTANCES =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private static volatile boolean SHUTDOWN_HOOK_REGISTERED = false;
 
     /** AI 执棋颜色，默认白棋 */
     private GoPlayer aiColor = GoPlayer.WHITE;
@@ -109,7 +114,16 @@ public class KataGoGoAI implements GoAI {
         this.reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
 
         // 注册关闭钩子
-        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
+        // ★ Bug修复：见 PikafishChessAI 同样处理
+        LIVE_INSTANCES.add(this);
+        if (!SHUTDOWN_HOOK_REGISTERED) {
+            SHUTDOWN_HOOK_REGISTERED = true;
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                for (KataGoGoAI ai : LIVE_INSTANCES) {
+                    try { ai.shutdown(); } catch (Throwable ignored) {}
+                }
+            }));
+        }
 
         // 初始化 GTP 连接
         try {
@@ -340,6 +354,8 @@ public class KataGoGoAI implements GoAI {
 
     @Override
     public void shutdown() {
+        // ★ Bug修复：从共享 Set 移除自身,避免 hook 重复关闭已关闭实例
+        LIVE_INSTANCES.remove(this);
         connected = false;
 
         // 先发送 quit 命令优雅关闭
