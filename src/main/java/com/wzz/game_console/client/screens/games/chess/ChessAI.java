@@ -91,7 +91,12 @@ public interface ChessAI {
                 path = "";
             }
             if (path.isEmpty()) {
-                path = DEFAULT_PIKAFISH_PATH;
+                // ★ Bug修复：原版默认路径硬编码 "E:/皮卡鱼 20260131/pikafish-avx2.exe",
+                //   Mac/Linux/C/D/F 盘用户/无 Pikafish 用户都失败,仅在用户实际有
+                //   该盘符和路径时才能用。改为空时直接回退内置引擎,日志提示配置
+                path = "";
+                logger.info("[中国象棋] Pikafish 路径未配置,使用内置引擎");
+                return new BuiltInChessAI();
             }
             try {
                 PikafishChessAI pikafish = new PikafishChessAI(path);
