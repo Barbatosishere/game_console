@@ -456,10 +456,20 @@ public class PianoTilesGameScreen extends Screen {
                     String noteData = line.substring(5).trim();
                     String[] parts = noteData.split(",");
                     if (parts.length >= 3) {
-                        int lane = Integer.parseInt(parts[0].split(":")[1]);
-                        long timestamp = Long.parseLong(parts[1].split(":")[1]);
-                        int noteType = Integer.parseInt(parts[2].split(":")[1]);
-                        song.notes.add(new Note(lane, timestamp, noteType));
+                        // ★ Bug修复：每个 parts[i] 必须有 ":" 分隔符,缺冒号时
+                        //   split(":")[1] 抛 AIOOBE,谱面一行畸形音符即整曲加载崩溃
+                        try {
+                            String[] kv0 = parts[0].split(":");
+                            String[] kv1 = parts[1].split(":");
+                            String[] kv2 = parts[2].split(":");
+                            if (kv0.length < 2 || kv1.length < 2 || kv2.length < 2) continue;
+                            int lane = Integer.parseInt(kv0[1]);
+                            long timestamp = Long.parseLong(kv1[1]);
+                            int noteType = Integer.parseInt(kv2[1]);
+                            song.notes.add(new Note(lane, timestamp, noteType));
+                        } catch (NumberFormatException | ArrayIndexOutOfBoundsException ex) {
+                            // 跳过畸形音符,继续加载其余谱面
+                        }
                     }
                 }
             }
