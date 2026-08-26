@@ -1,4 +1,6 @@
 {
   "itemGroup.game_console": "Game Console",
-  "item.game_console.game_console": "Game Console"
+  "item.game_console.game_console": "Game Console",
+  "tooltip.game_console.item_flavor": "Games~ Games~ I want to play!~",
+  "tooltip.game_console.item_hint": "Right-click to play a mini-game!"
 }

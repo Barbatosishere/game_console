@@ -1,4 +1,6 @@
 {
   "itemGroup.game_console": "游戏机",
-  "item.game_console.game_console": "游戏机"
+  "item.game_console.game_console": "游戏机",
+  "tooltip.game_console.item_flavor": "游戏~游戏~我想玩游戏~",
+  "tooltip.game_console.item_hint": "右键Play给木~"
 }
