@@ -848,6 +848,11 @@ public class MultiplayerLobbyScreen extends Screen {
         if (state == LobbyState.WAITING) {
             notifyInviteCancelled();
         }
+        // ★ Bug修复：static pendingInvite/inviterName 在玩家切世界/Singleplayer→Multiplayer
+        //   后不被清理,旧邀请若未超时,新服务器邀请可能被旧 sender UUID 误清。
+        //   退出屏时强制清空
+        pendingInvite = null;
+        inviterName = null;
     }
 
     @Override
