@@ -52,7 +52,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     private int     p2X = GRID_SIZE * 3 / 4,   p2Y = GRID_SIZE / 2;
     private boolean p2Dead  = false;
     private int     p2Score = 0;
-    private long    p2LastSafe;
+    private long    p2LastSafe = 0;
 
     // ─────── 共用状态 ───────
     private int     targetColor = 0;
@@ -62,13 +62,13 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     private String  winnerText  = "";
 
     // ─────── 时间 ───────
-    private long lastColorChangeTime;
+    private long lastColorChangeTime = 0;
     private long colorChangeInterval    = 3000;
     private static final long INPUT_COOLDOWN        = 80;
     private static final long DEATH_GRACE_PERIOD    = 2000;
     private static final long GAME_START_PROTECTION = 1200;
     private long p1LastInput = 0, p2LastInput = 0;
-    private long gameStartTime;
+    private long gameStartTime = 0;
 
     // ─────── 长按 ───────
     private final Set<Integer> heldKeys = new HashSet<>();
