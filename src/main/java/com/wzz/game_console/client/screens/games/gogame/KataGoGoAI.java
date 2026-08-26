@@ -85,6 +85,12 @@ public class KataGoGoAI implements GoAI {
         if (!exeFile.exists()) {
             throw new FileNotFoundException("KataGo 可执行文件不存在: " + katagoExePath);
         }
+        // ★ Bug修复：Mac/Linux 文件存在但无执行位时,ProcessBuilder 报 "permission denied"
+        //   错误信息玩家看不懂。提前 canExecute 检查并提示 chmod +x
+        if (!exeFile.canExecute()) {
+            throw new IOException("KataGo 文件无执行权限: " + katagoExePath
+                    + " (Mac/Linux 请运行: chmod +x " + exeFile.getName() + ")");
+        }
 
         // 读取配置
         String modelPath = GameSettings.getString("go", "katagoModel", "");
