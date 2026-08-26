@@ -603,11 +603,11 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             }
             allSettings.put("go", goSettings);
 
-            // 保存
-            java.nio.file.Files.createDirectories(dataDir);
+            // 保存 — 走 ExternalFileManager 原子写(tmp+atomic move),防 JVM 崩溃
+            // 时截断 settings.json 导致玩家全部游戏配置丢失
             com.google.gson.Gson gson = new com.google.gson.GsonBuilder().setPrettyPrinting().create();
             String json = gson.toJson(allSettings);
-            java.nio.file.Files.writeString(settingsPath, json, java.nio.charset.StandardCharsets.UTF_8);
+            com.wzz.game_console.util.ExternalFileManager.writeTextFile("data", "game_settings.json", json);
 
             LOGGER.info("[围棋] AI 设置已保存: engine={}, searchTime={}ms", settingsEngine, settingsSearchTime);
         } catch (Exception e) {
