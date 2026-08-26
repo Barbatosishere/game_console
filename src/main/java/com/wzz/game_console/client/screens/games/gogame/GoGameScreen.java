@@ -591,9 +591,16 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
             // 更新围棋设置
             java.util.Map<String, Object> goSettings = allSettings.getOrDefault("go", new java.util.HashMap<>());
-            goSettings.put("engine", settingsEngine);
+            // ★ Bug修复：settingsEngine/KatagoPath 可能为 null(null 进 GSON 序列化为
+            //   "engine": null,后续 getString 虽 instanceof 兜底不崩,但下游分支
+            //   可能因 null 走错路径。改为只 put 非空字段
+            if (settingsEngine != null && !settingsEngine.isBlank()) {
+                goSettings.put("engine", settingsEngine);
+            }
             goSettings.put("searchTime", settingsSearchTime);
-            goSettings.put("katagoPath", settingsKatagoPath);
+            if (settingsKatagoPath != null && !settingsKatagoPath.isBlank()) {
+                goSettings.put("katagoPath", settingsKatagoPath);
+            }
             allSettings.put("go", goSettings);
 
             // 保存
