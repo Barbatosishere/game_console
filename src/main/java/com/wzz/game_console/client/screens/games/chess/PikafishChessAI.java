@@ -42,6 +42,12 @@ public class PikafishChessAI implements ChessAI {
 
     /** UCI 握手/单步命令超时（秒） */
     private static final int CMD_TIMEOUT_MS = 15_000;
+    /** ★ Bug修复：原版每个实例都 addShutdownHook,跑 100 局仿真 = 100 个 hook,
+     *   进程退出时每个 hook 都尝试 process.destroy,前 99 个空转。改为类级共享
+     *   Set 跟踪活动实例,只注册一次 hook 遍历关闭 */
+    private static final java.util.Set<PikafishChessAI> LIVE_INSTANCES =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private static volatile boolean SHUTDOWN_HOOK_REGISTERED = false;
 
     private final Process process;
     private final BufferedWriter writer;
@@ -75,7 +81,17 @@ public class PikafishChessAI implements ChessAI {
         this.writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         this.reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
 
-        Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
+        // ★ Bug修复：原版每个实例都 addShutdownHook,跑 N 局仿真 = N 个 hook,
+        //   进程退出时 N 次空转 destroy。改为类级共享 LIVE_INSTANCES + 仅一次注册
+        LIVE_INSTANCES.add(this);
+        if (!SHUTDOWN_HOOK_REGISTERED) {
+            SHUTDOWN_HOOK_REGISTERED = true;
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                for (PikafishChessAI ai : LIVE_INSTANCES) {
+                    try { ai.shutdown(); } catch (Throwable ignored) {}
+                }
+            }));
+        }
 
         try {
             initUci(threads);
@@ -180,6 +196,8 @@ public class PikafishChessAI implements ChessAI {
 
     @Override
     public void shutdown() {
+        // ★ Bug修复：从共享 Set 移除自身,避免 hook 重复关闭已关闭实例
+        LIVE_INSTANCES.remove(this);
         connected = false;
         try {
             if (writer != null) { writer.write("quit\n"); writer.flush(); }
