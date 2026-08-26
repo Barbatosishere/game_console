@@ -81,6 +81,9 @@ public class GameSettings {
                 LOGGER.warn("导入设置文件为空: {}", sourcePath);
                 return false;
             }
+            // ★ Bug修复：原版无 null key 防御,GSON 允许外层 key 为 null,
+            //   后续 settings.get(null) 在某些 map 实现下抛 NPE/CCE
+            imported.entrySet().removeIf(e -> e.getKey() == null);
             settings = imported;
             loaded = true;
             // 保存到 data 目录持久化
@@ -105,11 +108,18 @@ public class GameSettings {
                 java.lang.reflect.Type type = new TypeToken<Map<String, Map<String, Object>>>() {}.getType();
                 Map<String, Map<String, Object>> loadedSettings = gson.fromJson(content, type);
                 if (loadedSettings != null) {
+                    // ★ Bug修复：null key 过滤同 importFromFile
+                    loadedSettings.entrySet().removeIf(e -> e.getKey() == null);
                     settings = loadedSettings;
                 }
             }
         } catch (Exception e) {
-            LOGGER.warn("加载游戏设置失败（使用默认值）: {}", e.getMessage());
+            // ★ Bug修复：原版 JSON 损坏仍设 loaded=true,后续 getInt/getString 永不重试
+            //   损坏文件,玩家只能重启游戏。改为解析失败时 loaded=false,
+            //   下次 ensureLoaded() 会再次尝试读取
+            LOGGER.warn("加载游戏设置失败（使用默认值，下次访问会重试）: {}", e.getMessage());
+            loaded = false;
+            return;
         }
         loaded = true;
     }
