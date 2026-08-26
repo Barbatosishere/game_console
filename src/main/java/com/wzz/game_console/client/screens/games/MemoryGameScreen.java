@@ -75,6 +75,8 @@ public class MemoryGameScreen extends Screen {
     
     @Override
     public void init() {
+        // ★ Bug修复：缩放 init() 重复添加 startButton/resetButton
+        this.clearWidgets();
         super.init();
         this.gridStartX = (this.width - GRID_WIDTH) / 2;
         this.gridStartY = (this.height - GRID_HEIGHT) / 2;
