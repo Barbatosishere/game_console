@@ -197,11 +197,19 @@ public class ExternalFileManager {
     public static boolean writeTextFile(String subFolder, String fileName, String content) {
         if (!initialized) init();
         Path file = rootDir.resolve(subFolder).resolve(fileName);
+        // ★ Bug修复：原版 Files.writeString 直接覆盖,若进程写到一半被 kill
+        //   (JVM 崩溃/断电/Alt+F4),game_settings.json 截断成 0 字节,下次启动
+        //   全部设置丢失。改为"写到 .tmp + 原子 rename"模式,与 NeuralEvaluator.save
+        //   一致,失败时 .tmp 不影响原文件
+        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
         try {
             Files.createDirectories(file.getParent());
-            Files.writeString(file, content, StandardCharsets.UTF_8);
+            Files.writeString(temp, content, StandardCharsets.UTF_8);
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             return true;
         } catch (IOException e) {
+            // 清理半成品 .tmp
+            try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
             LOGGER.error("写入文件失败: {}", file, e);
             return false;
         }
@@ -217,11 +225,15 @@ public class ExternalFileManager {
     public static boolean writeBytes(String subFolder, String fileName, byte[] data) {
         if (!initialized) init();
         Path file = rootDir.resolve(subFolder).resolve(fileName);
+        // ★ Bug修复：同 writeTextFile,二进制写也走原子模式
+        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
         try {
             Files.createDirectories(file.getParent());
-            Files.write(file, data);
+            Files.write(temp, data);
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             return true;
         } catch (IOException e) {
+            try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
             LOGGER.error("写入文件失败: {}", file, e);
             return false;
         }
