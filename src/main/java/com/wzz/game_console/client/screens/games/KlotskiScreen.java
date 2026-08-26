@@ -90,7 +90,11 @@ public class KlotskiScreen extends Screen {
         tileSize = Math.max(36, Math.min(64, max));
         bx = (width  - BW * tileSize) / 2;
         by = (height - BH * tileSize) / 2;
-        if (!won && pieces.isEmpty()) loadLevel(currentLevel);
+        // ★ Bug修复：原版 !won && pieces.isEmpty() 条件过宽,玩家赢了之后
+        //   pieces 被清空 + won=true,缩放窗口后 !won=false 不进,但代码意图是
+        //   防止"已进行中重置";若逻辑分支(赢后 pieces 残留)不同则可能重置进度。
+        //   改用 board == null 作为首次进入判断,board 是 loadLevel 唯一来源
+        if (board == null) loadLevel(currentLevel);
     }
 
     // ══════════════════════════════════════════════════
