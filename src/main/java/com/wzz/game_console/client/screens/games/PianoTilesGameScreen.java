@@ -1006,7 +1006,9 @@ public class PianoTilesGameScreen extends Screen {
         if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown && !showExitConfirm) {
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastClickTime > 100) { // 每100ms最多触发一次
-                double mouseX = minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth() / minecraft.getWindow().getScreenWidth();
+                // ★ Bug修复：原版 (int)mouseX 直接截断,GUI scale=4 下玩家鼠标
+                //   跨整像素边界时丢精度偏 1-3 像素,点击车道错一格。加 0.5 四舍五入
+                double mouseX = minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth() / minecraft.getWindow().getScreenWidth() + 0.5;
 
                 if (mouseX >= gameStartX && mouseX < gameStartX + gameAreaWidth) {
                     int lane = (int) ((mouseX - gameStartX) / laneWidth);
@@ -1491,8 +1493,11 @@ public class PianoTilesGameScreen extends Screen {
         try {
             Frame frame = new Frame();
             frame.setAlwaysOnTop(true);
+            // ★ Bug修复：同 GameSelectorScreen,多显示器 setLocationRelativeTo 防落屏外
+            frame.setLocationRelativeTo(null);
             FileDialog dialog = new FileDialog(frame, "选择导入的谱面文件 (.pts)", FileDialog.LOAD);
             dialog.setFile("*.pts");
+            dialog.setLocationRelativeTo(frame);
             dialog.setVisible(true);
             String filePath = dialog.getFile();
             String dirPath = dialog.getDirectory();
