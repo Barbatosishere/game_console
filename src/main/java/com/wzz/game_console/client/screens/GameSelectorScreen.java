@@ -269,8 +269,13 @@ public class GameSelectorScreen extends Screen {
         try {
             Frame frame = new Frame();
             frame.setAlwaysOnTop(true);
+            // ★ Bug修复：原版不设位置,Windows 多显示器/扩展屏(主屏 x<0 或 y<0)
+            //   时 FileDialog 会落在不可见区域,玩家看不见但模态阻塞,只能 Alt+F4。
+            //   setLocationRelativeTo(null) 强制居中到主屏可视区
+            frame.setLocationRelativeTo(null);
             FileDialog dialog = new FileDialog(frame, "选择游戏设置文件 (.json)", FileDialog.LOAD);
             dialog.setFile("*.json");
+            dialog.setLocationRelativeTo(frame);
             dialog.setVisible(true);
             String filePath = dialog.getFile();
             String dirPath = dialog.getDirectory();
