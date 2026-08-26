@@ -27,9 +27,13 @@ import java.util.Map;
 public class GameSettings {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("GameConsole");
-    private static final String SETTINGS_FILE = "game_settings.json";
+    public static final String SETTINGS_FILE = "game_settings.json";
 
-    private static Map<String, Map<String, Object>> settings = new HashMap<>();
+    // ★ Bug修复：原版 HashMap,读侧(IceFireGameScreen render 读 getConfiguredGames)
+    //   与写侧(GoGameScreen.saveSettings 整体 swap)无并发保护,会导致 CME
+    //   或读到 partial 状态。改为 ConcurrentHashMap(非 final,允许整体替换)
+    private static java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> settings
+            = new java.util.concurrent.ConcurrentHashMap<>();
     private static boolean loaded = false;
 
     /** 获取某游戏的一个整型设置项 */
@@ -84,7 +88,11 @@ public class GameSettings {
             // ★ Bug修复：原版无 null key 防御,GSON 允许外层 key 为 null,
             //   后续 settings.get(null) 在某些 map 实现下抛 NPE/CCE
             imported.entrySet().removeIf(e -> e.getKey() == null);
-            settings = imported;
+            // 用 ConcurrentHashMap 包装保障并发读安全
+            java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> newMap =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            newMap.putAll(imported);
+            settings = newMap;
             loaded = true;
             // 保存到 data 目录持久化
             saveToDataDir();
@@ -110,7 +118,10 @@ public class GameSettings {
                 if (loadedSettings != null) {
                     // ★ Bug修复：null key 过滤同 importFromFile
                     loadedSettings.entrySet().removeIf(e -> e.getKey() == null);
-                    settings = loadedSettings;
+                    java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> newMap =
+                            new java.util.concurrent.ConcurrentHashMap<>();
+                    newMap.putAll(loadedSettings);
+                    settings = newMap;
                 }
             }
         } catch (Exception e) {
@@ -148,6 +159,6 @@ public class GameSettings {
     /** 获取某游戏的所有设置项 */
     public static Map<String, Object> getGameSettings(String gameId) {
         ensureLoaded();
-        return settings.getOrDefault(gameId, new HashMap<>());
+        return settings.getOrDefault(gameId, new java.util.concurrent.ConcurrentHashMap<>());
     }
 }
