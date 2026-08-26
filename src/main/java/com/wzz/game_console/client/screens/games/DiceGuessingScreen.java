@@ -68,6 +68,9 @@ public class DiceGuessingScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：缩放 init() 重复添加 exitButton/resetButton
+        this.clearWidgets();
+        super.init();
         int centerX = this.width / 2;
         int centerY = this.height / 2;
 
