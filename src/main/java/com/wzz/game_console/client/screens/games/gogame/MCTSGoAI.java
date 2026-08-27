@@ -602,16 +602,25 @@ public class MCTSGoAI implements GoAI {
         int[] move = new int[]{moveFull[0], moveFull[1]};
 
         // 首次展开时：一次前向同时拿到策略先验与价值，避免后续 simulate 重复计算
-        if (node.policyCache == null) {
+        // ★ Bug修复：policyCache 判空与后续赋值+剪枝此前不是同一次同步操作，两个 worker 并发
+        // 展开同一节点时都可能通过判空各自算一次前向，并各自对 untriedMoves 做一次 Top-K 剪枝——
+        // 第二次剪枝会在第一次已剪过的列表上再剪一遍，导致候选走法被非确定性地过度收窄。
+        // 改为用 forwardInFlight 在锁内原子"占位"，只有抢到占位的线程才计算前向与剪枝。
+        boolean needsForward;
+        synchronized (node) {
+            needsForward = node.policyCache == null && !node.forwardInFlight;
+            if (needsForward) node.forwardInFlight = true;
+        }
+        if (needsForward) {
             NeuralEvaluator.ForwardResult fr = neuralEvaluator.forward(
                     neuralEvaluator.buildInputPlanes(node.board, node.player, node.move),
                     neuralEvaluator.extractAuxFeatures(node.board, node.player));
-            node.policyCache = fr.policy;
-            node.valueCache = fr.value;
-            node.valueCached = true;
 
             // 策略头引导展开顺序 + Top-K 剪枝（必须在 synchronized 内操作 untriedMoves）
             synchronized (node) {
+                node.policyCache = fr.policy;
+                node.valueCache = fr.value;
+                node.valueCached = true;
                 if (node.untriedMoves.size() > 1) {
                     double[] policy = node.policyCache;
                     node.untriedMoves.sort((a, b) -> {
@@ -635,6 +644,7 @@ public class MCTSGoAI implements GoAI {
                         node.untriedMoves = kept;
                     }
                 }
+                node.forwardInFlight = false;
             }
         }
 
@@ -2029,6 +2039,9 @@ public class MCTSGoAI implements GoAI {
         double valueCache = 0;
         /** valueCache 是否已填充（volatile 保证写入顺序，防止双检锁失效） */
         volatile boolean valueCached = false;
+        /** 是否已有线程正在为该节点做首次前向，配合 policyCache 判空实现原子占位，
+         * 防止并发展开同一节点时被重复 Top-K 剪枝（见 expand() 注释） */
+        volatile boolean forwardInFlight = false;
 
         MCTSNode(GoPlayer[][] board, GoPlayer player, MCTSNode parent, int[] move, List<int[]> untriedMoves) {
             this.board = board;

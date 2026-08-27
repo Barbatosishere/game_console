@@ -899,6 +899,12 @@ public class NeuralEvaluator {
             double scale = 1.0 / batchSize;
             double norm = gradientNorm(gSubW, gSubB, gBlockW, gBlockB, gTopW, gTopB,
                                        gPolicyW, gPolicyB, gValueW1, gValueB1, gValueW2, gValueB2);
+            if (!Double.isFinite(norm)) {
+                // ★ Bug修复：NaN 与裁剪阈值比较恒为 false，NaN 梯度会绕过裁剪直接写入全部权重且无法回滚。
+                // 范数非有限时直接跳过本次权重更新，保留上一步的有效权重。
+                System.err.println("[NeuralEvaluator] 检测到非有限梯度范数(" + norm + ")，跳过本次权重更新");
+                return totalLoss / batchSize;
+            }
             if (norm > gradientClip) scale *= gradientClip / norm;
 
             // 更新 all weights（momentum > 0 时使用动量更新）
