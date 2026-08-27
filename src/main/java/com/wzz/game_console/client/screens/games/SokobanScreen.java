@@ -157,6 +157,10 @@ public class SokobanScreen extends Screen {
         if (levelNum < 1) levelNum = 1;
         currentLevel = levelNum;
         generateLevel(currentLevel);
+        // ★ Bug修复：generateLevel 会随关卡数增大 levelWidth/levelHeight，
+        // 但 TILE_SIZE/startX/startY 及重置/下一关按钮的尺寸位置只在首次 init() 时算过一次；
+        // 跳关/重置若不重新 init()，画面会继续沿用旧关卡的几何参数导致错位甚至棋盘溢出可视区。
+        init();
     }
 
     @Override
