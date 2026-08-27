@@ -441,7 +441,7 @@ public class SudokuGameScreen extends Screen {
                 return true;
             }
             if (click == 2) {
-                showExitConfirm = false;
+                resumeFromExitConfirm();
                 return true;
             }
             return true;
@@ -461,11 +461,25 @@ public class SudokuGameScreen extends Screen {
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移 startTime，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移 startTime，避免"用时"把弹窗停留时长也算进去 */
+    private void resumeFromExitConfirm() {
+        startTime += System.currentTimeMillis() - pauseStartTime;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             // 修复：通关后 ESC 也走确认弹窗，与其他游戏保持一致（原先会绕过弹窗直接退出）
-            showExitConfirm = !showExitConfirm;
+            if (showExitConfirm) {
+                resumeFromExitConfirm();
+            } else {
+                pauseStartTime = System.currentTimeMillis();
+                showExitConfirm = true;
+            }
             return true;
         }
         // 弹窗打开期间拦截所有游戏按键输入（仅 ESC 除外）

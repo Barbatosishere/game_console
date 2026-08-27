@@ -168,7 +168,7 @@ public class PuzzleGameScreen extends Screen {
         if (showExitConfirm) {
             int click = GameRenderHelper.getExitConfirmClick((int)mouseX, (int)mouseY, width, height);
             if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
-            if (click == 2) { showExitConfirm = false; return true; }
+            if (click == 2) { resumeFromExitConfirm(); return true; }
             return true;
         }
         boolean b = super.mouseClicked(mouseX, mouseY, button);
@@ -314,11 +314,21 @@ public class PuzzleGameScreen extends Screen {
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(graphics, font, width, height, mouseX, mouseY);
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移 startTime，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移 startTime，避免"用时"把弹窗停留时长也算进去 */
+    private void resumeFromExitConfirm() {
+        startTime += System.currentTimeMillis() - pauseStartTime;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
             if (gameWon) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            pauseStartTime = System.currentTimeMillis();
             showExitConfirm = true; return true;
         }
         if (showExitConfirm) return true;

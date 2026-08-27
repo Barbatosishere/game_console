@@ -792,6 +792,17 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     // ══════════════════════════════════════
     //  键盘事件
     // ══════════════════════════════════════
+    /** 弹窗打开时间戳：关闭时据此平移 p1LastSafe/p2LastSafe，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移死亡宽限计时基准，防止弹窗停留≥2s后一关闭就被误判死亡 */
+    private void resumeFromExitConfirm() {
+        long pausedMs = System.currentTimeMillis() - pauseStartTime;
+        p1LastSafe += pausedMs;
+        p2LastSafe += pausedMs;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
         // ★ Bug修复：弹窗期按 R(82) 无法关闭弹窗只能按 ESC,违反常见约定
@@ -800,13 +811,14 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         if (key != GLFW.GLFW_KEY_ESCAPE && key != GLFW.GLFW_KEY_R && showExitConfirm) return true;
 
         if (key == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
             if (gameMode == GameMode.MENU || lanMode != LAN_NONE) {
                 sendLeaveGameOnce(); // 联机退出时通知对端，避免对方无限等待
                 Minecraft.getInstance().setScreen(new GameSelectorScreen());
             } else if (gameOver) {
                 gameMode = GameMode.MENU; gameRunning = false;
             } else {
+                pauseStartTime = System.currentTimeMillis();
                 showExitConfirm = true;
                 heldKeys.clear(); // 清空已按住的键，防止弹窗前按住的WASD继续移动
             }
@@ -815,7 +827,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
         // R 键优先处理:弹窗期关闭弹窗,游戏期重开。R 不入 heldKeys
         if (key == GLFW.GLFW_KEY_R) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
             if (lanMode == LAN_CLIENT) return true;
             if (gameMode != GameMode.MENU) {
                 initGame(gameMode == GameMode.TWO_PLAYER);
@@ -842,7 +854,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
         if (gameMode == GameMode.MENU) {
             int cx = this.width/2, cy = this.height/2;
             if (mx>=cx-155&&mx<=cx-15&&my>=cy-54&&my<=cy-28) { initGame(false); return true; }

@@ -171,7 +171,7 @@ public class MemoryGameScreen extends Screen {
     
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
         if (gameState == GameState.WAITING_INPUT) {
             int clickedCell = getCellAtPosition((int)mouseX, (int)mouseY);
             if (clickedCell != -1) {
@@ -318,17 +318,21 @@ public class MemoryGameScreen extends Screen {
         }
     }
     
+    /** 关闭弹窗恢复游戏：平移所有定时基准，补偿暂停期间流逝的墙钟时间 */
+    private void resumeFromExitConfirm() {
+        long pausedMs = System.currentTimeMillis() - pauseStartTime;
+        if (nextSequenceItemTime > 0) nextSequenceItemTime += pausedMs;
+        if (nextRoundTime > 0) nextRoundTime += pausedMs;
+        if (highlightStartTime > 0) highlightStartTime += pausedMs;
+        if (lastSequenceTime > 0) lastSequenceTime += pausedMs;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == 256) {
             if (showExitConfirm) {
-                // 关闭弹窗：平移所有定时基准，补偿暂停期间流逝的墙钟时间
-                long pausedMs = System.currentTimeMillis() - pauseStartTime;
-                if (nextSequenceItemTime > 0) nextSequenceItemTime += pausedMs;
-                if (nextRoundTime > 0) nextRoundTime += pausedMs;
-                if (highlightStartTime > 0) highlightStartTime += pausedMs;
-                if (lastSequenceTime > 0) lastSequenceTime += pausedMs;
-                showExitConfirm = false;
+                resumeFromExitConfirm();
             } else {
                 pauseStartTime = System.currentTimeMillis();
                 showExitConfirm = true;

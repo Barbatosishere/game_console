@@ -924,6 +924,10 @@ public class JumpGameScreen extends Screen {
         if (key==GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (gameOver) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            // ★ Bug修复：弹窗打开时立即清空蓄力状态（不触发跳跃），否则真实鼠标/空格松开事件
+            // 会被弹窗期间的输入拦截吞掉，charging 悬空为 true，关闭弹窗后 tick() 继续默默蓄力，
+            // 玩家下次点击松开时会在毫无预期的情况下打出满蓄力跳跃
+            charging = false; charge = 0; predictWX = null; predictWZ = null; predictWY = null;
             showExitConfirm = true; return true;
         }
         if (showExitConfirm) return true;

@@ -227,7 +227,7 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
         if (gameState == GameState.PLAYING && button == 0) {
             // 检查是否点击了地鼠
             for (MoleHole hole : holes) {
@@ -425,12 +425,23 @@ public class WhackAMoleScreen extends Screen {
         return "多多练习！";
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移地鼠/游戏计时，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    private void resumeFromExitConfirm() {
+        long pausedMs = System.currentTimeMillis() - pauseStartTime;
+        gameStartTime += pausedMs;
+        lastMoleSpawnTime += pausedMs;
+        for (MoleHole hole : holes) hole.offsetTime(pausedMs);
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; }
+            if (showExitConfirm) { resumeFromExitConfirm(); }
             else if (gameState == GameState.MENU) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); } // 菜单态ESC直接退出，与其他游戏一致
-            else { showExitConfirm = true; }
+            else { pauseStartTime = System.currentTimeMillis(); showExitConfirm = true; }
             return true;
         }
         // ★ 用户体验：R 在 GAME_OVER 或 MENU 时直接重开,符合常见约定
@@ -509,6 +520,12 @@ public class WhackAMoleScreen extends Screen {
                 }
             }
             return false;
+        }
+
+        /** ESC 弹窗关闭时补偿暂停期间流逝的墙钟时间，防止暂停期间即将超时的地鼠一恢复就被秒判漏打 */
+        public void offsetTime(long pausedMs) {
+            moleSpawnTime += pausedMs;
+            hitTime += pausedMs;
         }
 
         public void hitMole() {
