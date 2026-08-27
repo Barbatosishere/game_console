@@ -253,8 +253,11 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         if(showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
     }
 
+    /** 等待动画 "." 帧表(预计算,避免每帧 repeat 分配) */
+    private static final String[] WAIT_DOTS = { "", ".", "..", "..." };
+
     private void renderWait(GuiGraphics g){
-        String dots=".".repeat((int)(tickCount/10%4));
+        String dots=WAIT_DOTS[(int)(tickCount/10%WAIT_DOTS.length)];
         g.drawCenteredString(font,"等待游戏开始"+dots,width/2,height/2,0x44AAFF);
     }
 

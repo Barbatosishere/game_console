@@ -83,6 +83,8 @@ public class MultiplayerLobbyScreen extends Screen {
     private static String inviterName = null;
     private static long pendingInviteArrivalMs = 0;                       // 邀请到达时间戳
     private static final long INVITE_TIMEOUT_MS = 60_000;                 // 邀请 60 秒过期
+    /** 等待动画 "." 帧表(预计算,避免 renderWaiting 每帧 repeat 分配) */
+    private static final String[] WAIT_DOTS = { "", ".", "..", "..." };
     // 说明：主机不在大厅时到达的 ACCEPT_INVITE 不再缓存回放。
     // 原因：回放发生在新建的大厅实例上，邀请上下文（invitedPlayer、selectedLanPeers 等）
     // 无法随包可靠恢复，回放会被来源校验全部拒绝（形同虚设），且误恢复上下文反而
@@ -583,8 +585,8 @@ public class MultiplayerLobbyScreen extends Screen {
 
     private void renderWaiting(GuiGraphics g) {
         int cx = width / 2, cy = height / 2;
-        // 动画点
-        String dots = ".".repeat((int)(tickCount / 10 % 4));
+        // 动画点（查表,帧表为类级预计算常量）
+        String dots = WAIT_DOTS[(int)(tickCount / 10 % WAIT_DOTS.length)];
         g.drawCenteredString(font, waitingMessage + dots, cx, cy - 10, 0xFFFF44);
         GameRenderHelper.drawSecondaryButton(g, font, "取消", cx - 40, cy + 10, 80, 18, 0, 0);
     }

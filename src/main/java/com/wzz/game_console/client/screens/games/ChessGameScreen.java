@@ -568,16 +568,18 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     // AI思考动画指示器
+    /** 旋转点动画的 4 种帧字符串(启动时预计算,避免每帧 new StringBuilder+拼接) */
+    private static final String[] AI_DOTS_FRAMES = {
+            "●○○○", "○●○○", "○○●○", "○○○●"
+    };
+
     void drawAiStatus(GuiGraphics g){
         if(!aiThinking.get()||gameOver) return;
         int bw=(COLS-1)*CELL, hm=CELL/2;
         int topY=by-hm-28;
-        // 旋转点动画
-        int dots=4;
-        int animI=(int)((tick/5)%dots);
-        StringBuilder sb=new StringBuilder("  ");
-        for(int i=0;i<dots;i++) sb.append(i==animI?"●":"○");
-        g.drawString(font,sb.toString(),bx+bw-60,topY+8,0xFF88AAFF);
+        // 旋转点动画（预计算帧表,查表即用）
+        int animI=(int)((tick/5)%AI_DOTS_FRAMES.length);
+        g.drawString(font,"  "+AI_DOTS_FRAMES[animI],bx+bw-60,topY+8,0xFF88AAFF);
         // 思考进度条（模拟）
         int barW=80;
         float prog=(float)((tick-aiStartTick)%40)/40f;

@@ -31,6 +31,15 @@ public class FruitNinjaScreen extends Screen {
     private final Random random = new Random();
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final List<GameRenderHelper.FloatingText> floats = new ArrayList<>();
+    /** 生命值 HUD 帧表:索引 = 心数(0~20),启动时预计算避免每帧 repeat 分配 */
+    private static final String[] HEARTS_FRAMES = new String[21];
+    static {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < HEARTS_FRAMES.length; i++) {
+            HEARTS_FRAMES[i] = sb.toString();
+            sb.append("❤");
+        }
+    }
 
     public FruitNinjaScreen() { super(Component.literal("水果忍者")); }
 
@@ -196,8 +205,9 @@ public class FruitNinjaScreen extends Screen {
         g.drawString(font, "🍉 分数: " + score, 8, 7, 0xFF4444);
         // ★ Bug修复：lives 无上限时 "❤".repeat(lives) 字符串爆炸,font.width
         //   返回极大值,width - width - 8 变成巨大负数,字符串渲染到屏幕外。
-        //   加 20 个上限,屏幕一行足够显示
-        String livesStr = "❤".repeat(Math.max(0, Math.min(lives, 20)));
+        //   ★ 性能：改为启动时预计算 0~20 帧表,render 每帧只做一次数组索引,
+        //     不再每帧 repeat 分配新字符串
+        String livesStr = HEARTS_FRAMES[Math.max(0, Math.min(lives, HEARTS_FRAMES.length - 1))];
         g.drawString(font, livesStr, width - font.width(livesStr) - 8, 7, 0xFF4444);
         if (comboCount >= 3) g.drawCenteredString(font, "✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
         GameRenderHelper.drawBottomBar(g, font, width, height, "按住鼠标滑动切水果  ESC 菜单  R 重开");
