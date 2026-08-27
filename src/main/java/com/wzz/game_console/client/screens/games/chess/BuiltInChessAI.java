@@ -93,12 +93,17 @@ public class BuiltInChessAI implements ChessAI {
                     depthBest = null;
                     for (int[] mv : rootMoves) {
                         TrieMove undo = makeMove(board, mv);
-                        if (!ChessRules.inCheckOnBoard(board, redTurn)) {
-                            int score = -negamax(board, !redTurn, depth - 1, -beta, -alpha, 1, 0);
-                            if (score > bestScore) { bestScore = score; depthBest = mv; }
-                            if (score > alpha) alpha = score;
+                        // 根层同样要 finally 回滚：negamax 超时抛 SearchAbort 时若不回滚，
+                        // 最后试探的走子会永久残留在调用方棋盘上（吃将/丢子的根源）
+                        try {
+                            if (!ChessRules.inCheckOnBoard(board, redTurn)) {
+                                int score = -negamax(board, !redTurn, depth - 1, -beta, -alpha, 1, 0);
+                                if (score > bestScore) { bestScore = score; depthBest = mv; }
+                                if (score > alpha) alpha = score;
+                            }
+                        } finally {
+                            unmakeMove(board, mv, undo);
                         }
-                        unmakeMove(board, mv, undo);
                         if (shouldStop()) throw new SearchAbort();
                     }
                     if (depthBest == null) break;
@@ -179,29 +184,33 @@ public class BuiltInChessAI implements ChessAI {
             }
 
             TrieMove undo = makeMove(b, mv);
-            if (!ChessRules.inCheckOnBoard(b, red)) {
-                boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
-                int ext = (givesCheck && checkExt < 2) ? 1 : 0; // 将军延伸上限 2 层
-                int baseDepth = depth - 1 + ext; // 可能为 0 或负
-                int newCheckExt = checkExt + ext;
-                int searchDepth = baseDepth - lmrR; // 可能为 0 或负 → 走 quiescence
+            // 递归搜索可抛 SearchAbort：必须 finally 回滚，否则异常冒泡后棋盘残留脏子
+            try {
+                if (!ChessRules.inCheckOnBoard(b, red)) {
+                    boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
+                    int ext = (givesCheck && checkExt < 2) ? 1 : 0; // 将军延伸上限 2 层
+                    int baseDepth = depth - 1 + ext; // 可能为 0 或负
+                    int newCheckExt = checkExt + ext;
+                    int searchDepth = baseDepth - lmrR; // 可能为 0 或负 → 走 quiescence
 
-                int score;
-                if (searchDepth <= 0) {
-                    score = -quiescence(b, !red, -(alpha+1), -alpha, ply + 1, newCheckExt);
-                } else {
-                    score = -negamax(b, !red, searchDepth, -beta, -alpha, ply + 1, newCheckExt);
-                }
-                // LMR 找到好走法后需用完整深度重搜确认
-                if (lmrR > 0 && score > alpha) {
-                    int fullDepth = Math.max(1, baseDepth); // 重搜至少 depth=1
-                    score = -negamax(b, !red, fullDepth, -beta, -alpha, ply + 1, newCheckExt);
-                }
+                    int score;
+                    if (searchDepth <= 0) {
+                        score = -quiescence(b, !red, -(alpha+1), -alpha, ply + 1, newCheckExt);
+                    } else {
+                        score = -negamax(b, !red, searchDepth, -beta, -alpha, ply + 1, newCheckExt);
+                    }
+                    // LMR 找到好走法后需用完整深度重搜确认
+                    if (lmrR > 0 && score > alpha) {
+                        int fullDepth = Math.max(1, baseDepth); // 重搜至少 depth=1
+                        score = -negamax(b, !red, fullDepth, -beta, -alpha, ply + 1, newCheckExt);
+                    }
 
-                if (score > bestScore) { bestScore = score; bestMove = encodeMove(mv); }
-                if (score > alpha) alpha = score;
+                    if (score > bestScore) { bestScore = score; bestMove = encodeMove(mv); }
+                    if (score > alpha) alpha = score;
+                }
+            } finally {
+                unmakeMove(b, mv, undo);
             }
-            unmakeMove(b, mv, undo);
             if (alpha >= beta) {
                 if (!capture && bestMove != 0) updateKillerAndHistory(b, mv, ply, depth);
                 break;
@@ -234,20 +243,22 @@ public class BuiltInChessAI implements ChessAI {
         for (int[] mv : moves) {
             boolean capture = b[mv[2]][mv[3]] != 0;
             TrieMove undo = makeMove(b, mv);
-            if (!ChessRules.inCheckOnBoard(b, red)) {
-                boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
-                int ext = (givesCheck && checkExt < 2) ? 1 : 0;
-                int newDepth = 0 + ext;
-                int newCheckExt = checkExt + ext;
-                int score = -quiescence(b, !red, -beta, -alpha, ply + 1, newCheckExt);
-                if (score > alpha) alpha = score;
-                if (alpha >= beta) {
-                    unmakeMove(b, mv, undo);
-                    if (!capture) { int code = encodeMove(mv); history[code] += 4; }
-                    break;
+            // 递归可抛 SearchAbort：finally 保证回滚
+            try {
+                if (!ChessRules.inCheckOnBoard(b, red)) {
+                    boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
+                    int ext = (givesCheck && checkExt < 2) ? 1 : 0;
+                    int newCheckExt = checkExt + ext;
+                    int score = -quiescence(b, !red, -beta, -alpha, ply + 1, newCheckExt);
+                    if (score > alpha) alpha = score;
                 }
+            } finally {
+                unmakeMove(b, mv, undo);
             }
-            unmakeMove(b, mv, undo);
+            if (alpha >= beta) {
+                if (!capture) { int code = encodeMove(mv); history[code] += 4; }
+                break;
+            }
         }
         return alpha;
     }
