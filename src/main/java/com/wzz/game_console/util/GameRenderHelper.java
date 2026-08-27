@@ -168,13 +168,21 @@ public class GameRenderHelper {
     /** 完整的游戏结束面板 */
     public static void drawGameOverPanel(GuiGraphics g, Font font, int cx, int cy,
                                           boolean win, String title, String subtitle) {
-        int pw = 280, ph = 140;
-        drawPanel(g, cx - pw/2, cy - ph/2, pw, ph, BG_PANEL,
-                win ? 0xFF44FF44 : 0xFFFF4444);
+        drawGameOverPanel(g, font, cx, cy, win ? 1 : -1, title, subtitle);
+    }
 
-        drawShadowedCenteredText(g, font, title, cx, cy - 40, win ? TEXT_GREEN : TEXT_RED, 1);
+    /** 完整的游戏结束面板（支持平局中性配色）。outcome：1=胜利(绿) -1=失败(红) 0=平局(中性金) */
+    public static void drawGameOverPanel(GuiGraphics g, Font font, int cx, int cy,
+                                          int outcome, String title, String subtitle) {
+        int pw = 280, ph = 140;
+        int borderColor = outcome > 0 ? 0xFF44FF44 : outcome < 0 ? 0xFFFF4444 : 0xFFFFCC44;
+        int titleColor = outcome > 0 ? TEXT_GREEN : outcome < 0 ? TEXT_RED : 0xFFFFCC44;
+        int subColor = outcome > 0 ? 0xCCFFCC : outcome < 0 ? 0xFFAAAA : 0xFFF0DDAA;
+        drawPanel(g, cx - pw/2, cy - ph/2, pw, ph, BG_PANEL, borderColor);
+
+        drawShadowedCenteredText(g, font, title, cx, cy - 40, titleColor, 1);
         if (subtitle != null && !subtitle.isEmpty()) {
-            g.drawCenteredString(font, subtitle, cx, cy - 20, win ? 0xCCFFCC : 0xFFAAAA);
+            g.drawCenteredString(font, subtitle, cx, cy - 20, subColor);
         }
     }
 

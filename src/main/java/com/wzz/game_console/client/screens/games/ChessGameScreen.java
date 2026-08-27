@@ -145,11 +145,18 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         if ("RESTART".equals(data)) { resetBoard(); return; }
         try {
             String[] p = data.split(",");
+            if (p.length < 4) { LOGGER.warn("[中国象棋] 联机走法字段不足: {}", data); return; }
             int fc = Integer.parseInt(p[0]), fr = Integer.parseInt(p[1]);
             int tc = Integer.parseInt(p[2]), tr = Integer.parseInt(p[3]);
+            if (fc < 0 || fc >= COLS || fr < 0 || fr >= ROWS || tc < 0 || tc >= COLS || tr < 0 || tr >= ROWS) {
+                LOGGER.warn("[中国象棋] 联机走法坐标越界: {}", data); return;
+            }
             receivingRemoteMove = true;
-            doMove(fc, fr, tc, tr);
-            receivingRemoteMove = false;
+            try {
+                doMove(fc, fr, tc, tr);
+            } finally {
+                receivingRemoteMove = false;
+            }
         } catch (Exception ignored) {}
     }
 

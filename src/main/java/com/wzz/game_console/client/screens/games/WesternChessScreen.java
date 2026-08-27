@@ -119,14 +119,33 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         super.onClose();
     }
 
+    /** AI 后台线程完成时用于判断棋局是否已退出，避免线程结束回调在已离开的对局上落子/播放音效 */
+    private volatile boolean disposed = false;
+
+    @Override
+    public void removed() {
+        disposed = true;
+        super.removed();
+    }
+
     @Override public void onRemoteMove(String data) {
         if ("RESTART".equals(data)) { initBoard(); return; }
         try { String[] p = data.split(",");
+            if (p.length < 5) { LOGGER.warn("[国际象棋] 联机走法字段不足: {}", data); return; }
             int[] m = new int[]{Integer.parseInt(p[0]),Integer.parseInt(p[1]),Integer.parseInt(p[2]),Integer.parseInt(p[3]),Integer.parseInt(p[4])};
+            if (m[0]<0||m[0]>=8||m[1]<0||m[1]>=8||m[2]<0||m[2]>=8||m[3]<0||m[3]>=8) {
+                LOGGER.warn("[国际象棋] 联机走法坐标越界: {}", data); return;
+            }
+            if (m[4]<SP_NORMAL||m[4]>SP_PROMOTE) {
+                LOGGER.warn("[国际象棋] 联机走法类型非法: {}", data); return;
+            }
             if (m[4] == SP_PROMOTE) {
                 // LAN 升变走法：报文携带最终升变子类型（第6字段，缺省兼容旧报文默认升后），
                 // 接收方不弹升变面板、直接按报文完成升变，避免升变子由对手选择导致双端棋盘分叉
                 int promoType = p.length > 5 ? Integer.parseInt(p[5]) : WQ;
+                if (promoType < WN || promoType > WQ) {
+                    LOGGER.warn("[国际象棋] 联机升变类型非法: {}", data); return;
+                }
                 boolean w = board[m[0]][m[1]] > 0;
                 int[][] ep = new int[1][]; boolean[] cf = {wCK,wCQ,bCK,bCQ};
                 m[4] = SP_NORMAL;
@@ -168,6 +187,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             new Thread(() -> {
                 int[] best = findBestMove(false); // false = 为黑方找最优
                 Minecraft.getInstance().execute(() -> {
+                    if (disposed) return; // 玩家已退出对局，丢弃迟到的 AI 结果
                     if (best != null) applyMove(best, false);
                     aiThinking = false;
                     checkEnd();
@@ -566,8 +586,13 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         // 先 flush 之前的棋盘/棋子批次，避免 z-fighting 与文字穿透
         g.flush();
         GameRenderHelper.drawGameOverOverlay(g,width,height);
-        int cx2=width/2, cy2=height/2; boolean win=resultMsg.contains("白方")&&vsAI;
-        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,win,resultMsg.replace("§c","").replace("§a","").replace("§e",""),vsAI?(win?"恭喜战胜AI！":"再接再厉！"):"精彩对局！");
+        int cx2=width/2, cy2=height/2;
+        boolean draw = resultMsg.contains("僵局");
+        boolean win = !draw && resultMsg.contains("白方") && vsAI;
+        // 和棋不应套用败局配色/文案（此前 vsAI 模式下和棋会被误判为失败）
+        int outcome = (vsAI && draw) ? 0 : (win ? 1 : -1);
+        String subtitle = !vsAI ? "精彩对局！" : draw ? "势均力敌，和棋！" : (win ? "恭喜战胜AI！" : "再接再厉！");
+        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,outcome,resultMsg.replace("§c","").replace("§a","").replace("§e",""),subtitle);
         GameRenderHelper.drawPrimaryButton(g,font,"R - 再来一局",cx2-70,cy2+22,140,18,mx,my);
         GameRenderHelper.drawSecondaryButton(g,font,"ESC - 返回",cx2-70,cy2+44,140,18,mx,my);
     }
