@@ -162,8 +162,7 @@ public final class GoAdversarialTrainer {
         MCTSGoAI ourAI = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, model);
         ourAI.setRandomSeed(seed ^ 0x12345678);
 
-        // 创建 KataGo
-        KataGoGoAI kataGo = null;
+        Process process = null;
         try {
             String katagoPath = config.katagoPath;
             if (katagoPath.isEmpty()) {
@@ -200,7 +199,7 @@ public final class GoAdversarialTrainer {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(exeFile.getParentFile()); // 设置工作目录为 KataGo 目录（找到 DLL 和调优缓存）
             pb.redirectErrorStream(true);
-            Process process = pb.start();
+            process = pb.start();
             java.io.BufferedWriter writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(process.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
             java.io.BufferedReader reader = new java.io.BufferedReader(
@@ -283,12 +282,11 @@ public final class GoAdversarialTrainer {
                     s.valueTarget = clamp((s.player == GoPlayer.BLACK ? margin : -margin) / 100.0);
                 }
 
-                // 关闭 KataGo
+                // 关闭 KataGo（优先优雅退出，外层 finally 兜底强杀，覆盖所有异常路径）
                 sendGTP(writer, reader, "quit");
                 writer.close();
                 reader.close();
                 process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
-                process.destroyForcibly();
 
                 return new GameResult(samples, ourWin);
             } finally {
@@ -297,8 +295,14 @@ public final class GoAdversarialTrainer {
             }
         } catch (Exception e) {
             System.err.println("[Adversarial] 对局异常: " + e.getMessage());
-            if (kataGo != null) try { kataGo.shutdown(); } catch (Exception ignored) {}
             return new GameResult(samples, false);
+        } finally {
+            // ★ Bug修复：此前 kataGo 变量从未真正赋值，异常路径下真正持有子进程的 process
+            // 完全没被清理——GTP 通信异常/超时会让 KataGo 残留为僵尸进程占用显存。
+            // 无论正常返回还是任意异常路径，这里保证子进程被强杀。
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
     }
 
