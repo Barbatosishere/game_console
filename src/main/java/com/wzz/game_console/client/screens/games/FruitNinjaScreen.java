@@ -175,8 +175,10 @@ public class FruitNinjaScreen extends Screen {
                     g.fill(bx - 2, by - half + 4, bx + 2, by + half - 4, 0xFFFF2200);
                     g.fill(bx - half + 4, by - 2, bx + half - 4, by + 2, 0xFFFF2200);
                     // 引线（顶部，更明显）
-                    g.fill(bx - 1, by - half - 8, 3, 8, 0xFFFF6600);
-                    g.fill(bx - 4, by - half - 10, 9, 3, 0xFFFF6600);
+                    // ★ Bug修复：fill(x1,y1,x2,y2,color) 后两参数是绝对坐标，此前误传成宽高字面量，
+                    //   炸弹坐标较大时矩形会从屏幕左上角一路拉伸过来，改为 x1+宽/y1+高 换算出正确的 x2/y2
+                    g.fill(bx - 1, by - half - 8, bx + 2, by - half, 0xFFFF6600);
+                    g.fill(bx - 4, by - half - 10, bx + 5, by - half - 7, 0xFFFF6600);
                     // 警告圈（红色闪烁轮廓）
                     int bombPulse = (int)(System.currentTimeMillis() / 300) % 2 == 0 ? 0xFFFF2200 : 0xFF880000;
                     GameRenderHelper.drawCircle(g, bx, by, half + 3, bombPulse);
