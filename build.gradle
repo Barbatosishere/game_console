@@ -38,6 +38,8 @@ tasks.withType(Javadoc).configureEach {
 }
 tasks.withType(ProcessResources).configureEach {
     filteringCharset = 'UTF-8'
+    // ★ 优化：排除任何残留的空目录(如 data/game_console/recipes/)和占位文件
+    exclude '**/recipes/**', '**/.gitignore', '**/.gitkeep'
 }
 
 neoForge {
