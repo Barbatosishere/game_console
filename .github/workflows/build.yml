@@ -1,0 +1,40 @@
+name: Build & Verify
+
+on:
+  push:
+    branches: [ main, gpu-accel ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 本项目 gradlew wrapper 损坏,CI 上用官方 Gradle 8.14 直接跑
+      - name: Compile
+        run: gradle compileJava --no-daemon --stacktrace
+        env:
+          GRADLE_VERSION: 8.14
+
+      - name: Package jar
+        run: gradle jar --no-daemon
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameConsole-jar
+          path: build/libs/*.jar
+          retention-days: 14
