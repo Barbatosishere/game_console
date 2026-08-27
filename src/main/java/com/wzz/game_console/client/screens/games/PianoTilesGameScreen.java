@@ -1490,8 +1490,11 @@ public class PianoTilesGameScreen extends Screen {
 
     /** 打开文件对话框导入 .pts 谱面 */
     private void importSongFromDialog() {
+        // ★ Bug修复：frame 此前只在成功路径末尾 dispose，异常路径（权限/IO错误等）会跳过
+        // dispose 直接进 catch，AWT Frame 泄漏。frame 提到 try 外，finally 里无条件 dispose。
+        Frame frame = null;
         try {
-            Frame frame = new Frame();
+            frame = new Frame();
             frame.setAlwaysOnTop(true);
             // ★ Bug修复：同 GameSelectorScreen,多显示器 setLocationRelativeTo 防落屏外
             frame.setLocationRelativeTo(null);
@@ -1501,7 +1504,6 @@ public class PianoTilesGameScreen extends Screen {
             dialog.setVisible(true);
             String filePath = dialog.getFile();
             String dirPath = dialog.getDirectory();
-            frame.dispose();
 
             if (filePath == null || dirPath == null) return;
 
@@ -1522,6 +1524,8 @@ public class PianoTilesGameScreen extends Screen {
             }
         } catch (Exception e) {
             System.err.println("导入谱面失败: " + e.getMessage());
+        } finally {
+            if (frame != null) frame.dispose();
         }
     }
 
