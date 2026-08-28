@@ -18,10 +18,10 @@ base {
     archivesName = mod_id
 }
 
-// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta3.jar
+// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta5.jar
 var loaderName = "NeoForge"
 tasks.named('jar') {
-    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta3"
+    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta5"
     archiveVersion = ''
     archiveClassifier = ''
 }
@@ -140,11 +140,12 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
 
     // ─── OpenCL GPU 加速 ───
-    implementation 'net.java.dev.jna:jna:5.14.0'
-    // ★ jarJar 打包：jna 必须随 mod jar 发布（Jar-in-Jar），否则玩家环境缺少该依赖时
-    //   GPU 路径直接 NoClassDefFoundError（代码层已 catch Throwable 兜底回退 CPU，
-    //   但不打包则 GPU 加速在发布版中形同虚设）。区间格式为 JarJar 元数据所需。
-    jarJar 'net.java.dev.jna:jna:[5.14.0,6)'
+    // JNA 通过 compileOnly 引入（编译期可见），运行时由玩家环境的 classloader 解析
+    // —— 不再 jarJar 嵌入。原因：Java 22 模块系统下，自嵌入的 jna jar 会形成
+    //   "com.sun.jna" 自动模块，与其他 mod（如 Iris/Sodium 或 NeoForge 间接带）
+    //   提供的 jna 形成两个同名模块冲突，触发 ResolutionException。
+    // 缺 JNA 时由 OpenCLBackend.canExecute() 检测并 catch(Throwable) 回退到 CPU。
+    compileOnly 'net.java.dev.jna:jna:5.14.0'
 }
 
 test {
