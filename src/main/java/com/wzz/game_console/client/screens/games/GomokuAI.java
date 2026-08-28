@@ -169,11 +169,21 @@ public class GomokuAI {
             type = AI;
         }
         boolean isAI = type == AI;
-
-        // 局面缓存
+        // 记录入口窗口：搜索结束按此分类缓存边界（fail-hard 返回值是界不是精确分）
+        int origAlpha = alpha, origBeta = beta;
         SituationCache cache = this.situationCacheMap.get(this.hashcode);
         if (cache != null && cache.depth >= depth) {
-            return cache.score;
+            if (cache.flag == SituationCache.FLAG_EXACT) {
+                return cache.score;
+            }
+            if (cache.flag == SituationCache.FLAG_LOWER && cache.score > alpha) {
+                alpha = cache.score;
+            } else if (cache.flag == SituationCache.FLAG_UPPER && cache.score < beta) {
+                beta = cache.score;
+            }
+            if (alpha >= beta) {
+                return cache.score;
+            }
         }
 
         if (depth == 0) {
@@ -231,7 +241,11 @@ public class GomokuAI {
         }
 
         int score = isAI ? alpha : beta;
-        this.situationCacheMap.put(this.hashcode, new SituationCache(score, depth));
+        // fail-hard α-β：返回值按初始窗口分类为精确分/上界/下界，供缓存正确复用
+        int flag = score <= origAlpha ? SituationCache.FLAG_UPPER
+                : score >= origBeta ? SituationCache.FLAG_LOWER
+                : SituationCache.FLAG_EXACT;
+        this.situationCacheMap.put(this.hashcode, new SituationCache(score, depth, flag));
         return score;
     }
 
@@ -654,15 +668,19 @@ public class GomokuAI {
 
     private void appendChess(StringBuilder sb, Point point, int direction, int offset) {
         int chess = relativePoint(point, direction, offset);
-        if (chess > -1) {
-            if (point.type == WHITE) {
-                // 白棋方做颜色反转，复用黑棋棋型表
-                if (chess > 0) {
-                    chess = 3 - chess;
-                }
-            }
-            sb.append(chess);
+        if (chess == -1) {
+            // 越界按对方棋子处理：直接跳过会让串变短，边缘棋型被系统性错判
+            //（如边缘活四被当冲四）。'2' 在黑白两种视角反转后都表示对方棋子
+            sb.append('2');
+            return;
         }
+        if (point.type == WHITE) {
+            // 白棋方做颜色反转，复用黑棋棋型表
+            if (chess > 0) {
+                chess = 3 - chess;
+            }
+        }
+        sb.append(chess);
     }
 
     /**
@@ -709,23 +727,37 @@ public class GomokuAI {
     }
 
     private static class SituationCache {
+        /** minimax 边界标志：精确分 */
+        static final int FLAG_EXACT = 0;
+        /** minimax 边界标志：真实分 ≥ score（fail-high 下界） */
+        static final int FLAG_LOWER = 1;
+        /** minimax 边界标志：真实分 ≤ score（fail-low 上界） */
+        static final int FLAG_UPPER = 2;
         /** VCX 缓存的点位 */
         private final Point point;
         /** 缓存的分数 */
         private final int score;
         /** 缓存的搜索深度 */
         private final int depth;
+        /** minimax 边界标志（VCX 条目恒为 EXACT，不参与边界判定） */
+        private final int flag;
 
         SituationCache(int score, int depth) {
+            this(score, depth, FLAG_EXACT);
+        }
+
+        SituationCache(int score, int depth, int flag) {
             this.point = null;
             this.score = score;
             this.depth = depth;
+            this.flag = flag;
         }
 
         SituationCache(Point point, int depth) {
             this.point = point;
             this.score = 0;
             this.depth = depth;
+            this.flag = FLAG_EXACT;
         }
     }
 

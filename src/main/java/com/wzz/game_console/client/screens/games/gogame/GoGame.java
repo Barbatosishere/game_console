@@ -157,7 +157,9 @@ public class GoGame implements AutoCloseable {
      * 当前局面的 Zobrist 哈希（供 MCTS 根节点初始化 super-ko 检查用）。
      */
     public long getCurrentHash() {
-        return boardHash();
+        synchronized (stateLock) {
+            return boardHash();
+        }
     }
 
     /**
@@ -187,6 +189,10 @@ public class GoGame implements AutoCloseable {
             return false;
         }
 
+        // 落子→提子→劫争/自杀判定→记录→换手整段持锁：后台 AI 线程经
+        // getBoardCopy/getCurrentHash 读棋盘时不得看到"已落子未提完"的撕裂快照，
+        // positionHistory 的 contains/add 也不再有 TOCTOU 窗口
+        synchronized (stateLock) {
         // 备份当前局面：自杀或劫争判定失败时整体回滚
         GoPlayer[][] backup = copyBoardInternal();
 
@@ -248,17 +254,16 @@ public class GoGame implements AutoCloseable {
             blackCaptured += capturedStones;
         }
 
-        // 记录移动与局面（记录当前玩家——落子者，与 pass() 一致）
-        synchronized (stateLock) {
-            moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
-            positionHistory.add(newHash);
-        }
+        // 记录移动与局面（记录当前玩家——落子者，与 pass() 一致；外层已持 stateLock）
+        moveHistory.add(new GoMove(x, y, currentPlayer, capturedStones));
+        positionHistory.add(newHash);
         consecutivePasses = 0;
 
         // 切换玩家
         switchPlayer();
 
         return true;
+        }
     }
 
     /**
@@ -413,29 +418,27 @@ public class GoGame implements AutoCloseable {
         return false;
     }
     
-    // Getter方法
+    // Getter方法（读棋盘/终态字段，统一持 stateLock 防撕裂读）
     public GoPlayer getStone(int x, int y) {
         if (!isValidPosition(x, y)) return GoPlayer.NONE;
-        return board[x][y];
+        synchronized (stateLock) {
+            return board[x][y];
+        }
     }
-    
-    public GoPlayer getCurrentPlayer() { return currentPlayer; }
-    public boolean isGameOver() { return gameOver; }
-    public int getBlackCaptured() { return blackCaptured; }
-    public int getWhiteCaptured() { return whiteCaptured; }
+
+    public GoPlayer getCurrentPlayer() { synchronized (stateLock) { return currentPlayer; } }
+    public boolean isGameOver() { synchronized (stateLock) { return gameOver; } }
+    public int getBlackCaptured() { synchronized (stateLock) { return blackCaptured; } }
+    public int getWhiteCaptured() { synchronized (stateLock) { return whiteCaptured; } }
     public boolean isAiMode() { return aiMode; }
     public void setAiMode(boolean aiMode) { this.aiMode = aiMode; }
     public int getBoardSize() { return BOARD_SIZE; }
 
     // 获取棋盘副本供AI使用
     public GoPlayer[][] getBoardCopy() {
-        GoPlayer[][] copy = new GoPlayer[BOARD_SIZE][BOARD_SIZE];
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            for (int y = 0; y < BOARD_SIZE; y++) {
-                copy[x][y] = board[x][y];
-            }
+        synchronized (stateLock) {
+            return copyBoardInternal();
         }
-        return copy;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -448,6 +451,13 @@ public class GoGame implements AutoCloseable {
      * @return [黑领地, 白领地]
      */
     public int[] calcTerritory() {
+        synchronized (stateLock) {
+            return calcTerritoryInternal();
+        }
+    }
+
+    /** 无锁内部实现：调用方须已持 stateLock（棋盘活子数 + 围空 flood-fill）。 */
+    private int[] calcTerritoryInternal() {
         boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
         int blackT = 0, whiteT = 0;
 
@@ -497,9 +507,12 @@ public class GoGame implements AutoCloseable {
      * @return 该方的得分
      */
     public double getScore(GoPlayer player) {
-        int[] territory = calcTerritory();
+        int[] territory;
+        synchronized (stateLock) {
+            territory = calcTerritoryInternal();
+        }
         double score = (player == GoPlayer.BLACK ? territory[0] : territory[1]);
-        if (player == GoPlayer.WHITE) score += 3.75; // 贴目
+        if (player == GoPlayer.WHITE) score += 7.5; // 贴目：中国规则贴 3¾ 子 = 7.5 点（黑须 > 184.25/361）
         return score;
     }
 

@@ -95,7 +95,19 @@ public class TicTacToeGame {
         if (board[1][1] == Player.NONE) {
             return new int[]{1, 1};
         }
-        
+
+        // 3.5 双角叉防御：对手占据对角双角且己方只有中心时必须走边。
+        // 原固定角落顺序会取第三个角，对手落最后一个对角形成行/列双威胁，必败
+        if ((board[0][0] == opponent && board[2][2] == opponent)
+                || (board[0][2] == opponent && board[2][0] == opponent)) {
+            int[][] edges = {{0, 1}, {1, 0}, {1, 2}, {2, 1}};
+            for (int[] edge : edges) {
+                if (board[edge[0]][edge[1]] == Player.NONE) {
+                    return edge;
+                }
+            }
+        }
+
         // 4. 选择角落
         int[][] corners = {{0, 0}, {0, 2}, {2, 0}, {2, 2}};
         for (int[] corner : corners) {
