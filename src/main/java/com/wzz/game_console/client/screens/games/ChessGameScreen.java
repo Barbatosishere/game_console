@@ -83,6 +83,10 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     private volatile ChessAI chessAI = null;
     /** AI 思考结果异常中止（如引擎无合法走法），防止 tick 死循环重启 */
     boolean aiStalled = false;
+    /** AI 局代号：重开/悔棋时递增，迟到的 AI 结果落地前比对作废（参照 WesternChessScreen.boardGen） */
+    private volatile int aiGen = 0;
+    /** aiPendingMove 对应的局代号（-1=无），tick 落地前与最新 aiGen 比对，保证旧结果绝不落地 */
+    private volatile int aiPendingGen = -1;
 
     // ══════════════════════════════════════════════
     //  走法生成方向常量（避免 AI 搜索中每次调用重复创建数组）
@@ -138,6 +142,18 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         if (chessAI != null) chessAI.shutdown();
         sendLeaveGameOnce();
         super.onClose();
+    }
+
+    /**
+     * ★ 修复进程泄漏：ESC 被拦截后所有退出路径走 Minecraft.setScreen(...)，
+     * 只触发 removed()（本类原先未重写，onClose 不可达），在此释放 Pikafish
+     * 等外部引擎进程。联机模式为纯双人，chessAI 不会被创建，判空即可。
+     */
+    @Override
+    public void removed() {
+        if (aiThread != null) aiThread.interrupt();
+        if (chessAI != null) { chessAI.shutdown(); chessAI = null; }
+        super.removed();
     }
 
     @Override
@@ -209,9 +225,11 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         lastFC=lastFR=lastTC=lastTR=-1;
         undoCount=0; Arrays.fill(undoBoards,null);
         aiPendingMove=null;
+        aiGen++; // 重开：旧 AI 线程的迟到结果一律作废
         if (aiThread!=null) aiThread.interrupt();
         aiThinking.set(false);
         aiStalled = false;
+        checkNoLegalMovesEnd(); // 兜底判负检测（初始局面恒有合法走法，此处为统一入口）
     }
 
     // ══════════════════════════════════════════════
@@ -222,6 +240,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         tick++;
         if (gameMode != GameMode.PVA || gameOver || redTurn) return;
         // AI的轮到了
+        if (aiPendingMove != null && aiPendingGen != aiGen) aiPendingMove = null; // 过期AI结果（悔棋/重开竞态），落地前丢弃
         if (aiPendingMove != null && !aiThinking.get()) {
             // 应用AI计算好的落子
             aiStalled = false; // 恢复引擎状态
@@ -238,6 +257,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     void launchAI() {
         aiThinking.set(true);
         aiStartTick = tick;
+        final int gen = aiGen; // 捕获局代号，线程写回前比对，旧对局的结果不落地
         int[][] snapshot = deepCopy(board);
         // 难度 → AI 搜索时间/深度（内置引擎与外挂引擎都尊重时间预算）
         long budgetMs = switch (difficulty) {
@@ -252,6 +272,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         };
         aiThread = new Thread(() -> {
             try {
+                if (Thread.currentThread().isInterrupted()) return; // 已重开/退出，不再创建引擎
                 if (chessAI == null) {
                     chessAI = ChessAI.create(); // 懒加载（首次AI落子才建引擎）
                 }
@@ -259,12 +280,14 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
                 chessAI.setMaxDepth(maxDepth);
                 int[] best = chessAI.getBestMove(snapshot, false); // false=黑方走
                 if (Thread.currentThread().isInterrupted()) return; // 新对局已开始，丢弃旧结果
+                if (gen != aiGen) return; // 局代号过期（悔棋/重开），旧结果绝不落地
                 if (best == null) {
                     // ★ Bug修复：引擎无合法走法时必须设 aiStalled=true,否则
                     //   tick 下一帧再次启动 launchAI 死循环,玩家看到"思考中…"永不落子
                     aiStalled = true;
                     aiErrorMessage = "AI 引擎无合法走法";
                 }
+                aiPendingGen = gen;
                 aiPendingMove = best;
                 if (best != null) aiErrorMessage = null; // 成功才清错
             } catch (Throwable t) {
@@ -309,9 +332,8 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             if (showExitConfirm) drawExitConfirm(g, mx, my);
             // 再次flush确保弹窗内容在super.render的widget批处理之前完成提交
             if (gameOver || showExitConfirm) g.flush();
-            // 兜底：当前回合方无合法走法时立即判负结算（被将死/困毙），
-            // 避免玩家卡死无任何提示（正常路径由 doMove 检测，此处兼顾悔棋等边缘情况）
-            checkNoLegalMovesEnd();
+            // 注：无合法走法判负检测已从每帧 render 移至 doMove/undoMove/resetBoard 末尾，
+            // 避免 render 每帧做 isCheckmate 全盘扫描的性能开销
         }
         super.render(g, mx, my, pt);
     }
@@ -776,6 +798,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             else
                 resultMsg=(redTurn?"红":"黑")+"方无子可动，"+(redTurn?"黑":"红")+"方胜！";
         }
+        checkNoLegalMovesEnd(); // 走子后兜底：当前回合方无合法走法时立即结算
     }
 
     void undoMove(){
@@ -791,9 +814,11 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         gameOver=false; resultMsg="";
         lastFC=lastFR=lastTC=lastTR=-1;
         aiPendingMove=null;
+        aiGen++; // 悔棋：旧 AI 线程的迟到结果一律作废
         if(aiThread!=null) aiThread.interrupt();
         aiThinking.set(false);
         aiStalled = false;
+        checkNoLegalMovesEnd(); // 悔棋后兜底：当前回合方无合法走法时立即结算
     }
 
     // ══════════════════════════════════════════════

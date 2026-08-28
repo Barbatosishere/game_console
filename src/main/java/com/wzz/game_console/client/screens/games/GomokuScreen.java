@@ -97,7 +97,21 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public void onRemoteMove(String data) {
-        if ("RESTART".equals(data)) {
+        if (data != null && data.startsWith("RESTART")) {
+            // ★ 修复 LAN 棋盘尺寸不同步死锁：HOST 报文携带棋盘尺寸 "RESTART:<boardSize>"，
+            //   接收端先同步 boardSize 再重开，否则两端各画各的棋盘、走法互相越界。
+            //   兼容无后缀旧报文 "RESTART"：按默认 15 处理；解析 try-catch 防坏包
+            try {
+                if (data.contains(":")) {
+                    int size = Integer.parseInt(data.substring(data.indexOf(':') + 1).trim());
+                    this.boardSize = Math.max(9, Math.min(19, size)); // 钳制到合法范围 9-19
+                } else {
+                    this.boardSize = 15;
+                }
+            } catch (NumberFormatException e) {
+                LOGGER.warn("[五子棋] RESTART 报文棋盘尺寸非法: {}", data);
+                this.boardSize = 15;
+            }
             this.startGame();
         } else {
             try {
@@ -298,7 +312,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
                 this.startGame();
                 if (this.lanMode == 1) {
-                    this.sendMove("RESTART");
+                    this.sendMove("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                 }
 
                 return true;
@@ -355,7 +369,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 if (this.lanMode != 2) {
                     this.startGame();
                     if (this.lanMode == 1) {
-                        this.sendMove("RESTART");
+                        this.sendMove("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                     }
                 }
                 return true;

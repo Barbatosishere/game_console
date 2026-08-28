@@ -63,6 +63,12 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     private int[] epTarget = null;
     private int[] lastFrom=null, lastTo=null;
     private String resultMsg = "";
+    /** 对局结果：1=白胜 -1=黑胜 0=和（renderOver 据此渲染胜方样式，避免按 vsAI 误判） */
+    private int resultOutcome = 0;
+    /** 50回合规则半回合计数：兵动/吃子清零，其余 +1 */
+    private int halfmoveClock = 0;
+    /** 局面 key 历史（棋盘内容+行棋方+易位权+ep），用于三次重复和棋判定 */
+    private final List<String> positionKeys = new ArrayList<>();
     private long tickN = 0;
     private int cellSize, bx, by;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
@@ -159,6 +165,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
                 inCheck=kingInCheck(board,whiteTurn);
                 if (Minecraft.getInstance().player!=null)
                     Minecraft.getInstance().player.playSound(SoundEvents.WOOD_PLACE,0.5f,1.2f);
+                halfmoveClock=0; // 升变属兵动，50回合计数清零
                 checkEnd(); // 升变完成后再判定终局（修正原时机错误）
                 return;
             }
@@ -177,6 +184,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         wCK=wCQ=bCK=bCQ=true; epTarget=null; lastFrom=lastTo=null;
         resultMsg=""; particles.clear(); aiThinking=false; inCheck=false;
         promoPending=false; pendingLanPromote=null; state=S.PLAYING;
+        resultOutcome=0; halfmoveClock=0; positionKeys.clear(); // 50回合/重复局面计数随新局清零
         boardGen++; // AI 局代号：重开/重连后旧 AI 线程的迟到结果一律作废
     }
 
@@ -294,10 +302,15 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (Math.abs(p)==6) { if(w){cf[0]=false;cf[1]=false;}else{cf[2]=false;cf[3]=false;} }
             if (fr==7&&fc==7) cf[0]=false; if (fr==7&&fc==0) cf[1]=false;
             if (fr==0&&fc==7) cf[2]=false; if (fr==0&&fc==0) cf[3]=false;
+            // 落点为角格 → 对方车被吃（或己方车经王车易位移动），相应易位权同步清除
+            if (tr==7&&tc==7) cf[0]=false; if (tr==7&&tc==0) cf[1]=false;
+            if (tr==0&&tc==7) cf[2]=false; if (tr==0&&tc==0) cf[3]=false;
         }
     }
     private void applyMove(int[] m, boolean sound) {
         boolean w = board[m[0]][m[1]]>0;
+        // 50回合规则计数：兵动/吃子清零，其余 +1（须在 applyOn 改变棋盘前判定）
+        if (Math.abs(board[m[0]][m[1]])==1 || board[m[2]][m[3]]!=E || m[4]==SP_EN_PASSANT) halfmoveClock=0; else halfmoveClock++;
         int[][] ep = new int[1][]; boolean[] cf = {wCK,wCQ,bCK,bCQ};
         if (board[m[2]][m[3]]!=E || m[4]==SP_EN_PASSANT)
             GameRenderHelper.spawnParticles(particles, bx+m[3]*cellSize+cellSize/2, by+m[2]*cellSize+cellSize/2, 8, 0xFF6644);
@@ -331,11 +344,37 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     }
     private void checkEnd() {
         if (state!=S.PLAYING) return;
+        // 每次走子完成后入档当前局面 key（含 checkEnd 的所有调用路径：玩家/AI/联机/升变完成）
+        positionKeys.add(positionKey());
+        if (halfmoveClock >= 100) {
+            state=S.OVER; resultOutcome=0; resultMsg="50回合规则和棋";
+            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
+            return;
+        }
+        String lastKey = positionKeys.get(positionKeys.size()-1);
+        int rep = 0;
+        for (String k : positionKeys) if (k.equals(lastKey)) rep++;
+        if (rep >= 3) {
+            state=S.OVER; resultOutcome=0; resultMsg="三次重复和棋";
+            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
+            return;
+        }
         if (legalMoves(board,whiteTurn).isEmpty()) {
             state=S.OVER;
+            resultOutcome = kingInCheck(board,whiteTurn) ? (whiteTurn?-1:1) : 0; // whiteTurn=被将死一方
             resultMsg = kingInCheck(board,whiteTurn) ? (whiteTurn?"黑方胜利！将死":"白方胜利！将死") : "僵局！平局";
             if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
         }
+    }
+
+    /** 构造局面 key：棋盘内容 + 行棋方 + 四个易位权 + ep 目标格（三次重复和棋判定用） */
+    private String positionKey() {
+        StringBuilder sb = new StringBuilder(96);
+        sb.append(whiteTurn?'w':'b')
+          .append('|').append(wCK?'1':'0').append(wCQ?'1':'0').append(bCK?'1':'0').append(bCQ?'1':'0')
+          .append('|').append(epTarget==null?"-":epTarget[0]+","+epTarget[1]);
+        for (int r=0;r<8;r++) for (int c=0;c<8;c++) sb.append('|').append(board[r][c]);
+        return sb.toString();
     }
 
     // ══════════════ 辅助检测 ══════════════
@@ -440,7 +479,11 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         if (state==S.OVER) {
             int cx2=width/2, cy2=height/2;
-            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) { initBoard(); return true; }
+            // 与 R 键重开逻辑保持一致：LAN 下 CLIENT 无权重开，HOST 重开并广播 RESTART，非联机直接重开
+            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) {
+                if (lanMode!=LAN_CLIENT) { initBoard(); if (lanMode==LAN_HOST) sendMove("RESTART"); }
+                return true;
+            }
             if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+44&&my<=cy2+62) { sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             return super.mouseClicked(mx,my,btn);
         }
@@ -592,10 +635,10 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         g.flush();
         GameRenderHelper.drawGameOverOverlay(g,width,height);
         int cx2=width/2, cy2=height/2;
-        boolean draw = resultMsg.contains("僵局");
-        boolean win = !draw && resultMsg.contains("白方") && vsAI;
-        // 和棋不应套用败局配色/文案（此前 vsAI 模式下和棋会被误判为失败）
-        int outcome = (vsAI && draw) ? 0 : (win ? 1 : -1);
+        boolean draw = resultOutcome == 0;
+        boolean win = resultOutcome == 1; // 白方胜（vsAI 时玩家执白，即"玩家胜"）
+        // 本地双人/联机也按 checkEnd 记录的实际胜方渲染，不再被 vsAI 误判为失败样式
+        int outcome = draw ? 0 : (win ? 1 : -1);
         String subtitle = !vsAI ? "精彩对局！" : draw ? "势均力敌，和棋！" : (win ? "恭喜战胜AI！" : "再接再厉！");
         GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,outcome,resultMsg.replace("§c","").replace("§a","").replace("§e",""),subtitle);
         GameRenderHelper.drawPrimaryButton(g,font,"R - 再来一局",cx2-70,cy2+22,140,18,mx,my);
