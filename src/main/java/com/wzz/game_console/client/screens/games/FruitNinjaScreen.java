@@ -52,8 +52,11 @@ public class FruitNinjaScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        floats.removeIf(f -> { f.update(); return !f.isAlive(); });
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：浮字推进原在状态守卫之前执行，暂停/菜单期间仍会飘走耗尽，移到守卫之后
+        floats.removeIf(f -> { f.update(); return !f.isAlive(); });
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
 
         spawnTimer++;
         if (spawnTimer >= Math.max(8, 25 - score / 5)) {
@@ -199,12 +202,13 @@ public class FruitNinjaScreen extends Screen {
                 }
             }
         }
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         for (GameRenderHelper.FloatingText ft : floats) ft.render(g, font);
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "🍉 分数: " + score, 8, 7, 0xFF4444);
+        // ★ 修复：🍉 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
+        g.drawString(font, "分数: " + score, 8, 7, 0xFF4444);
         // ★ Bug修复：lives 无上限时 "❤".repeat(lives) 字符串爆炸,font.width
         //   返回极大值,width - width - 8 变成巨大负数,字符串渲染到屏幕外。
         //   ★ 性能：改为启动时预计算 0~20 帧表,render 每帧只做一次数组索引,

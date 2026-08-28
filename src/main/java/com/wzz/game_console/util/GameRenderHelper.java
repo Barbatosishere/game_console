@@ -256,13 +256,18 @@ public class GameRenderHelper {
                         (x + y) % 2 == 0 ? color1 : color2);
     }
 
-    /** 绘制方块带3D效果 */
+    /** 绘制边长 s 的正方形方块带3D效果 */
     public static void drawBlock3D(GuiGraphics g, int x, int y, int s, int color) {
-        g.fill(x, y, x + s, y + s, color);
-        g.fill(x, y, x + s, y + 1, brighten(color, 1.3f));
-        g.fill(x, y, x + 1, y + s, brighten(color, 1.15f));
-        g.fill(x, y + s - 1, x + s, y + s, darken(color, 0.6f));
-        g.fill(x + s - 1, y, x + s, y + s, darken(color, 0.7f));
+        drawBlock3D(g, x, y, s, s, color);
+    }
+
+    /** 绘制 w×h 矩形方块带3D效果（非正方形碰撞盒用它，避免把宽当边长画成正方形） */
+    public static void drawBlock3D(GuiGraphics g, int x, int y, int w, int h, int color) {
+        g.fill(x, y, x + w, y + h, color);
+        g.fill(x, y, x + w, y + 1, brighten(color, 1.3f));
+        g.fill(x, y, x + 1, y + h, brighten(color, 1.15f));
+        g.fill(x, y + h - 1, x + w, y + h, darken(color, 0.6f));
+        g.fill(x + w - 1, y, x + w, y + h, darken(color, 0.7f));
     }
 
     /** 绘制网格线 */
@@ -357,11 +362,26 @@ public class GameRenderHelper {
         }
     }
 
-    /** 更新和渲染粒子 */
-    public static void tickAndRenderParticles(GuiGraphics g, List<Particle> particles) {
+    /** 仅推进粒子（应从 tick() 调用，固定 20次/秒；暂停时不调用即冻结，不再随渲染帧率变化） */
+    public static void tickParticles(List<Particle> particles) {
         particles.removeIf(p -> !p.alive);
         for (Particle p : particles) {
             p.update();
+        }
+    }
+
+    /** 仅渲染粒子（应从 render() 调用，不再推进物理；顺带清理已死粒子） */
+    public static void renderParticles(GuiGraphics g, List<Particle> particles) {
+        particles.removeIf(p -> !p.alive);
+        for (Particle p : particles) {
+            p.render(g);
+        }
+    }
+
+    /** 兼容旧调用点：更新并渲染粒子（尚未迁移 tick() 的游戏继续使用，行为不变） */
+    public static void tickAndRenderParticles(GuiGraphics g, List<Particle> particles) {
+        tickParticles(particles);
+        for (Particle p : particles) {
             p.render(g);
         }
     }

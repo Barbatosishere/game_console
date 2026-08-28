@@ -337,9 +337,15 @@ public class PianoTilesGameScreen extends Screen {
             }
         }
 
-        public void resume() {
+        public void resume(long audioScheduledTime) {
             if (isLoaded && backgroundClip != null) {
-                backgroundClip.start();
+                // ★ 前导期暂停恢复修复：未到起播时刻（audioScheduledTime）不能立即 start()，
+                //   否则音频提前起播，且 tick 的延迟起播分支因 isPlaying() 恒真被跳过（音画失准）。
+                //   未到时刻则不动，交给 tick 的延迟起播分支按时起播；
+                //   正常播放后 audioScheduledTime 已归零，此处恒满足、行为与原来一致
+                if (System.currentTimeMillis() >= audioScheduledTime) {
+                    backgroundClip.start();
+                }
             }
         }
 
@@ -905,6 +911,7 @@ public class PianoTilesGameScreen extends Screen {
         noteIndex = 0;
         score = 0;
         combo = 0;
+        maxCombo = 0; // 修复：返回选歌界面时同步清零最大连击，避免残留到下一局
         perfectHits = 0;
         greatHits = 0;
         goodHits = 0;
@@ -992,7 +999,7 @@ public class PianoTilesGameScreen extends Screen {
                     if (audioScheduledTime > 0) {
                         audioScheduledTime += pausedMs; // 同步推迟音频启动
                     }
-                    audioPlayer.resume();
+                    audioPlayer.resume(audioScheduledTime);
                 }
             }
         }
@@ -1327,8 +1334,8 @@ public class PianoTilesGameScreen extends Screen {
                 guiGraphics.drawString(font, cd, -tw / 2, -4, 0xFFFFDD44);
                 guiGraphics.pose().popPose();
             } else {
-                String pauseText = "u6e38u620fu6682u505c";
-                String resumeHint = "u70b9u51fb'u7ee7u7eed'u6216u6309u7a7au683cu952eu6062u590du6e38u620f";
+                String pauseText = "\u6e38\u620f\u6682\u505c";
+                String resumeHint = "\u70b9\u51fb'\u7ee7\u7eed'\u6216\u6309\u7a7a\u683c\u952e\u6062\u590d\u6e38\u620f";
 
                 int pauseX = (this.width - font.width(pauseText)) / 2;
                 int hintX = (this.width - font.width(resumeHint)) / 2;

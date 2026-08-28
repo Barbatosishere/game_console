@@ -103,7 +103,11 @@ public class MinesweeperScreen extends Screen {
         if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1F, 1F);
     }
 
-    @Override public void tick() { tickCount++; }
+    @Override public void tick() {
+        tickCount++;
+        // ★ 修复：粒子物理移到 tick() 固定频率推进，弹窗暂停期间冻结（原来在 render 中 update）
+        if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
+    }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
@@ -135,6 +139,9 @@ public class MinesweeperScreen extends Screen {
         }
         if (state != State.PLAYING) return super.mouseClicked(mx, my, btn);
 
+        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
+        //   会误命中第0行/列，先按负坐标守卫（与棋盘外点击同样交给 super 处理）
+        if (mx < offsetX || my < offsetY) return super.mouseClicked(mx, my, btn);
         int gx = (int)((mx - offsetX) / cellSize);
         int gy = (int)((my - offsetY) / cellSize);
         if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) return super.mouseClicked(mx, my, btn);
@@ -189,7 +196,15 @@ public class MinesweeperScreen extends Screen {
                 if (c.revealed) {
                     if (c.mine) {
                         g.fill(sx, sy, sx + cellSize, sy + cellSize, 0xFFCC2222);
-                        g.drawCenteredString(font, "💣", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFFFFFF);
+                        // ★ 修复：默认字体无 U+1F4A3(💣)，豆腐块概率高，改为自绘地雷：黑色圆身 + 四向短刺 + 灰色高光
+                        int mcx = sx + cellSize / 2, mcy = sy + cellSize / 2;
+                        int mr = Math.max(2, cellSize / 4);
+                        GameRenderHelper.drawCircle(g, mcx, mcy, mr, 0xFF111111);
+                        g.fill(mcx, mcy - mr - 2, mcx + 1, mcy - mr + 1, 0xFF111111);
+                        g.fill(mcx, mcy + mr - 1, mcx + 1, mcy + mr + 2, 0xFF111111);
+                        g.fill(mcx - mr - 2, mcy, mcx - mr + 1, mcy + 1, 0xFF111111);
+                        g.fill(mcx + mr - 1, mcy, mcx + mr + 2, mcy + 1, 0xFF111111);
+                        g.fill(mcx - mr / 2, mcy - mr / 2, mcx, mcy, 0xFF888888);
                     } else {
                         g.fill(sx, sy, sx + cellSize, sy + cellSize, 0xFF1A1A22);
                         if (c.adj > 0 && c.adj <= 8)
@@ -202,7 +217,16 @@ public class MinesweeperScreen extends Screen {
                     g.fill(sx, sy, sx + 1, sy + cellSize, GameRenderHelper.brighten(bg, 1.15f));
                     g.fill(sx + cellSize - 1, sy, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.7f));
                     g.fill(sx, sy + cellSize - 1, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.6f));
-                    if (c.flagged) g.drawCenteredString(font, "🚩", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFF4444);
+                    if (c.flagged) {
+                        // ★ 修复：默认字体无 U+1F6A9(🚩)，豆腐块概率高，改为自绘小旗：浅灰旗杆 + 红色三角旗
+                        int fx = sx + cellSize / 2, fy = sy + cellSize / 2;
+                        int fh = Math.max(3, cellSize / 4);
+                        g.fill(fx - 1, fy - fh, fx + 1, fy + fh, 0xFFCCCCCC);
+                        for (int i = 0; i < fh; i++) {
+                            int w = fh - i;
+                            g.fill(fx + 1, fy - fh + i, fx + 1 + w, fy - fh + i + 1, 0xFFEE3333);
+                        }
+                    }
                 }
                 // 网格线
                 g.fill(sx + cellSize, sy, sx + cellSize + 1, sy + cellSize, 0x22FFFFFF);
@@ -210,7 +234,7 @@ public class MinesweeperScreen extends Screen {
             }
         }
 
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "地雷: " + mineCount, 8, 7, 0xFF4444);
         g.drawCenteredString(font, "标旗: " + flagCount + " / " + mineCount, width / 2, 7, 0xFFFF44);

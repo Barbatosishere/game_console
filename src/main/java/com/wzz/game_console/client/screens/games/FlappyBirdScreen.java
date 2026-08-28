@@ -45,6 +45,8 @@ public class FlappyBirdScreen extends Screen {
     @Override public void tick() {
         tickCount++;
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
         birdVel += 0.35f;
         birdY += birdVel;
         tickCounter++;
@@ -154,11 +156,12 @@ public class FlappyBirdScreen extends Screen {
         // 小鸟
         drawBird(g, width / 4, (int)birdY);
 
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "🐦 分数: " + score, 8, 7, 0xFFDD44);
+        // ★ 修复：🐦 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
+        g.drawString(font, "分数: " + score, 8, 7, 0xFFDD44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "空格/点击 飞  ESC 菜单  R 重开");
     }
 

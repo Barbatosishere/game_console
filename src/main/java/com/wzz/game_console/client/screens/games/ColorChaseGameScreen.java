@@ -179,13 +179,15 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
                 for (int x = 0; x < GRID_SIZE && idx < cells.length; x++)
                     for (int y = 0; y < GRID_SIZE && idx < cells.length; y++) {
                         // ★ Bug修复：cells 元素若非数字会抛 NumberFormatException 污染整盘。
-                        //   单独 try/catch 该格,坏格用 0 兜底而不是静默吞整盘
+                        //   单独 try/catch 该格,坏格用 0 兜底而不是静默吞整盘。
+                        //   注意 cells[idx++] 作为 parseInt 的实参即使抛异常也已完成自增，
+                        //   catch 里不能再 idx++，否则坏格之后整列错位
                         try {
                             int c = Integer.parseInt(cells[idx++]);
                             if (c < 0 || c >= 8) c = 0; // 颜色值也要校验
                             grid[x][y] = c;
                         }
-                        catch (NumberFormatException nfe) { grid[x][y] = 0; idx++; }
+                        catch (NumberFormatException nfe) { grid[x][y] = 0; }
                     }
             }
         } catch (Exception ignored) {}
@@ -795,11 +797,14 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     /** 弹窗打开时间戳：关闭时据此平移 p1LastSafe/p2LastSafe，补偿暂停期间流逝的墙钟时间 */
     private long pauseStartTime = 0;
 
-    /** 关闭弹窗恢复游戏：平移死亡宽限计时基准，防止弹窗停留≥2s后一关闭就被误判死亡 */
+    /** 关闭弹窗恢复游戏：平移死亡宽限计时基准与变色计时基准，防止弹窗停留后一恢复就被误判死亡/立即强制变色+白送分 */
     private void resumeFromExitConfirm() {
         long pausedMs = System.currentTimeMillis() - pauseStartTime;
         p1LastSafe += pausedMs;
         p2LastSafe += pausedMs;
+        // ★ Bug修复：lastColorChangeTime 未随暂停时长平移，弹窗停留超过变色间隔后
+        //   恢复瞬间 now-lastColorChangeTime 已超限，会立即变色并白送一轮分数
+        lastColorChangeTime += pausedMs;
         showExitConfirm = false;
     }
 

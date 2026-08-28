@@ -6,7 +6,6 @@ import com.google.gson.reflect.TypeToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -138,14 +137,17 @@ public class GameSettings {
     /** 保存设置到 data 目录 */
     private static void saveToDataDir() {
         try {
-            Path dataDir = ExternalFileManager.getDataDir();
-            if (!Files.exists(dataDir)) Files.createDirectories(dataDir);
-            Path settingsPath = dataDir.resolve(SETTINGS_FILE);
             Gson gson = new GsonBuilder().setPrettyPrinting().create();
             String json = gson.toJson(settings);
-            Files.writeString(settingsPath, json, StandardCharsets.UTF_8);
-            LOGGER.info("游戏设置已保存到: {}", settingsPath);
-        } catch (IOException e) {
+            // ★ 修复：改走 ExternalFileManager.writeTextFile 的原子写（.tmp + ATOMIC_MOVE），
+            //   原先直接 Files.writeString 在 JVM 崩溃/断电时会把 game_settings.json 截断为 0 字节
+            boolean ok = ExternalFileManager.writeTextFile(ExternalFileManager.DATA_FOLDER, SETTINGS_FILE, json);
+            if (ok) {
+                LOGGER.info("游戏设置已保存到 data/{}", SETTINGS_FILE);
+            } else {
+                LOGGER.error("保存游戏设置失败");
+            }
+        } catch (Exception e) {
             LOGGER.error("保存游戏设置失败: {}", e.getMessage());
         }
     }

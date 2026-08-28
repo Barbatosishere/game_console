@@ -30,7 +30,18 @@ public class SokobanScreen extends Screen {
     }
 
     private void generateLevel(int levelNum) {
-        Random rand = new Random(levelNum * 7919L + 271L);
+        // ★ 修复零箱局：打乱收尾可能把全部 '+' 转 '.' 且 boxCount 递减到 0，
+        //   生成没有箱子的死局。收尾 boxCount<=0 时不再接受该结果，改为整关
+        //   重新生成（最多 10 次，仍失败保留最后一次）。首次尝试种子与原版
+        //   一致，正常关卡生成的地图不变。
+        for (int attempt = 0; attempt < 10; attempt++) {
+            if (generateLevelOnce(levelNum, attempt)) return;
+        }
+    }
+
+    /** 生成一关并写入 level 字段；返回 false 表示本次生成出零箱局，需要重试 */
+    private boolean generateLevelOnce(int levelNum, int attempt) {
+        Random rand = new Random(levelNum * 7919L + 271L + attempt * 104729L);
 
         // ★ Bug修复：原版关卡参数增速过缓（gridSize 每 3 关 +1，boxCount 每 4 关 +1），
         //   玩家通关 5~6 关仍感觉不到明显难度提升。重新调参为：
@@ -53,7 +64,7 @@ public class SokobanScreen extends Screen {
 
         // 放置内部障碍物
         for (int i = 0; i < obstacleCount; i++) {
-            for (int attempt = 0; attempt < 30; attempt++) {
+            for (int o = 0; o < 30; o++) {
                 int wx = 1 + rand.nextInt(gridSize - 2);
                 int wy = 1 + rand.nextInt(gridSize - 2);
                 if (grid[wy][wx] == ' ') {
@@ -65,7 +76,7 @@ public class SokobanScreen extends Screen {
 
         // 初始状态：箱子全部在目标点上（已解决状态 '+'）
         int placed = 0;
-        for (int attempt = 0; attempt < 500 && placed < boxCount; attempt++) {
+        for (int p = 0; p < 500 && placed < boxCount; p++) {
             int bx = 1 + rand.nextInt(gridSize - 2);
             int by = 1 + rand.nextInt(gridSize - 2);
             if (grid[by][bx] == ' ') {
@@ -151,6 +162,8 @@ public class SokobanScreen extends Screen {
         }
 
         level = grid;
+        // boxCount<=0（'+' 全转 '.' 且无箱可推）时返回 false，由 generateLevel 重试
+        return boxCount > 0;
     }
 
     private void loadLevel(int levelNum) {

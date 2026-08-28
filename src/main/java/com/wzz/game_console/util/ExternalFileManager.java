@@ -80,7 +80,8 @@ public class ExternalFileManager {
      * 获取 music 子目录
      */
     public static Path getMusicDir() {
-        if (!initialized) init();
+        if (!initialized || rootDir == null) init(); // rootDir==null 时再尝试 init 一次
+        if (rootDir == null) return null; // 初始化仍失败：返回 null，交由调用方已有的 catch/判空处理
         return rootDir.resolve(MUSIC_FOLDER);
     }
 
@@ -88,7 +89,8 @@ public class ExternalFileManager {
      * 获取 voice 子目录
      */
     public static Path getVoiceDir() {
-        if (!initialized) init();
+        if (!initialized || rootDir == null) init(); // rootDir==null 时再尝试 init 一次
+        if (rootDir == null) return null; // 初始化仍失败：返回 null，交由调用方已有的 catch/判空处理
         return rootDir.resolve(VOICE_FOLDER);
     }
 
@@ -152,6 +154,15 @@ public class ExternalFileManager {
     }
 
     /**
+     * 文件名净化守卫：fileName 含 ".."、'/'、'\\' 时视为路径穿越/子目录写法，拒绝访问。
+     * @return true 表示文件名安全
+     */
+    private static boolean isSafeFileName(String fileName) {
+        return fileName != null && !fileName.contains("..")
+                && !fileName.contains("/") && !fileName.contains("\\");
+    }
+
+    /**
      * 读取文本文件内容
      * @param subFolder 子文件夹名
      * @param fileName  文件名
@@ -159,6 +170,7 @@ public class ExternalFileManager {
      */
     public static String readTextFile(String subFolder, String fileName) {
         if (!initialized) init();
+        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return null; }
         Path file = rootDir.resolve(subFolder).resolve(fileName);
         if (!Files.exists(file)) return null;
         try {
@@ -177,6 +189,7 @@ public class ExternalFileManager {
      */
     public static byte[] readBytes(String subFolder, String fileName) {
         if (!initialized) init();
+        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return null; }
         Path file = rootDir.resolve(subFolder).resolve(fileName);
         if (!Files.exists(file)) return null;
         try {
@@ -196,6 +209,7 @@ public class ExternalFileManager {
      */
     public static boolean writeTextFile(String subFolder, String fileName, String content) {
         if (!initialized) init();
+        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return false; }
         Path file = rootDir.resolve(subFolder).resolve(fileName);
         // ★ Bug修复：原版 Files.writeString 直接覆盖,若进程写到一半被 kill
         //   (JVM 崩溃/断电/Alt+F4),game_settings.json 截断成 0 字节,下次启动

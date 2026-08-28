@@ -180,6 +180,7 @@ public class JumpGameScreen extends Screen {
 
     void startGame() {
         platforms.clear();
+        sortedDirty = true; // 平台列表已变，深度排序缓存失效
         particles.clear();
         score=0; combo=0; gameOver=false; charging=false; charge=0;
         currentPlatIdx=0; predictWX=null; predictWZ=null; predictWY=null;
@@ -249,6 +250,7 @@ public class JumpGameScreen extends Screen {
         Platform np = new Platform(nx, nz, hw, t);
         np.lit = false;
         platforms.add(np);
+        sortedDirty = true; // 平台列表已变，深度排序缓存失效
     }
 
     // ══════════════════════════════════════════════
@@ -311,6 +313,7 @@ public class JumpGameScreen extends Screen {
         while (platforms.size() > 20 && currentPlatIdx > 5) {
             platforms.remove(0);
             currentPlatIdx--;
+            sortedDirty = true; // 平台列表已变，深度排序缓存失效
         }
     }
 
@@ -483,11 +486,18 @@ public class JumpGameScreen extends Screen {
     // ══════════════════════════════════════════════
     //  投影工具
     // ══════════════════════════════════════════════
+    // ★ 性能：project 结果轮转静态槽（渲染仅主线程调用，逐个扫描全部调用点后确认
+    //   同一时刻最多 6 个投影结果存活（renderPlayerBlock），16 槽留足余量不会互相踩，
+    //   避免每帧数千次 new float[2] 分配）
+    private static final float[][] PROJECT_SLOTS = new float[16][2];
+    private static int projectSlot = 0;
+
     float[] project(float wx, float wy, float wz) {
         float rx = wx-camSX, rz = wz-camSZ;
-        float sx = width/2f  + (rx-rz)*ISO_X*32;
-        float sy = height/2f + (rx+rz)*ISO_Y*32 - wy*ISO_H*32;
-        return new float[]{sx,sy};
+        float[] out = PROJECT_SLOTS[projectSlot = (projectSlot + 1) % PROJECT_SLOTS.length];
+        out[0] = width/2f  + (rx-rz)*ISO_X*32;
+        out[1] = height/2f + (rx+rz)*ISO_Y*32 - wy*ISO_H*32;
+        return out;
     }
 
     // ══════════════════════════════════════════════
@@ -517,14 +527,9 @@ public class JumpGameScreen extends Screen {
     }
 
     public void renderBackground(GuiGraphics g) {
-        // 渐变天空
-        for (int i=0;i<height;i++) {
-            float t = (float)i/height;
-            int r = lerp(0x0D, 0x1A, t);
-            int gg= lerp(0x0A, 0x14, t);
-            int b = lerp(0x1F, 0x0E, t);
-            g.fill(0, i, width, i+1, 0xFF000000|(r<<16)|(gg<<8)|b);
-        }
+        // 渐变天空（★ 性能：逐像素行 fill 循环改为单次 fillGradient，双色观感不变
+        //   t=0 → 0xFF0D0A1F, t=1 → 0xFF1A140E，与原 lerp 结果一致）
+        g.fillGradient(0, 0, width, height, 0xFF0D0A1F, 0xFF1A140E);
         // 星点
         for (int i=0;i<80;i++) {
             int sx=(i*97+13)%width, sy=(i*53+7)%(height*2/3);
@@ -578,15 +583,24 @@ public class JumpGameScreen extends Screen {
     }
 
     // ── 平台渲染 ───────────────────────────────────
+    // ★ 性能：深度排序结果缓存，仅当平台列表内容变化（生成/消除/重开）时重排，
+    //   否则每帧直接复用上次排序结果（原每帧 new ArrayList<>(platforms) + sort）
+    private final List<Platform> sortedPlatforms = new ArrayList<>();
+    private boolean sortedDirty = true;
+
     void renderPlatforms(GuiGraphics g) {
         // 按深度从后到前排序（简单：先渲染远的）
-        List<Platform> sorted = new ArrayList<>(platforms);
-        sorted.sort((a,b) -> {
-            float da = (a.wx-camSX)+(a.wz-camSZ);
-            float db = (b.wx-camSX)+(b.wz-camSZ);
-            return Float.compare(da,db);
-        });
-        for (Platform p : sorted) {
+        if (sortedDirty) {
+            sortedPlatforms.clear();
+            sortedPlatforms.addAll(platforms);
+            sortedPlatforms.sort((a,b) -> {
+                float da = (a.wx-camSX)+(a.wz-camSZ);
+                float db = (b.wx-camSX)+(b.wz-camSZ);
+                return Float.compare(da,db);
+            });
+            sortedDirty = false;
+        }
+        for (Platform p : sortedPlatforms) {
             int idx = platforms.indexOf(p);
             if (Math.abs(idx-currentPlatIdx)>5) continue;
             renderPlatform(g, p, idx==currentPlatIdx+1);
@@ -826,7 +840,8 @@ public class JumpGameScreen extends Screen {
             g.pose().translate(width/2f,72,0);
             float cs=1f+0.1f*(float)Math.sin(tick*0.15);
             g.pose().scale(cs,cs,1);
-            String ct="🔥 "+combo+" 连击！";
+            // ★ 修复：🔥 为非 BMP emoji，默认字体有豆腐块风险，改为 ASCII 文本
+            String ct="COMBO x"+combo+" 连击！";
             g.drawString(font,ct,-font.width(ct)/2,0,(ca<<24)|0x00FF6600);
             g.pose().popPose();
         }
@@ -882,7 +897,8 @@ public class JumpGameScreen extends Screen {
         g.drawCenteredString(font,"GAME OVER",cx,wy+20,0xFFEF4444);
         g.drawCenteredString(font,"得分  "+score,cx,wy+44,0xFFFFFFFF);
         if (score>=bestScore && score>0)
-            g.drawCenteredString(font,"🏆 新纪录！",cx,wy+62,0xFFFFDD00);
+            // ★ 修复：🏆 为非 BMP emoji，默认字体有豆腐块风险，改为 ASCII 文本
+            g.drawCenteredString(font,"NEW! 新纪录！",cx,wy+62,0xFFFFDD00);
         else
             g.drawCenteredString(font,"最高  "+bestScore,cx,wy+62,0xFF94A3B8);
 
@@ -954,24 +970,32 @@ public class JumpGameScreen extends Screen {
         fillTri(g, p0, p2, p3, color);
     }
 
+    // ★ 性能：fillTri 内部暂存缓冲复用（渲染仅主线程调用），避免每次调用及逐行扫描时分配新数组
+    private static final float[][] TRI_PTS  = new float[3][2];
+    private static final float[][] TRI_SEGS = new float[3][4];
+
     void fillTri(GuiGraphics g, float[] a, float[] b, float[] c, int color) {
         int y0=(int)Math.min(a[1],Math.min(b[1],c[1]));
         int y1=(int)Math.max(a[1],Math.max(b[1],c[1]));
         if (y0==y1) return;
-        float[][] pts={{a[0],a[1]},{b[0],b[1]},{c[0],c[1]}};
+        // 拷贝坐标值到静态暂存（值拷贝，不影响调用方数组）
+        TRI_PTS[0][0]=a[0]; TRI_PTS[0][1]=a[1];
+        TRI_PTS[1][0]=b[0]; TRI_PTS[1][1]=b[1];
+        TRI_PTS[2][0]=c[0]; TRI_PTS[2][1]=c[1];
         // 按y排序
-        if(pts[0][1]>pts[1][1]){float[] t=pts[0];pts[0]=pts[1];pts[1]=t;}
-        if(pts[1][1]>pts[2][1]){float[] t=pts[1];pts[1]=pts[2];pts[2]=t;}
-        if(pts[0][1]>pts[1][1]){float[] t=pts[0];pts[0]=pts[1];pts[1]=t;}
+        if(TRI_PTS[0][1]>TRI_PTS[1][1]){float[] t=TRI_PTS[0];TRI_PTS[0]=TRI_PTS[1];TRI_PTS[1]=t;}
+        if(TRI_PTS[1][1]>TRI_PTS[2][1]){float[] t=TRI_PTS[1];TRI_PTS[1]=TRI_PTS[2];TRI_PTS[2]=t;}
+        if(TRI_PTS[0][1]>TRI_PTS[1][1]){float[] t=TRI_PTS[0];TRI_PTS[0]=TRI_PTS[1];TRI_PTS[1]=t;}
+        // 三条边线段（顶点在循环外只填一次，与原 segs={0→1,1→2,0→2} 完全一致）
+        TRI_SEGS[0][0]=TRI_PTS[0][0]; TRI_SEGS[0][1]=TRI_PTS[0][1]; TRI_SEGS[0][2]=TRI_PTS[1][0]; TRI_SEGS[0][3]=TRI_PTS[1][1];
+        TRI_SEGS[1][0]=TRI_PTS[1][0]; TRI_SEGS[1][1]=TRI_PTS[1][1]; TRI_SEGS[1][2]=TRI_PTS[2][0]; TRI_SEGS[1][3]=TRI_PTS[2][1];
+        TRI_SEGS[2][0]=TRI_PTS[0][0]; TRI_SEGS[2][1]=TRI_PTS[0][1]; TRI_SEGS[2][2]=TRI_PTS[2][0]; TRI_SEGS[2][3]=TRI_PTS[2][1];
         for (int y=y0;y<=y1;y++) {
             if (y<0||y>=height) continue;
             float xl=width,xr=0;
             // 求y行的x范围
-            float[][] segs={{pts[0][0],pts[0][1],pts[1][0],pts[1][1]},
-                            {pts[1][0],pts[1][1],pts[2][0],pts[2][1]},
-                            {pts[0][0],pts[0][1],pts[2][0],pts[2][1]}};
-            for (float[] seg:segs) {
-                float x1=seg[0],y1f=seg[1],x2=seg[2],y2f=seg[3];
+            for (int s=0;s<3;s++) {
+                float x1=TRI_SEGS[s][0],y1f=TRI_SEGS[s][1],x2=TRI_SEGS[s][2],y2f=TRI_SEGS[s][3];
                 if ((y<Math.min(y1f,y2f))||(y>Math.max(y1f,y2f))) continue;
                 float t=(y2f==y1f)?0:(y-y1f)/(y2f-y1f);
                 float xi=x1+(x2-x1)*t;

@@ -182,18 +182,22 @@ public class SudokuGameScreen extends Screen {
             System.arraycopy(solution[i], 0, puzzle[i], 0, GRID_SIZE);
         }
 
-        // 根据难度移除数字
-        int cellsToRemove = 81 - currentDifficulty.filledCells;
-        Set<String> removedCells = new HashSet<>();
+        // ★ 修复：挖洞不保证唯一解 → 每挖一格都校验解仍唯一（多解则回填）。
+        //   候选格随机顺序遍历一遍，挖到多少是多少（不强求达到目标提示数）
+        List<int[]> candidates = new ArrayList<>();
+        for (int row = 0; row < GRID_SIZE; row++) {
+            for (int col = 0; col < GRID_SIZE; col++) {
+                candidates.add(new int[]{row, col});
+            }
+        }
+        Collections.shuffle(candidates, random);
 
-        while (removedCells.size() < cellsToRemove) {
-            int row = random.nextInt(GRID_SIZE);
-            int col = random.nextInt(GRID_SIZE);
-            String cellKey = row + "," + col;
-
-            if (!removedCells.contains(cellKey)) {
-                puzzle[row][col] = 0;
-                removedCells.add(cellKey);
+        for (int[] cell : candidates) {
+            int row = cell[0], col = cell[1];
+            int backup = puzzle[row][col];
+            puzzle[row][col] = 0;
+            if (countSolutions(puzzle, 2) > 1) {
+                puzzle[row][col] = backup; // 出现多解，回填该格
             }
         }
 
@@ -203,6 +207,30 @@ public class SudokuGameScreen extends Screen {
                 fixed[row][col] = (puzzle[row][col] != 0);
             }
         }
+    }
+
+    /**
+     * 回溯统计解的数量（找到 limit 个即提前停止），用于挖洞时的唯一解校验。
+     * 基于 {@link #solveSudoku(int[][])} 的填数逻辑改造：顺序取数、只计数不产出解。
+     */
+    private int countSolutions(int[][] grid, int limit) {
+        if (limit <= 0) return 0;
+        for (int row = 0; row < GRID_SIZE; row++) {
+            for (int col = 0; col < GRID_SIZE; col++) {
+                if (grid[row][col] == 0) {
+                    int count = 0;
+                    for (int num = 1; num <= 9 && count < limit; num++) {
+                        if (isValidMove(grid, row, col, num)) {
+                            grid[row][col] = num;
+                            count += countSolutions(grid, limit - count);
+                            grid[row][col] = 0;
+                        }
+                    }
+                    return count;
+                }
+            }
+        }
+        return 1; // 无空格：找到一个完整解
     }
 
     private boolean isValidMove(int[][] grid, int row, int col, int num) {

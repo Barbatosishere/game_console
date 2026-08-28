@@ -39,7 +39,9 @@ public class KlotskiScreen extends Screen {
     private static final int C_SEL_BDR = 0xFF00CCFF; // 选中边框
 
     // ── 状态 ──────────────────────────────────────────
-    private Piece[][] board = new Piece[BH][BW];
+    // ★ Bug修复：不能带初始化器，否则 init() 的 board==null 首次判断恒 false，首次打开棋盘为空。
+    //   board 只在 loadLevel 中分配，init()（setScreen 首次打开必经）据此加载第一关
+    private Piece[][] board;
     private List<Piece> pieces = new ArrayList<>();
     private Piece selected = null;
     private int tileSize, bx, by;
@@ -192,6 +194,9 @@ public class KlotskiScreen extends Screen {
             }
             return true;
         }
+        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
+        //   会误命中第0行/列，先按负坐标/超出棋盘统一处理
+        if (mx < bx || my < by) { selected = null; return true; }
         int gx = (int)((mx - bx) / tileSize), gy = (int)((my - by) / tileSize);
         if (gx < 0 || gx >= BW || gy < 0 || gy >= BH) { selected = null; return true; }
         Piece clicked = board[gy][gx];

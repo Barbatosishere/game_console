@@ -286,8 +286,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(6,  4, 18,  5, 0xFF88CCFF);
         g.drawString(font, "冰人 WASD", 22, 7, 0x88CCFF);
 
-        // 钻石进度（中央）
-        String prog = "💎 " + session.getDiamonds() + " / " + session.getTotalDiamonds()
+        // 钻石进度（中央）★ 修复：💎 为非 BMP emoji，默认字体有豆腐块风险，改为文本
+        String prog = "钻石 " + session.getDiamonds() + " / " + session.getTotalDiamonds()
                 + "   关卡 " + session.getLevel();
         g.drawCenteredString(font, prog, width / 2, 7, 0xFFFF44);
 

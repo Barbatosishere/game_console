@@ -266,8 +266,9 @@ public class GameSelectorScreen extends Screen {
 
     /** 打开文件对话框导入外部游戏设置 JSON */
     private void importSettingsFromFile() {
+        Frame frame = null;
         try {
-            Frame frame = new Frame();
+            frame = new Frame();
             frame.setAlwaysOnTop(true);
             // ★ Bug修复：原版不设位置,Windows 多显示器/扩展屏(主屏 x<0 或 y<0)
             //   时 FileDialog 会落在不可见区域,玩家看不见但模态阻塞,只能 Alt+F4。
@@ -279,7 +280,6 @@ public class GameSelectorScreen extends Screen {
             dialog.setVisible(true);
             String filePath = dialog.getFile();
             String dirPath = dialog.getDirectory();
-            frame.dispose();
 
             if (filePath == null || dirPath == null) return;
 
@@ -294,6 +294,9 @@ public class GameSelectorScreen extends Screen {
         } catch (Exception e) {
             importMessage = "导入失败：" + e.getMessage();
             importMessageTime = System.currentTimeMillis();
+        } finally {
+            // ★ 修复 AWT Frame 泄漏：dispose 移入 finally，异常/提前 return 路径也会释放
+            if (frame != null) frame.dispose();
         }
     }
 

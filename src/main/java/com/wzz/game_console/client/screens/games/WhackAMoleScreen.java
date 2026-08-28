@@ -444,12 +444,14 @@ public class WhackAMoleScreen extends Screen {
             else { pauseStartTime = System.currentTimeMillis(); showExitConfirm = true; }
             return true;
         }
+        // ★ 修复：showExitConfirm 拦截上移到 R 键处理之前，
+        //   防止退出确认弹窗期间按 R 直接重开（弹窗仍悬浮在重开后的对局上）
+        if (showExitConfirm) return true;
         // ★ 用户体验：R 在 GAME_OVER 或 MENU 时直接重开,符合常见约定
         if (keyCode == GLFW.GLFW_KEY_R && (gameState == GameState.GAME_OVER || gameState == GameState.MENU)) {
             startGame();
             return true;
         }
-        if (showExitConfirm) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
