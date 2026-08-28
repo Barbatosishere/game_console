@@ -121,6 +121,8 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
 
     /** AI 后台线程完成时用于判断棋局是否已退出，避免线程结束回调在已离开的对局上落子/播放音效 */
     private volatile boolean disposed = false;
+    /** AI 局代号：initBoard（重开/重连）时递增，迟到的 AI 结果落地前比对作废 */
+    private volatile int boardGen = 0;
 
     @Override
     public void removed() {
@@ -175,6 +177,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         wCK=wCQ=bCK=bCQ=true; epTarget=null; lastFrom=lastTo=null;
         resultMsg=""; particles.clear(); aiThinking=false; inCheck=false;
         promoPending=false; pendingLanPromote=null; state=S.PLAYING;
+        boardGen++; // AI 局代号：重开/重连后旧 AI 线程的迟到结果一律作废
     }
 
     // ══════════════ TICK ══════════════
@@ -184,10 +187,12 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         // ★ 关键修复：AI执黑（forWhite=false），仅黑方回合才触发
         if (state==S.PLAYING && vsAI && !whiteTurn && !aiThinking && !promoPending) {
             aiThinking = true;
+            final int gen = boardGen;
             new Thread(() -> {
                 int[] best = findBestMove(false); // false = 为黑方找最优
                 Minecraft.getInstance().execute(() -> {
                     if (disposed) return; // 玩家已退出对局，丢弃迟到的 AI 结果
+                    if (gen != boardGen) return; // 已重开新局，旧结果作废
                     if (best != null) applyMove(best, false);
                     aiThinking = false;
                     checkEnd();

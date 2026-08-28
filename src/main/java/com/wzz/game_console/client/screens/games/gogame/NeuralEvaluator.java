@@ -146,6 +146,22 @@ public class NeuralEvaluator {
     /** OpenCL GPU 加速后端（懒初始化，失败自动回退 CPU） */
     private volatile OpenCLBackend opencl;
 
+    /**
+     * 释放 OpenCL native 资源（kernel/program/queue/context）。
+     * 修复：此前 OpenCLBackend.close() 全项目无调用点，屏显重开反复创建
+     * MCTSGoAI 会堆积 native 句柄只能靠 GC 兜底。重复调用安全（幂等）。
+     */
+    public void release() {
+        OpenCLBackend b = opencl;
+        opencl = null;
+        if (b != null) {
+            try {
+                b.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     //  构造
     // ══════════════════════════════════════════════════════════════════════

@@ -268,7 +268,7 @@ public class AIPlayer {
             for (int j = 1; j < length; j++) {
                 if (values.get(i + j) != values.get(i) + j) { consecutive = false; break; }
             }
-            if (consecutive && values.get(i) >= targetValue) {
+            if (consecutive && values.get(i) > targetValue) { // 等值压不住（canBeat 严格大于）
                 List<Card> result = new ArrayList<>();
                 for (int j = 0; j < length; j++)
                     result.add(groups.get(values.get(i + j)).get(0));
@@ -289,7 +289,7 @@ public class AIPlayer {
             for (int j = 1; j < length; j++) {
                 if (pairValues.get(i + j) != pairValues.get(i) + j) { consecutive = false; break; }
             }
-            if (consecutive && pairValues.get(i) >= targetValue) {
+            if (consecutive && pairValues.get(i) > targetValue) { // 等值压不住
                 List<Card> result = new ArrayList<>();
                 for (int j = 0; j < length; j++)
                     result.addAll(groups.get(pairValues.get(i + j)).subList(0, 2));
@@ -310,7 +310,7 @@ public class AIPlayer {
             for (int j = 1; j < length; j++) {
                 if (tripleValues.get(i + j) != tripleValues.get(i) + j) { consecutive = false; break; }
             }
-            if (consecutive && tripleValues.get(i) >= targetValue) {
+            if (consecutive && tripleValues.get(i) > targetValue) { // 等值压不住
                 List<Card> result = new ArrayList<>();
                 for (int j = 0; j < length; j++)
                     result.addAll(groups.get(tripleValues.get(i + j)).subList(0, 3));

@@ -42,6 +42,16 @@ public class BuiltInChessAI implements ChessAI {
     private long timeStartNs;
     private long nodeCount;
 
+    /**
+     * 搜索代际：每次 getBestMove 递增，shouldStop 发现代际失配立即中止。
+     * 修复：屏幕重开只 interrupt AI 线程，但内置引擎的搜索循环不响应 interrupt，
+     * 旧线程可继续跑满整个时间预算；期间新对局再次 launchAI 会与旧线程并发
+     * 调用同一实例（TT/killers/timeStartNs 全被交叉写）。代际失效让旧搜索在
+     * 下一个检查点立即 SearchAbort（配合 try-finally 回滚，棋盘不残留脏子）。
+     */
+    private final java.util.concurrent.atomic.AtomicLong activeGen = new java.util.concurrent.atomic.AtomicLong();
+    private final ThreadLocal<Long> myGen = ThreadLocal.withInitial(() -> -1L);
+
     private final long[] ttKey = new long[TT_SIZE];
     private final int[] ttMove = new int[TT_SIZE];
     private final int[] ttScore = new int[TT_SIZE];
@@ -62,6 +72,7 @@ public class BuiltInChessAI implements ChessAI {
 
     @Override
     public int[] getBestMove(int[][] board, boolean redTurn) {
+        myGen.set(activeGen.incrementAndGet()); // 使同实例上更早的搜索立即失效
         timeStartNs = System.nanoTime(); nodeCount = 0; nullMovePly = -1;
 
         long rootKey = zobrist(board, redTurn);
@@ -396,7 +407,10 @@ public class BuiltInChessAI implements ChessAI {
         return h;
     }
 
-    private boolean shouldStop() { return (System.nanoTime() - timeStartNs) >= timeBudgetMs * 1_000_000L; }
+    private boolean shouldStop() {
+        if (myGen.get() != activeGen.get()) return true; // 已被更新的搜索取代
+        return (System.nanoTime() - timeStartNs) >= timeBudgetMs * 1_000_000L;
+    }
 
     private static final class SearchAbort extends RuntimeException {}
 }

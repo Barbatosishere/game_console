@@ -56,6 +56,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private volatile int[] aiPendingMove = null;
     /** AI 后台是否已完成思考（待客户端线程消费） */
     private volatile boolean aiComputed = false;
+    /**
+     * AI 搜索代际：resetGame 时递增，worker 落地前比对。
+     * 修复：worker 的 finally 无条件 aiComputed=true，重开对局后迟到的落地会让
+     * tick 对新 game 调 applyAiMove(null) 强制空过一手。代际守卫使旧 worker 的
+     * 任何落地（含异常路径）全部失效，与 interrupt 的时序无关。
+     */
+    private volatile int aiGeneration = 0;
 
     /** 单机 / AI 构造 */
     public GoGameScreen(GoGame game) {
@@ -163,6 +170,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         aiThinking = false;
         aiPendingMove = null;
         aiComputed = false;
+        aiGeneration++; // 旧 worker 的迟到落地一律作废
 
         game.reset();
         myTurn    = (lanMode != LAN_CLIENT);
@@ -221,16 +229,21 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             // 后台线程计算 AI 走法，避免阻塞客户端线程（MCTS 搜索 1~12 秒）
             if (!aiThinking && !aiComputed) {
                 aiThinking = true;
+                final int gen = aiGeneration;
                 Thread t = new Thread(() -> {
                     try {
                         // screen 关闭时会被 interrupt,这里快速退出
                         if (Thread.currentThread().isInterrupted()) return;
-                        aiPendingMove = game.computeAiMove(); // null = 建议弃权
+                        int[] mv = game.computeAiMove(); // null = 建议弃权
+                        if (gen != aiGeneration) return; // 已重开，丢弃
+                        aiPendingMove = mv;
                     } catch (Exception e) {
                         aiPendingMove = null; // 异常时弃权
                     } finally {
-                        aiThinking = false;
-                        aiComputed = true;
+                        if (gen == aiGeneration) { // 代际守卫：旧 worker 不再触发落地
+                            aiThinking = false;
+                            aiComputed = true;
+                        }
                     }
                 }, "go-ai-worker");
                 aiWorker = t;

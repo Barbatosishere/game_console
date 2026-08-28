@@ -136,17 +136,19 @@ public class LandlordGame {
                 return false;
             }
             
-            // 移除卡牌
+            // 移除卡牌——multiset 原子校验：先在副本上逐张扣减，全部成功才应用到真实手牌。
+            // 修复：原版"先 contains 全部、再逐个 remove"两段式，远端 PLAY 报文含重复牌时
+            // （deserializeCards 不去重），第二次 remove 静默落空 → 手牌少扣一张且
+            // lastPlayedCards 记牌数虚高，联机状态永久失真。
             List<Card> playerHand = playerHands.get(player);
+            List<Card> remaining = new ArrayList<>(playerHand);
             for (Card card : cards) {
-                if (!playerHand.contains(card)) {
-                    return false; // 玩家没有这张牌
+                if (!remaining.remove(card)) {
+                    return false; // 玩家没有这张牌，或重复牌数超出持有数
                 }
             }
-            
-            for (Card card : cards) {
-                playerHand.remove(card);
-            }
+            playerHand.clear();
+            playerHand.addAll(remaining);
             
             lastPlayedCards = new ArrayList<>(cards);
             lastPlayer = player;

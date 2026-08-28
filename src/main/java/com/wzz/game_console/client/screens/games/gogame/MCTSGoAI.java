@@ -841,6 +841,17 @@ public class MCTSGoAI implements GoAI {
                 r -> { Thread t = new Thread(r, "mcts-worker"); t.setDaemon(true); return t; });
     }
 
+    /**
+     * 释放本 AI 持有的 native 资源（OpenCL 后端）。
+     * 修复：GoAI.shutdown 原为 default 空实现且本类未覆写，GoGame.close() 对
+     * MCTS 路径是 no-op，GPU 句柄在屏显重开时反复堆积。SHARED_POOL 是跨实例
+     * 共享的静态池，此处不关闭。
+     */
+    @Override
+    public void shutdown() {
+        neuralEvaluator.release();
+    }
+
     private MCTSNode selectNode(MCTSNode node) {
         while (node.untriedMoves.isEmpty() && node.children != null && !node.children.isEmpty()) {
             node = selectBestChild(node);
