@@ -61,6 +61,9 @@ public class BuiltInChessAI implements ChessAI {
     private final int[][] killers = new int[128][2];
     private final int[] history = new int[8100];
 
+    /** 当前搜索路径上各层的局面 key，用于路径内重复检测（长将循环按和棋评估） */
+    private final long[] pathKeys = new long[128];
+
     private int nullMovePly = -1; // 最近空步所在层，用于防连续空步
     private final boolean useLmr; // LMR + Delta 裁剪（默认启用，可关闭以对比）
 
@@ -76,8 +79,12 @@ public class BuiltInChessAI implements ChessAI {
         timeStartNs = System.nanoTime(); nodeCount = 0; nullMovePly = -1;
 
         long rootKey = zobrist(board, redTurn);
-        List<int[]> rootMoves = orderedMoves(board, redTurn, 0, ttMove[(int) rootKey & TT_MASK]);
+        int rootIdx = (int) rootKey & TT_MASK;
+        List<int[]> rootMoves = orderedMoves(board, redTurn, 0, ttKey[rootIdx] == rootKey ? ttMove[rootIdx] : 0);
         if (rootMoves.isEmpty()) return null;
+
+        java.util.Arrays.fill(pathKeys, 0);
+        pathKeys[0] = rootKey;
 
         int[] bestMove = null;
         int prevScore = 0;
@@ -98,6 +105,9 @@ public class BuiltInChessAI implements ChessAI {
 
                 int bestScore = -INF;
                 int[] depthBest = null;
+                // 记录本深度初始窗口：循环内 alpha 会被抬升，
+                // 判断"空窗失败"必须对照初始窗口，否则恒真导致每深度全窗口重搜
+                int origAlpha = alpha, origBeta = beta;
 
                 for (int attempt = 0; attempt < 2; attempt++) {
                     bestScore = -INF;
@@ -119,7 +129,7 @@ public class BuiltInChessAI implements ChessAI {
                     }
                     if (depthBest == null) break;
                     // 失败/失败高 → 扩大窗口重搜
-                    if (attempt == 0 && (bestScore <= alpha || bestScore >= beta)) {
+                    if (attempt == 0 && (bestScore <= origAlpha || bestScore >= origBeta)) {
                         alpha = -INF; beta = INF;
                         continue;
                     }
@@ -153,9 +163,18 @@ public class BuiltInChessAI implements ChessAI {
         long key = zobrist(b, red);
         int idx = (int) key & TT_MASK;
 
-        // 置换表探测
+        // 路径内重复检测：同一方再次遇到完全相同局面 = 将军/追赶循环，
+        // 按和棋评估，避免搜索引擎把长将循环当成可以无限赢下去
+        for (int i = ply - 2; i >= 0; i -= 2) {
+            if (pathKeys[i] == key) return 0;
+        }
+        pathKeys[ply] = key;
+
+        // 置换表探测（杀分按 ply 归一到"距根的杀距"，避免不同 ply 命中时失真）
         if (ttKey[idx] == key && ttDepth[idx] >= depth) {
             int ttSc = ttScore[idx];
+            if (ttSc > INF - 1000) ttSc -= ply;
+            else if (ttSc < -(INF - 1000)) ttSc += ply;
             if (ttFlag[idx] == FLAG_EXACT) return ttSc;
             if (ttFlag[idx] == FLAG_LOWER && ttSc > alpha) alpha = ttSc;
             else if (ttFlag[idx] == FLAG_UPPER && ttSc < beta) beta = ttSc;
@@ -164,13 +183,14 @@ public class BuiltInChessAI implements ChessAI {
 
         // 空步裁剪：不被将军且深度≥3 且上一步不是空步
         if (!inCheck && depth >= 3 && ply - nullMovePly > 1) {
+            int savedNullMovePly = nullMovePly; // 保存/恢复而非硬重置，否则祖先帧的防连续空步记录被抹掉
             nullMovePly = ply;
             int score = -negamax(b, !red, depth - 3 - NULL_MOVE_R, -beta, -beta + 1, ply + 1, checkExt);
-            nullMovePly = -1;
+            nullMovePly = savedNullMovePly;
             if (score >= beta) return beta;
         }
 
-        List<int[]> moves = orderedMoves(b, red, ply, ttMove[idx]);
+        List<int[]> moves = orderedMoves(b, red, ply, ttKey[idx] == key ? ttMove[idx] : 0);
         if (moves.isEmpty()) return -(INF - ply);
 
         int bestScore = -INF, bestMove = 0, origAlpha = alpha;
@@ -197,28 +217,37 @@ public class BuiltInChessAI implements ChessAI {
             TrieMove undo = makeMove(b, mv);
             // 递归搜索可抛 SearchAbort：必须 finally 回滚，否则异常冒泡后棋盘残留脏子
             try {
-                if (!ChessRules.inCheckOnBoard(b, red)) {
-                    boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
-                    int ext = (givesCheck && checkExt < 2) ? 1 : 0; // 将军延伸上限 2 层
-                    int baseDepth = depth - 1 + ext; // 可能为 0 或负
-                    int newCheckExt = checkExt + ext;
-                    int searchDepth = baseDepth - lmrR; // 可能为 0 或负 → 走 quiescence
+                // legalMoves 已过滤送将着法，无需逐着再验自将
+                boolean givesCheck = ChessRules.inCheckOnBoard(b, !red);
+                int ext = (givesCheck && checkExt < 2) ? 1 : 0; // 将军延伸上限 2 层
+                int baseDepth = depth - 1 + ext; // 可能为 0 或负
+                int newCheckExt = checkExt + ext;
+                int searchDepth = baseDepth - lmrR; // 可能为 0 或负 → 走 quiescence
 
-                    int score;
-                    if (searchDepth <= 0) {
-                        score = -quiescence(b, !red, -(alpha+1), -alpha, ply + 1, newCheckExt);
+                int score;
+                if (searchDepth <= 0) {
+                    if (bestScore == -INF) {
+                        // PV 链首个走法 α=-INF：零宽窗口 (INF-1,INF) 是不可能窗口，
+                        // quiescence 恒 fail-low 返回 ±(INF-1) 垃圾分，必须用全窗口
+                        score = -quiescence(b, !red, -beta, -alpha, ply + 1, newCheckExt);
                     } else {
-                        score = -negamax(b, !red, searchDepth, -beta, -alpha, ply + 1, newCheckExt);
+                        // 零宽窗口试探；命中真实更优（非边界 fail-high）时全窗口重搜
+                        score = -quiescence(b, !red, -(alpha+1), -alpha, ply + 1, newCheckExt);
+                        if (score > alpha && score < beta) {
+                            score = -quiescence(b, !red, -beta, -alpha, ply + 1, newCheckExt);
+                        }
                     }
-                    // LMR 找到好走法后需用完整深度重搜确认
-                    if (lmrR > 0 && score > alpha) {
-                        int fullDepth = Math.max(1, baseDepth); // 重搜至少 depth=1
-                        score = -negamax(b, !red, fullDepth, -beta, -alpha, ply + 1, newCheckExt);
-                    }
-
-                    if (score > bestScore) { bestScore = score; bestMove = encodeMove(mv); }
-                    if (score > alpha) alpha = score;
+                } else {
+                    score = -negamax(b, !red, searchDepth, -beta, -alpha, ply + 1, newCheckExt);
                 }
+                // LMR 找到好走法后需用完整深度重搜确认
+                if (lmrR > 0 && score > alpha) {
+                    int fullDepth = Math.max(1, baseDepth); // 重搜至少 depth=1
+                    score = -negamax(b, !red, fullDepth, -beta, -alpha, ply + 1, newCheckExt);
+                }
+
+                if (score > bestScore) { bestScore = score; bestMove = encodeMove(mv); }
+                if (score > alpha) alpha = score;
             } finally {
                 unmakeMove(b, mv, undo);
             }
@@ -229,7 +258,11 @@ public class BuiltInChessAI implements ChessAI {
         }
 
         int flag = bestScore <= origAlpha ? FLAG_UPPER : bestScore >= beta ? FLAG_LOWER : FLAG_EXACT;
-        storeTt(key, bestMove, bestScore, depth, flag);
+        // 杀分按 ply 归一后入表，与探测端的还原对称
+        int ttScoreOut = bestScore;
+        if (ttScoreOut > INF - 1000) ttScoreOut += ply;
+        else if (ttScoreOut < -(INF - 1000)) ttScoreOut -= ply;
+        storeTt(key, bestMove, ttScoreOut, depth, flag);
         return bestScore;
     }
 
@@ -241,8 +274,13 @@ public class BuiltInChessAI implements ChessAI {
 
         boolean inCheck = ChessRules.inCheckOnBoard(b, red);
         int stand = enhancedEval(b, red);
-        if (stand >= beta) return beta;
-        if (stand > alpha) alpha = stand;
+        // 递归深度硬上限：被将军互反将的安静循环可能互相重复，无上限可 StackOverflow
+        if (ply >= 96) return stand;
+        if (!inCheck) {
+            // 被将军时不得 stand-pat（不应将），否则把实际被将死当好局面返回
+            if (stand >= beta) return beta;
+            if (stand > alpha) alpha = stand;
+        }
 
         // Delta 裁剪：静态评估加上最大吃子价值仍低于 α → 直接返回
         if (!inCheck && stand + 1100 < alpha && useLmr) {
@@ -250,6 +288,8 @@ public class BuiltInChessAI implements ChessAI {
         }
 
         List<int[]> moves = inCheck ? orderedMoves(b, red, ply, 0) : captureMoves(b, red);
+        // 被将军且无合法解将着法 = 被将死，返回杀分（与 negamax 的 moves.isEmpty 一致）
+        if (inCheck && moves.isEmpty()) return -(INF - ply);
 
         for (int[] mv : moves) {
             boolean capture = b[mv[2]][mv[3]] != 0;

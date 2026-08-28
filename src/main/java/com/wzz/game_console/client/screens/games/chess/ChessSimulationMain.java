@@ -101,10 +101,12 @@ public class ChessSimulationMain {
         executor.shutdown();
         // ★ Bug修复：原版 f.get() 无 try/catch,任一 worker 抛 ExecutionException
         //   会终止整个仿真循环;且 shutdown 后无 awaitTermination,Pikafish 子进程
-        //   可能未完全关闭就退出 main
+        //   可能未完全关闭就退出 main。等待上限随局数缩放：单局可达数分钟，固定
+        //   120s 会把长仿真整体 shutdownNow 吞掉结果
         try {
-            if (!executor.awaitTermination(120, TimeUnit.SECONDS)) {
-                System.err.println("[警告] 仿真 120s 内未完成,强制 shutdownNow");
+            long waitSeconds = Math.max(120, totalGames * 600L);
+            if (!executor.awaitTermination(waitSeconds, TimeUnit.SECONDS)) {
+                System.err.println("[警告] 仿真 " + waitSeconds + "s 内未完成,强制 shutdownNow");
                 executor.shutdownNow();
             }
         } catch (InterruptedException ie) {
@@ -206,6 +208,20 @@ public class ChessSimulationMain {
             if (mv == null) {
                 r.outcome = "DRAW";
                 r.reason = "引擎返回 null";
+                r.totalMoves = moves;
+                r.finalMaterial = countMaterial(board);
+                return;
+            }
+
+            // 引擎走法合法性兜底：Pikafish 超时/异常输出可能给出与当前局面
+            // 不符的着法，直接落子会把空格当棋子搬走、永久损坏棋盘
+            boolean legalMove = false;
+            for (int[] lm : legal) {
+                if (lm[0] == mv[0] && lm[1] == mv[1] && lm[2] == mv[2] && lm[3] == mv[3]) { legalMove = true; break; }
+            }
+            if (!legalMove) {
+                r.outcome = "DRAW";
+                r.reason = "引擎返回非法走法 (" + mv[0] + "," + mv[1] + ")->(" + mv[2] + "," + mv[3] + ")";
                 r.totalMoves = moves;
                 r.finalMaterial = countMaterial(board);
                 return;

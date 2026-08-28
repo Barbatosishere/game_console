@@ -148,22 +148,46 @@ public class PikafishChessAI implements ChessAI {
                 if (line == null) break;
                 String trimmed = line.trim();
                 if (trimmed.startsWith("bestmove")) {
-                    String[] parts = trimmed.split("\\s+");
-                    if (parts.length < 2 || "none".equals(parts[1])) return null;
-                    int[] mv = ChessRules.parseUciMove(parts[1]);
-                    if (mv == null) {
-                        LOGGER.warn("[Pikafish] 无法解析的走法: {}", parts[1]);
-                        return null;
-                    }
-                    return mv;
+                    return acceptedMove(trimmed, board, redTurn);
                 }
             }
-            LOGGER.warn("[Pikafish] 等待 bestmove 超时");
+            // 超时：引擎仍在搜索本局面，必须发 stop 并把残留响应排空，
+            // 否则下一次 getBestMove 会读到本局面的 stale bestmove 当成新结果
+            LOGGER.warn("[Pikafish] 等待 bestmove 超时，发送 stop 并排空残留响应");
+            try {
+                writer.write("stop\n");
+                writer.flush();
+                long drainDeadline = System.nanoTime() + 5_000_000_000L;
+                while (System.nanoTime() < drainDeadline) {
+                    long remainingMs = (drainDeadline - System.nanoTime()) / 1_000_000L;
+                    line = readLine(Math.max(1, remainingMs));
+                    if (line == null) break;
+                    if (line.trim().startsWith("bestmove")) break;
+                }
+            } catch (Exception ignored) {}
             return null;
         } catch (Exception e) {
             LOGGER.warn("[Pikafish] 获取走法失败: {}", e.getMessage());
             return null;
         }
+    }
+
+    /** 解析 bestmove 并对照当前局面合法走法集校验，非法/无法解析一律丢弃（返回 null）。 */
+    private int[] acceptedMove(String bestmoveLine, int[][] board, boolean redTurn) {
+        String[] parts = bestmoveLine.split("\\s+");
+        if (parts.length < 2 || "none".equals(parts[1])) return null;
+        int[] mv = ChessRules.parseUciMove(parts[1]);
+        if (mv == null) {
+            LOGGER.warn("[Pikafish] 无法解析的走法: {}", parts[1]);
+            return null;
+        }
+        for (int[] legal : ChessRules.legalMoves(board, redTurn)) {
+            if (legal[0] == mv[0] && legal[1] == mv[1] && legal[2] == mv[2] && legal[3] == mv[3]) {
+                return mv;
+            }
+        }
+        LOGGER.warn("[Pikafish] 引擎返回与当前局面不符的走法 {}，已丢弃", parts[1]);
+        return null;
     }
 
     @Override
