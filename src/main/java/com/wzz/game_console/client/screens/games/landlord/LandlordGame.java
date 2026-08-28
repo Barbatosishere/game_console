@@ -20,7 +20,11 @@ public class LandlordGame {
     private List<Card> lastPlayedCards;
     private int lastPlayer;
     private boolean[] passed;
-    private int[] scores;
+    private int[] scores = new int[3];
+    /** 各玩家实际出牌次数（不出空过不计），用于春天/反春天判定 */
+    private final int[] playCounts = new int[3];
+    /** 结算前是否有人打出过王炸（火箭），翻倍用 */
+    private boolean rocketPlayed = false;
 
     public LandlordGame() {
         initializeGame();
@@ -56,7 +60,9 @@ public class LandlordGame {
         lastPlayedCards = new ArrayList<>();
         lastPlayer = -1;
         passed = new boolean[3];
-        scores = new int[3];
+        // scores 不在重发/重开时清零：跨局累计积分
+        Arrays.fill(playCounts, 0);
+        rocketPlayed = false;
     }
 
     private List<Card> createDeck() {
@@ -135,7 +141,7 @@ public class LandlordGame {
             if (!isValidPlay(cards)) {
                 return false;
             }
-            
+
             // 移除卡牌——multiset 原子校验：先在副本上逐张扣减，全部成功才应用到真实手牌。
             // 修复：原版"先 contains 全部、再逐个 remove"两段式，远端 PLAY 报文含重复牌时
             // （deserializeCards 不去重），第二次 remove 静默落空 → 手牌少扣一张且
@@ -149,11 +155,18 @@ public class LandlordGame {
             }
             playerHand.clear();
             playerHand.addAll(remaining);
-            
+
             lastPlayedCards = new ArrayList<>(cards);
             lastPlayer = player;
             Arrays.fill(passed, false);
-            
+
+            // 出牌统计：春天/反春天判定与王炸翻倍
+            playCounts[player]++;
+            CardPattern played = analyzePattern(cards);
+            if (played != null && played.getType() == CardPattern.Type.JOKER_BOMB) {
+                rocketPlayed = true;
+            }
+
             // 检查是否有人获胜
             if (playerHand.isEmpty()) {
                 gameState = GameState.ENDED;
@@ -274,32 +287,41 @@ public class LandlordGame {
             }
         }
         
+        // 四带两单（6张）/ 四带两对（8张）
+        if (size == 6 && countToValues.containsKey(4) && countToValues.get(4).size() == 1) {
+            return new CardPattern(CardPattern.Type.FOUR_WITH_TWO_SINGLES, countToValues.get(4).get(0), 1);
+        }
+        if (size == 8 && countToValues.containsKey(4) && countToValues.get(4).size() == 1
+                && countToValues.containsKey(2) && countToValues.get(2).size() == 2) {
+            return new CardPattern(CardPattern.Type.FOUR_WITH_TWO_PAIRS, countToValues.get(4).get(0), 1);
+        }
+
         // 飞机检查（三张的连续）
         if (countToValues.containsKey(3)) {
             List<Integer> tripleValues = countToValues.get(3);
             if (tripleValues.size() >= 2 && isConsecutiveValues(tripleValues)) {
                 int tripleCount = tripleValues.size();
                 int expectedSize = tripleCount * 3; // 基础飞机大小
-                
+
                 // 纯飞机
                 if (size == expectedSize) {
                     return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
                 }
-                
-                // 飞机带单牌
-                if (size == expectedSize + tripleCount && countToValues.containsKey(1)
-                        && countToValues.get(1).size() == tripleCount) {
+
+                // 飞机带单牌：翅牌为任意散牌（对子可拆作两单，如 333444+5+5）。
+                // 三张值本身因 valueCount 按整值分组，不可能混入翅牌
+                if (size == expectedSize + tripleCount) {
                     return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
                 }
-                
+
                 // 飞机带对子
-                if (size == expectedSize + tripleCount * 2 && countToValues.containsKey(2) && 
+                if (size == expectedSize + tripleCount * 2 && countToValues.containsKey(2) &&
                     countToValues.get(2).size() == tripleCount) {
                     return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
                 }
             }
         }
-        
+
         return null; // 无效牌型
     }
     
@@ -343,16 +365,29 @@ public class LandlordGame {
     private void calculateScores() {
         int baseScore = 1;
         if (landlordPlayer != -1) {
-            if (playerHands.get(landlordPlayer).isEmpty()) {
+            // 倍数：春天（农民零出牌）/反春天（地主仅出过一手）/王炸 各×2，可叠加
+            int multiplier = 1;
+            boolean landlordWins = playerHands.get(landlordPlayer).isEmpty();
+            int farmerA = (landlordPlayer + 1) % 3, farmerB = (landlordPlayer + 2) % 3;
+            if (landlordWins && playCounts[farmerA] == 0 && playCounts[farmerB] == 0) {
+                multiplier *= 2; // 春天
+            }
+            if (!landlordWins && playCounts[landlordPlayer] == 1) {
+                multiplier *= 2; // 反春天
+            }
+            if (rocketPlayed) {
+                multiplier *= 2; // 火箭（王炸）
+            }
+            if (landlordWins) {
                 // 地主获胜
-                scores[landlordPlayer] = baseScore * 2;
-                scores[(landlordPlayer + 1) % 3] = -baseScore;
-                scores[(landlordPlayer + 2) % 3] = -baseScore;
+                scores[landlordPlayer] = baseScore * 2 * multiplier;
+                scores[farmerA] = -baseScore * multiplier;
+                scores[farmerB] = -baseScore * multiplier;
             } else {
                 // 农民获胜
-                scores[landlordPlayer] = -baseScore * 2;
-                scores[(landlordPlayer + 1) % 3] = baseScore;
-                scores[(landlordPlayer + 2) % 3] = baseScore;
+                scores[landlordPlayer] = -baseScore * 2 * multiplier;
+                scores[farmerA] = baseScore * multiplier;
+                scores[farmerB] = baseScore * multiplier;
             }
         }
     }

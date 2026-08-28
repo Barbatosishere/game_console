@@ -2,16 +2,18 @@ package com.wzz.game_console.client.screens.games.landlord;
 
 public class CardPattern {
     public enum Type {
-        SINGLE,           // 单牌
-        PAIR,             // 对子
-        TRIPLE,           // 三张
-        TRIPLE_WITH_ONE,  // 三带一
-        TRIPLE_WITH_PAIR, // 三带二
-        STRAIGHT,         // 顺子
-        PAIR_STRAIGHT,    // 连对
-        TRIPLE_STRAIGHT,  // 飞机
-        BOMB,             // 炸弹
-        JOKER_BOMB        // 王炸
+        SINGLE,               // 单牌
+        PAIR,                 // 对子
+        TRIPLE,               // 三张
+        TRIPLE_WITH_ONE,      // 三带一
+        TRIPLE_WITH_PAIR,     // 三带二
+        STRAIGHT,             // 顺子
+        PAIR_STRAIGHT,        // 连对
+        TRIPLE_STRAIGHT,      // 飞机
+        FOUR_WITH_TWO_SINGLES, // 四带两单
+        FOUR_WITH_TWO_PAIRS,   // 四带两对
+        BOMB,                 // 炸弹
+        JOKER_BOMB            // 王炸
     }
 
     private Type type;

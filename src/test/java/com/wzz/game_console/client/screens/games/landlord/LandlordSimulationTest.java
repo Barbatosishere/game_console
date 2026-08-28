@@ -97,7 +97,7 @@ class LandlordSimulationTest {
 
         for (int p = 0; p < 3; p++) {
             List<Card> hand = game.getPlayerHand(p);
-            ai.decideBid(hand, p == 0);
+            ai.decideBid(hand);
 
             List<Card> lead = ai.chooseCardsToPlay(hand, new ArrayList<>(), true);
             if (lead != null && !lead.isEmpty()) {
