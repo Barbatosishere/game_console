@@ -10,9 +10,8 @@ group = mod_group_id
 
 repositories {
     mavenLocal()
-    mavenCentral() // 供测试依赖（如 JUnit）下载
-    // JogAmp 仓库（JOCL OpenCL 绑定）
-    maven { url 'https://jogamp.org/deployment/maven' }
+    mavenCentral() // 供测试依赖（如 JUnit）与 JNA 下载
+    // 注：JogAmp 仓库已移除——项目从未使用 JOCL 绑定（OpenCL 走 JNA 直调，见 OpenCLBackend）
 }
 
 base {
@@ -142,6 +141,10 @@ dependencies {
 
     // ─── OpenCL GPU 加速 ───
     implementation 'net.java.dev.jna:jna:5.14.0'
+    // ★ jarJar 打包：jna 必须随 mod jar 发布（Jar-in-Jar），否则玩家环境缺少该依赖时
+    //   GPU 路径直接 NoClassDefFoundError（代码层已 catch Throwable 兜底回退 CPU，
+    //   但不打包则 GPU 加速在发布版中形同虚设）。区间格式为 JarJar 元数据所需。
+    jarJar 'net.java.dev.jna:jna:[5.14.0,6)'
 }
 
 test {
