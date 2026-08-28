@@ -58,12 +58,12 @@ public class KataGoGoAI implements GoAI {
     /** 上次同步时的走子数量（用于增量同步） */
     private int lastSyncedMoveCount = 0;
 
-    /** GTP 响应读取线程池 */
-    private final ExecutorService responseExecutor = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "KataGo-Reader");
-        t.setDaemon(true);
-        return t;
-    });
+    /** 驻留读线程 + 队列：读线程只负责把 GTP 行推入队列，
+     *  响应等待方用 poll(剩余时间) 实现超时，超时不会遗留阻塞在 readLine 上的任务 */
+    private final BlockingQueue<String> responseQueue = new LinkedBlockingQueue<>();
+    private volatile boolean running = true;
+    /** 引擎退出/流关闭时入队的哨兵（空行已在读线程过滤，队列中出现 "" 仅表示 EOF） */
+    private static final String EOF_SENTINEL = "";
 
     /**
      * 构造 KataGo AI。
@@ -113,11 +113,17 @@ public class KataGoGoAI implements GoAI {
         LOGGER.info("[KataGo] 启动进程: {}", String.join(" ", cmd));
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
+        // ★ Bug修复：stderr 不并入 stdout——stdout 必须保持纯 GTP 流，
+        //   引擎日志混入后会被响应解析吞掉/错位；日志改走本进程 stderr
         this.process = pb.start();
 
         this.writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         this.reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+
+        // 驻留读线程必须先于 initGTP 启动，否则首条命令的响应无人消费
+        Thread rt = new Thread(this::readLoop, "KataGo-Reader");
+        rt.setDaemon(true);
+        rt.start();
 
         // 注册关闭钩子
         // ★ Bug修复：见 PikafishChessAI 同样处理
@@ -143,20 +149,15 @@ public class KataGoGoAI implements GoAI {
     }
 
     /**
-     * 初始化 GTP 连接
+     * 初始化 GTP 连接（sendCommand 对 "?" 错误响应直接抛 IOException）
      */
-    private void initGTP() throws IOException, TimeoutException {
+    private void initGTP() throws IOException {
         // 设置棋盘大小
         sendCommand("boardsize " + BOARD_SIZE);
-        expectSuccess();
-
         // 设置贴目（中国规则黑贴 7.5 目）
         sendCommand("komi 7.5");
-        expectSuccess();
-
         // 清空棋盘
         sendCommand("clear_board");
-        expectSuccess();
     }
 
     /**
@@ -191,18 +192,9 @@ public class KataGoGoAI implements GoAI {
             // 同步棋盘状态（增量同步）
             syncBoard(game);
 
-            // 请求 AI 走法（根据 AI 颜色决定）
+            // 请求 AI 走法：sendCommand 已返回本条命令的响应正文（"="/"?" 前缀与命令 id 均已剥离）
             String colorStr = (aiColor == GoPlayer.WHITE) ? "white" : "black";
-            sendCommand("genmove " + colorStr);
-            String response = readResponse();
-
-            if (response.startsWith("=")) {
-                String coord = response.substring(1).trim();
-                return parseMove(coord);
-            } else {
-                LOGGER.warn("[KataGo] genmove 失败: {}", response);
-                return null;
-            }
+            return parseMove(sendCommand("genmove " + colorStr));
         } catch (Exception e) {
             LOGGER.error("[KataGo] 获取走法失败: {}", e.getMessage());
             return null;
@@ -221,13 +213,11 @@ public class KataGoGoAI implements GoAI {
         // 如果棋盘为空或历史大幅倒退（如重开），全量同步
         if (lastSyncedMoveCount == 0 || history.size() < lastSyncedMoveCount - 5) {
             sendCommand("clear_board");
-            expectSuccess();
             lastSyncedMoveCount = 0;
             for (GoMove move : history) {
                 if (move.x >= 0 && move.y >= 0) {
                     String color = move.player == GoPlayer.BLACK ? "black" : "white";
                     sendCommand("play " + color + " " + formatMove(move.x, move.y));
-                    expectSuccess();
                 }
             }
             lastSyncedMoveCount = history.size();
@@ -240,80 +230,97 @@ public class KataGoGoAI implements GoAI {
             if (move.x >= 0 && move.y >= 0) {
                 String color = move.player == GoPlayer.BLACK ? "black" : "white";
                 sendCommand("play " + color + " " + formatMove(move.x, move.y));
-                expectSuccess();
             }
         }
         lastSyncedMoveCount = history.size();
     }
 
     /**
-     * 发送 GTP 命令
+     * 发送 GTP 命令并返回该命令的响应正文。
+     * ★ Bug修复：原版 sendCommand 内部读一次响应、调用方 expectSuccess/readResponse 再读一次，
+     *   每条命令的响应被双重消费——第二条读取只能等到下一条命令的响应或超时，
+     *   genmove 必然超时失败，KataGo 引擎 100% 不可用。
+     * 现在发送+读取严格一一对应：成功返回正文，"?" 错误响应抛 IOException。
      */
     private String sendCommand(String cmd) throws IOException {
         int id = commandId.incrementAndGet();
         String fullCmd = id + " " + cmd;
         LOGGER.debug("[KataGo] >>> {}", fullCmd);
-        writer.write(fullCmd);
-        writer.newLine();
-        writer.flush();
         try {
-            return readResponse(id);
-        } catch (java.util.concurrent.TimeoutException e) {
+            writer.write(fullCmd);
+            writer.newLine();
+            writer.flush();
+        } catch (IOException e) {
+            connected = false;
+            throw e;
+        }
+        try {
+            return readResponse();
+        } catch (TimeoutException e) {
+            connected = false;
             throw new IOException("KataGo 命令超时: " + cmd, e);
         }
     }
 
     /**
-     * 读取 GTP 响应（使用 Future + waitFor 替代轮询，避免 CPU 空转）。
+     * 驻留读线程：把引擎 stdout 的 GTP 行推入队列。
+     * 空行（GTP 响应块终止符）与引擎日志行全部入队，由消费方按前缀过滤。
      */
-    private String readResponse() throws IOException, TimeoutException {
-        return readResponse(0);
-    }
-
-    private String readResponse(int expectedId) throws IOException, TimeoutException {
-        Future<String> future = responseExecutor.submit(() -> {
-            StringBuilder response = new StringBuilder();
-            while (true) {
-                String line;
-                try {
-                    line = reader.readLine();
-                } catch (IOException e) {
-                    break;
-                }
-                if (line == null) {
-                    break;
-                }
-                LOGGER.debug("[KataGo] <<< {}", line);
-                response.append(line).append("\n");
-
-                // 检查是否收到完整的响应（= 或 ? 开头）
-                if (line.startsWith("=") || line.startsWith("?")) {
-                    break;
-                }
-            }
-            return response.toString();
-        });
-
+    private void readLoop() {
         try {
-            return future.get(timeout, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw e;
+            String line;
+            while (running && (line = reader.readLine()) != null) {
+                if (line.isBlank()) continue; // GTP 响应以"=..."行为准，空行终止符无需入队
+                responseQueue.put(line);
+            }
+        } catch (IOException ignored) {
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("KataGo 读取被中断", e);
-        } catch (ExecutionException e) {
-            throw new IOException("KataGo 读取异常: " + e.getCause().getMessage(), e.getCause());
+            Thread.currentThread().interrupt(); // shutdown 中断读线程，落 finally 哨兵
+        } finally {
+            responseQueue.offer(EOF_SENTINEL);
         }
     }
 
     /**
-     * 期待成功响应
+     * 等待并返回当前命令的响应正文，带整体超时。
+     * 非 GTP 行（引擎日志/横幅）跳过；"=xxx" 剥离前缀与回显的命令 id 后返回；
+     * "?xxx" 视为 GTP 错误抛 IOException。
      */
-    private void expectSuccess() throws IOException, TimeoutException {
-        String response = readResponse();
-        if (!response.startsWith("=")) {
-            throw new IOException("GTP 命令失败: " + response);
+    private String readResponse() throws IOException, TimeoutException {
+        long deadline = System.nanoTime() + timeout * 1_000_000_000L;
+        while (true) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                connected = false;
+                throw new TimeoutException("KataGo 响应超时");
+            }
+            String line;
+            try {
+                line = responseQueue.poll(remaining, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("KataGo 读取被中断", e);
+            }
+            if (line == null) continue; // 单次 poll 到时未到整体 deadline，继续等
+            if (line.isEmpty()) { // EOF 哨兵
+                connected = false;
+                throw new IOException("KataGo 引擎已退出");
+            }
+            LOGGER.debug("[KataGo] <<< {}", line);
+            if (line.startsWith("=") || line.startsWith("?")) {
+                String body = line.substring(1).stripLeading();
+                // GTP 会在响应中回显命令 id（如 "=5 D4"），剥掉纯数字 id 前缀
+                int sp = body.indexOf(' ');
+                String head = sp >= 0 ? body.substring(0, sp) : body;
+                if (!head.isEmpty() && head.chars().allMatch(Character::isDigit)) {
+                    body = sp >= 0 ? body.substring(sp + 1) : "";
+                }
+                if (line.startsWith("?")) {
+                    throw new IOException("GTP 命令失败: " + body);
+                }
+                return body;
+            }
+            // 非 GTP 输出（引擎启动日志/横幅），跳过继续等
         }
     }
 
@@ -363,6 +370,8 @@ public class KataGoGoAI implements GoAI {
         // ★ Bug修复：从共享 Set 移除自身,避免 hook 重复关闭已关闭实例
         LIVE_INSTANCES.remove(this);
         connected = false;
+        running = false;
+        responseQueue.offer(EOF_SENTINEL); // 唤醒可能仍在等待的消费者
 
         // 先发送 quit 命令优雅关闭
         try {
@@ -385,14 +394,6 @@ public class KataGoGoAI implements GoAI {
                 reader.close();
             }
         } catch (IOException ignored) {}
-
-        // 关闭线程池
-        responseExecutor.shutdownNow();
-        try {
-            responseExecutor.awaitTermination(1, TimeUnit.SECONDS);
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt();
-        }
 
         // 等待进程退出，最多 2 秒
         if (process != null && process.isAlive()) {

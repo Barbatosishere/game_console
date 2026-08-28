@@ -288,6 +288,16 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             }
             return true;
         }
+        if (key == GLFW.GLFW_KEY_R && state == State.PLAYING && !game.isGameOver()) {
+            // 认输：仅联机有效（单机没有结算对手）。对端在 onRemoteMove 收到 RESIGN: 判胜。
+            if (lanMode != LAN_NONE) {
+                sendLanMove("RESIGN:");
+                myWin = false;
+                resultMsg = "你认输了";
+                state = State.GAME_OVER;
+            }
+            return true;
+        }
         return true;
     }
 
@@ -313,7 +323,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         GameRenderHelper.drawShadowedCenteredText(g, font, "围 棋", cx, cy - 60, 0xFFFFFF, 2);
         g.drawCenteredString(font, "Go Game", cx, cy - 42, 0x555555);
         GameRenderHelper.drawDivider(g, cx - 80, cy - 32, 160, 0xFFD2B48C, 0xFF8B7355);
-        g.drawCenteredString(font, "鼠标点击落子  N新游戏  P弃权", cx, cy - 10, 0xAAAAAA);
+        g.drawCenteredString(font, "鼠标点击落子  N新游戏  P虚着  R认输", cx, cy - 10, 0xAAAAAA);
         g.drawCenteredString(font, "围地为王，黑白博弈的艺术", cx, cy + 5, 0xCCCCCC);
         GameRenderHelper.drawPrimaryButton(g, font, "开始游戏", cx - 60, cy + 30, 120, 22, mx, my);
         // 设置按钮

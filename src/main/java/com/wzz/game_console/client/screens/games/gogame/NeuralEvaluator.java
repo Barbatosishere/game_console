@@ -145,6 +145,8 @@ public class NeuralEvaluator {
 
     /** OpenCL GPU 加速后端（懒初始化，失败自动回退 CPU） */
     private volatile OpenCLBackend opencl;
+    /** OpenCL 初始化失败标记：置位后不再反复尝试加载（每次 forward 都调 ensureOpenCL） */
+    private volatile boolean openclDisabled;
 
     /**
      * 释放 OpenCL native 资源（kernel/program/queue/context）。
@@ -449,21 +451,23 @@ public class NeuralEvaluator {
      * 懒初始化 OpenCL 后端（GPU 启用且成功才使用，失败自动回退 CPU）。
      */
     private OpenCLBackend ensureOpenCL() {
-        if (!isGpuEnabled()) return null; // GPU 可选：配置关闭时走 CPU
+        if (openclDisabled || !isGpuEnabled()) return null; // GPU 可选/初始化失败：走 CPU
         if (opencl == null) {
             synchronized (this) {
                 if (opencl == null) {
-                    opencl = new OpenCLBackend();
+                    try {
+                        opencl = new OpenCLBackend();
+                    } catch (Throwable t) {
+                        // ★ 兜底：JNA 缺失/UnsatisfiedLinkError 等属于 Error，
+                        //   不能让 GPU 探测失败把整条推理路径炸掉，降级 CPU
+                        System.err.println("[NeuralEvaluator] OpenCL 初始化失败，回退 CPU: " + t);
+                        opencl = null;
+                        openclDisabled = true;
+                    }
                 }
             }
         }
-        return opencl.isAvailable() ? opencl : null;
-    }
-
-    /** 若 GPU 可用返回其设备名，否则 null */
-    public String getGpuDevice() {
-        OpenCLBackend b = ensureOpenCL();
-        return b == null ? null : b.getDeviceName();
+        return (opencl != null && opencl.isAvailable()) ? opencl : null;
     }
 
     /**
@@ -570,45 +574,6 @@ public class NeuralEvaluator {
         } finally {
             modelLock.readLock().unlock();
         }
-    }
-
-    /**
-     * 仅计算价值头（用于 MCTS 叶子评估，兼容旧接口）。
-     */
-    public double evaluate(GoPlayer[][] board, GoPlayer player) {
-        return evaluate(board, player, null);
-    }
-
-    /**
-     * 仅计算价值头（用于 MCTS 叶子评估，兼容旧接口）。
-     */
-    public double evaluate(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
-        long hash = computeZobristHash(board, player);
-        // 上一手位置影响 plane 3，必须纳入缓存键，避免不同 lastMove 碰撞。
-        // 用 (x+1,y+1) 编码避免 {0,0} 与 null 映射到 0 的碰撞。
-        if (lastMove != null && lastMove.length >= 2) {
-            long lm = ((long)(lastMove[0] + 1) * 32 + (lastMove[1] + 1));
-            hash ^= lm * 0x9E3779B97F4A7C15L;
-        }
-        CacheKey key = new CacheKey(hash, modelVersion);
-        synchronized (evaluationCache) {
-            Double cached = evaluationCache.get(key);
-            if (cached != null) return cached;
-        }
-
-        double[][][] planes = buildInputPlanes(board, player, lastMove);
-        double[] aux = extractAuxFeatures(board, player);
-        ForwardResult result = forward(planes, aux);
-
-        // 混合评估（神经网络 60% + 启发式 40%），保持向后兼容
-        double heuristicValue = heuristicEvaluation(board, player);
-        double blendedValue = 0.6 * result.value + 0.4 * (heuristicValue / 100.0);
-
-        synchronized (evaluationCache) {
-            if (evaluationCache.size() < MAX_CACHE_SIZE)
-                evaluationCache.put(new CacheKey(hash, modelVersion), blendedValue);
-        }
-        return blendedValue;
     }
 
     /**

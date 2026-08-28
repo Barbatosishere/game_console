@@ -108,12 +108,19 @@ public final class GoAdversarialTrainer {
             List<Sample> newSamples = new ArrayList<>();
             int completed = 0;
             int ourWins = 0;
+            // 单局上限：maxMoves × 每方最长思考（GTP 超时 10 分钟 + 己方搜索），
+            // 再宽裕 50%——挂死的对局不应拖死整代训练
+            long perGameTimeoutSec = (long) (Math.max(1, config.maxMoves) * 11L * 60 * 1.5);
             for (Future<GameResult> future : futures) {
                 try {
-                    GameResult gr = future.get();
+                    GameResult gr = future.get(perGameTimeoutSec, TimeUnit.SECONDS);
                     newSamples.addAll(gr.samples);
                     completed++;
                     if (gr.ourWin) ourWins++;
+                } catch (java.util.concurrent.TimeoutException te) {
+                    // ★ 修复：原版 future.get() 无限等待，单个挂死对局会卡住整代训练
+                    future.cancel(true);
+                    System.err.println("[Adversarial] 对局超时（" + perGameTimeoutSec + "s），已取消");
                 } catch (Exception e) {
                     System.err.println("[Adversarial] game failed: " + e.getMessage());
                 }
@@ -138,7 +145,11 @@ public final class GoAdversarialTrainer {
 
     private void trimReplayBuffer() {
         int max = Math.max(1, config.maxReplaySamples);
-        while (replayBuffer.size() > max) replayBuffer.remove(0);
+        int overflow = replayBuffer.size() - max;
+        if (overflow > 0) {
+            // ★ 修复：原版 while(remove(0)) 逐条前移，O(n²)；subList 批量清除一次完成
+            replayBuffer.subList(0, overflow).clear();
+        }
     }
 
     private static final class GameResult {
@@ -198,7 +209,8 @@ public final class GoAdversarialTrainer {
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(exeFile.getParentFile()); // 设置工作目录为 KataGo 目录（找到 DLL 和调优缓存）
-            pb.redirectErrorStream(true);
+            // ★ 修复：不再 redirectErrorStream——stdout 必须保持纯 GTP 流，
+            //   引擎日志混入 stdout 会被当作响应解析，导致 GTP 解析错位分叉
             process = pb.start();
             java.io.BufferedWriter writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(process.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
@@ -212,6 +224,7 @@ public final class GoAdversarialTrainer {
 
             // 对弈
             GoGame game = GoGame.rulesOnly();
+            boolean kataResigned = false;
 
             try {
                 int moves = 0;
@@ -258,6 +271,12 @@ public final class GoAdversarialTrainer {
                         // KataGo 走棋
                         String color = ourIsBlack ? "white" : "black";
                         String response = sendGTP(writer, reader, "genmove " + color);
+                        // ★ 修复：resign 是认输而非弃权——原版按 pass 处理会继续对弈，
+                        //   胜负判定与样本标签全部失真。对手认输 → 我方胜，立即终局
+                        if (response != null && response.toLowerCase().contains("resign")) {
+                            kataResigned = true;
+                            break;
+                        }
                         int[] move = parseGTPMove(response);
 
                         boolean played = false;
@@ -272,14 +291,17 @@ public final class GoAdversarialTrainer {
                     }
                     moves++;
                 }
-                if (!game.isGameOver()) game.pass();
+                if (!game.isGameOver() && !kataResigned) game.pass();
 
-                // 计算胜负
+                // 计算胜负：认输直接记确定值 ±1（残盘点目对中盘认输无意义）
                 double margin = game.getScoreMargin(GoPlayer.BLACK);
-                boolean ourWin = (ourIsBlack && margin > 0) || (!ourIsBlack && margin < 0);
+                boolean ourWin = kataResigned
+                        ? true
+                        : (ourIsBlack && margin > 0) || (!ourIsBlack && margin < 0);
+                double blackValue = kataResigned ? 1.0 : clamp(margin / 100.0);
 
                 for (Sample s : samples) {
-                    s.valueTarget = clamp((s.player == GoPlayer.BLACK ? margin : -margin) / 100.0);
+                    s.valueTarget = (s.player == GoPlayer.BLACK) ? blackValue : -blackValue;
                 }
 
                 // 关闭 KataGo（优先优雅退出，外层 finally 兜底强杀，覆盖所有异常路径）

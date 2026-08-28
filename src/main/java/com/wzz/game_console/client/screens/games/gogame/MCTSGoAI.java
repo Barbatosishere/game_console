@@ -39,6 +39,8 @@ public class MCTSGoAI implements GoAI {
     private static final double LOSS_THRESHOLD = -0.95;
     /** 置信区间内提前终止的最小访问次数 */
     private static final int MIN_VISITS_FOR_TERMINATION = 50;
+    /** 早停门槛：最高胜率分支自身至少要被访问这么多次，其胜率才可信（防 2 连胜假信号截断搜索） */
+    private static final int MIN_EARLY_STOP_BEST_VISITS = 32;
 
     // ══════════════════════════════════════════════════════════════════
     //  Dirichlet 噪声参数（根节点探索增强，仅用于自对弈训练）
@@ -197,6 +199,7 @@ public class MCTSGoAI implements GoAI {
 
         double bestWinRate = Double.NEGATIVE_INFINITY;
         double secondWinRate = Double.NEGATIVE_INFINITY;
+        double bestWinRateVisits = 0;
 
         for (MCTSNode child : children) {
             if (child.visits > 0) {
@@ -205,6 +208,7 @@ public class MCTSGoAI implements GoAI {
                 if (winRate > bestWinRate) {
                     secondWinRate = bestWinRate;
                     bestWinRate = winRate;
+                    bestWinRateVisits = child.visits;
                 } else if (winRate > secondWinRate) {
                     secondWinRate = winRate;
                 }
@@ -213,6 +217,12 @@ public class MCTSGoAI implements GoAI {
 
         // 无任何子节点有访问时，bestWinRate 保持 -INF，不能当作必败触发提前终止
         if (bestWinRate == Double.NEGATIVE_INFINITY) {
+            return false;
+        }
+        // ★ 最访问数门槛：胜率均值在极少访问下方差极大（2 连胜即 100%），
+        //   必胜/必败/置信区间判定都必须建立在最高胜率分支被充分搜索的基础上，
+        //   否则开局几手就可能被低访问高方差的假信号提前截断搜索
+        if (bestWinRateVisits < MIN_EARLY_STOP_BEST_VISITS) {
             return false;
         }
         // 必胜/必败检测
@@ -862,7 +872,7 @@ public class MCTSGoAI implements GoAI {
     private MCTSNode selectBestChild(MCTSNode parent) {
         MCTSNode best = null;
         double bestValue = Double.NEGATIVE_INFINITY;
-        double logParentVisits = Math.log(Math.max(parent.visits, 1));
+        double sqrtParentVisits = Math.sqrt(Math.max(parent.visits, 1));
 
         // 快照 children 避免并发修改异常（expand 在加锁状态下添加子节点）
         List<MCTSNode> children;
@@ -882,9 +892,11 @@ public class MCTSGoAI implements GoAI {
             } else {
                 winRate = -child.totalScore / child.visits;
             }
-            // PUCT: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)
+            // PUCT（标准 AlphaGo Zero 形式）: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)
+            // ★ 修正：原版探索项用 √log(N)，随搜索增长过慢，先验高但少访问的
+            //   走法迟迟得不到试探；标准式随 √N 增长，prior 引导的探索更充分
             double ucb = winRate
-                    + UCB_C * child.prior * Math.sqrt(logParentVisits / (1.0 + child.visits));
+                    + UCB_C * child.prior * sqrtParentVisits / (1.0 + child.visits);
 
             if (ucb > bestValue) {
                 bestValue = ucb;
@@ -969,6 +981,21 @@ public class MCTSGoAI implements GoAI {
     }
 
     /**
+     * 纯策略先验（不含根节点 Dirichlet 噪声）。
+     * 从 policyCache 反推 prior（与 expand 的赋值公式一致）；
+     * policyCache 缺失时退回节点当前 prior。
+     */
+    private static double purePolicyPrior(MCTSNode node) {
+        if (node.policyCache != null && node.move != null) {
+            int moveIdx = node.move[0] * BOARD_SIZE + node.move[1];
+            if (moveIdx >= 0 && moveIdx < 361) {
+                return Math.max(node.policyCache[moveIdx], 1e-10) * 361.0;
+            }
+        }
+        return node.prior;
+    }
+
+    /**
      * 递归深拷贝节点及其子树，并用新棋盘状态替换根节点的棋盘
      */
     private MCTSNode deepCopyNode(MCTSNode node, GoPlayer[][] newBoard) {
@@ -983,7 +1010,10 @@ public class MCTSGoAI implements GoAI {
         copy.visits = node.visits;
         copy.totalScore = node.totalScore;
         copy.linkedMove = node.linkedMove;
-        copy.prior = node.prior;
+        // ★ 树复用还原纯策略先验：上代根节点的 Dirichlet 噪声会把子节点 prior
+        //   污染成 (1-eps)P + eps·noise；带进新搜索后这些噪声本只属于上一代根，
+        //   在新树中应恢复为纯 policy 先验（policyCache 已随节点拷贝）
+        copy.prior = purePolicyPrior(node);
         copy.policyCache = node.policyCache; // 只读共享，线程安全（行为复用）
         copy.valueCache = node.valueCache;
         copy.valueCached = node.valueCached;
@@ -1010,18 +1040,16 @@ public class MCTSGoAI implements GoAI {
     private int[] getBestMCTSMove(MCTSNode root) {
         if (root.children == null || root.children.isEmpty()) return null;
 
-        // 选择胜率最高的走法
+        // AlphaZero 标准终局选着：按访问数最大。
+        // 访问数对评估噪声更鲁棒：胜率均值在低访问分支方差大，
+        // 原版按胜率选会偶尔选进"2 连胜假信号"的冷门分支
         MCTSNode best = null;
-        double bestScore = Double.NEGATIVE_INFINITY;
+        double bestVisits = -1;
 
         for (MCTSNode child : root.children) {
-            if (child.visits > 0) {
-                // 子节点是"对手行棋方"视角，根视角需取反
-                double winRate = -child.totalScore / child.visits;
-                if (winRate > bestScore) {
-                    bestScore = winRate;
-                    best = child;
-                }
+            if (child.visits > bestVisits) {
+                bestVisits = child.visits;
+                best = child;
             }
         }
         return best != null ? best.move : null;
@@ -1035,7 +1063,9 @@ public class MCTSGoAI implements GoAI {
     private int[] sampleMCTSMove(MCTSNode root, int moveCount) {
         if (root.children == null || root.children.isEmpty()) return null;
         // 温度随探索强度衰减（早期高探索→高温，后期低探索→低温更贪心）
-        double earlyTemp = 1.5 * explorationScale + 0.1;
+        // ★ 修正：默认探索强度(1.0)下开局温度应为 1.0（与上方注释一致）。
+        //   原公式 1.5*x+0.1 在默认档得 1.6，开局采样过散，策略训练目标噪声过大
+        double earlyTemp = 0.9 * explorationScale + 0.1;
         double lateTemp = 0.3 * explorationScale + 0.05;
         double temp = moveCount < 30 ? earlyTemp : lateTemp;
 

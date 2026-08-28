@@ -19,7 +19,10 @@ public class OpenCLBackend implements AutoCloseable {
     private java.util.Map<String, Pointer> kernels = new java.util.HashMap<>();
 
     public OpenCLBackend() {
-        try { init(); available = true; } catch (Exception e) { System.err.println("[OpenCL] " + e.getMessage()); close(); }
+        // ★ catch Throwable：JNA 缺失/UnsatisfiedLinkError 是 Error 不是 Exception，
+        //   原版 catch (Exception) 拦不住，GPU 探测失败会直接炸掉调用方
+        try { init(); available = true; }
+        catch (Throwable t) { System.err.println("[OpenCL] 初始化失败: " + t); close(); }
     }
     public boolean isAvailable() { return available; }
     public String getDeviceName() { return deviceName; }
@@ -56,65 +59,14 @@ public class OpenCLBackend implements AutoCloseable {
         int be = calli("clBuildProgram", program, 0, null, null, null, null);
         if (be != 0) { String log = getBuildLog(program); throw new Exception("编译失败: " + log); }
 
-        for (String name : "sub_fwd,block_fwd,top_fwd,policy_fwd,value_fwd,matmul,matmul_tA,sgd".split(",")) {
+        for (String name : "sub_fwd,block_fwd,top_fwd,policy_fwd,value_fwd".split(",")) {
             try { Pointer k = callp("clCreateKernel", program, name, ec); if (k != null) kernels.put(name, k); }
             catch (Exception e) {}
         }
+        // 关键内核缺失（如老驱动编译失败被吞）时必须回退 CPU，
+        // 否则 batchPass0Forward 会拿到 null 结果被当作"成功"
+        if (kernels.size() < 5) throw new Exception("计算内核不足: 仅加载 " + kernels.keySet());
         System.out.println("[OpenCL] " + deviceName + " 内核: " + kernels.size());
-    }
-
-    // ── 完整训练 batch（GPU 主计算）──
-    public double trainBatch(double[][][][] planes, double[][] aux, double[] vTgt, double[][] pTgt,
-                              double[][][] subW, double[][] subB, double[][][] blkW, double[][] blkB,
-                              double[][] topW, double[] topB, double[][] polW, double[] polB,
-                              double[][] valW1, double[] valB1, double[] valW2, double valB2,
-                              double lr, double l2, double clip) {
-        if (!available) return -1;
-        int B = planes.length;
-        try {
-            // 子块输入提取（CPU）
-            double[][][] subIn = extractSubInputs(planes, B);
-            // 子块权重从 [9][36][16] 展开为 GPU 内核期望的 [81][36][16]（每块内 9 子块共享）
-            double[][][] subWGpu = new double[81][36][16];
-            double[][] subBGpu = new double[81][16];
-            for (int si = 0; si < 81; si++) {
-                int b = si / 9;
-                subWGpu[si] = subW[b];
-                subBGpu[si] = subB[b];
-            }
-            // 子块 GPU 前向
-            double[][][] subOut = gpuSubFwd(subIn, subWGpu, subBGpu, B);
-            if (subOut == null) return -1;
-            // 字块 GPU 前向
-            double[][][] blkIn = buildBlkIn(subOut, B);
-            double[][][] blkOut = gpuBlockFwd(blkIn, blkW, blkB, B);
-            if (blkOut == null) return -1;
-            // 顶级 GPU 前向
-            double[][] topIn = buildTopIn(blkOut, aux, B);
-            double[][] shared = gpuTopFwd(topIn, topW, topB, B);
-            if (shared == null) return -1;
-            // 策略头 GPU
-            double[][] policy = gpuPolicyFwd(shared, polW, polB, B);
-            if (policy == null) return -1;
-            // 价值头 GPU
-            double[] value = gpuValueFwd(shared, valW1, valB1, valW2, valB2, B);
-            if (value == null) return -1;
-            // Loss + 梯度（CPU，轻量）
-            double loss = 0;
-            double[][] dLogit = new double[B][362];
-            double[] dValue = new double[B];
-            for (int n = 0; n < B; n++) {
-                for (int j = 0; j < 362; j++) {
-                    dLogit[n][j] = policy[n][j] - pTgt[n][j];
-                    if (pTgt[n][j] > 0) loss -= pTgt[n][j] * Math.log(Math.max(policy[n][j], 1e-15));
-                }
-                double dv = 2 * (value[n] - vTgt[n]) * (1 - value[n] * value[n]);
-                dValue[n] = dv;
-                loss += (value[n] - vTgt[n]) * (value[n] - vTgt[n]);
-            }
-            // 返回 loss（权重更新由 CPU 的 trainMiniBatch 处理）
-            return loss / B;
-        } catch (Exception e) { System.err.println("[OpenCL] " + e.getMessage()); return -1; }
     }
 
     // ── 完整 GPU Pass 0 前向：子块→字块→顶级，一次批量完成 ──
@@ -190,98 +142,6 @@ public class OpenCLBackend implements AutoCloseable {
             System.err.println("[OpenCL] batchPass0Forward: " + e.getMessage());
             return false;
         }
-    }
-
-    // ── 兼容现有 NeuralEvaluator 集成：顶级 FC GPU 前向 ──
-    /**
-     * GPU 执行顶级 FC(600→256) + ReLU，对 batch 一次完成。
-     * @param output  ReLU 后输出 [batch][256]
-     * @param preAct  同时写入 ReLU 后值（ReLU 掩码判断只依赖正负，等价于 pre-activation 掩码）
-     */
-    public boolean batchTopForward(double[][] input, double[][] weights, double[] bias,
-                                    double[][] output, double[][] preAct) {
-        if (!available) return false;
-        Pointer k = kernels.get("top_fwd");
-        if (k == null) return false;
-        int B = input.length;
-        try {
-            double[][] out = gpuTopFwd(input, weights, bias, B);
-            for (int n = 0; n < B; n++) {
-                System.arraycopy(out[n], 0, output[n], 0, 256);
-                System.arraycopy(out[n], 0, preAct[n], 0, 256);
-            }
-            return true;
-        } catch (Exception e) {
-            System.err.println("[OpenCL] batchTopForward: " + e.getMessage());
-            return false;
-        }
-    }
-
-    // ── GPU 权重更新（代理 sgd 内核，避免 CPU 逐元素循环）──
-    /**
-     * 在 GPU 上执行 SGD 更新：w[i] -= lr * (g[i] + l2 * w[i])。
-     * 3D 权重 [a][b][c]
-     */
-    public boolean batchWeightUpdate(double[][][] w, double[][][] g, double lr, double l2) {
-        if (!available) return false;
-        Pointer k = kernels.get("sgd");
-        if (k == null) return false;
-        int n = 0;
-        for (double[][] mm : w) for (double[] r : mm) n += r.length;
-        if (n == 0) return false;
-        Pointer dWG = null, dGG = null;
-        try {
-            Memory dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten3D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
-            setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
-            launch1D(k, n);
-            double[] flat = new double[n];
-            readBack1D(dWG, flat, n);
-            int off = 0;
-            for (double[][] mm : w) for (double[] r : mm) { System.arraycopy(flat, off, r, 0, r.length); off += r.length; }
-            return true;
-        } catch (Exception e) { return false; }
-        finally { free(dWG, dGG); }
-    }
-    /** 2D 权重 [a][b] */
-    public boolean batchWeightUpdate(double[][] w, double[][] g, double lr, double l2) {
-        if (!available) return false;
-        Pointer k = kernels.get("sgd");
-        if (k == null) return false;
-        int n = 0;
-        for (double[] r : w) n += r.length;
-        if (n == 0) return false;
-        Pointer dWG = null, dGG = null;
-        try {
-            Memory dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten2D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
-            setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
-            launch1D(k, n);
-            double[] flat = new double[n];
-            readBack1D(dWG, flat, n);
-            int off = 0;
-            for (double[] r : w) { System.arraycopy(flat, off, r, 0, r.length); off += r.length; }
-            return true;
-        } catch (Exception e) { return false; }
-        finally { free(dWG, dGG); }
-    }
-    /** 1D 权重 [a] */
-    public boolean batchWeightUpdate(double[] w, double[] g, double lr, double l2) {
-        if (!available) return false;
-        Pointer k = kernels.get("sgd");
-        if (k == null) return false;
-        int n = w.length;
-        if (n == 0) return false;
-        Pointer dWG = null, dGG = null;
-        try {
-            Memory dW = flatten1D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
-            Memory dG = flatten1D(g); dGG = alloc(dG.size()); writeG(dGG, dG);
-            setPtr(k, 0, dWG); setPtr(k, 1, dGG); setF64(k, 2, lr); setF64(k, 3, l2); setInt(k, 4, n);
-            launch1D(k, n);
-            readBack1D(dWG, w, n);
-            return true;
-        } catch (Exception e) { return false; }
-        finally { free(dWG, dGG); }
     }
 
     // ── GPU 前向方法 ──
@@ -556,14 +416,6 @@ public class OpenCLBackend implements AutoCloseable {
     "  int r=get_global_id(0); if(r>=B)return;\n" +
     "  double h[128]; for(int j=0;j<128;j++){ double s=b1[j]; for(int k=0;k<256;k++) s+=in[r*256+k]*w1[k*128+j]; h[j]=s>0?s:0; }\n" +
     "  double s=b2; for(int k=0;k<128;k++) s+=w2[k]*h[k]; out[r]=tanh(s);\n" +
-    "}\n" +
-    "__kernel void matmul(__global double* A, __global double* B, __global double* C, int M, int N, int K) {\n" +
-    "  int r=get_global_id(0),c=get_global_id(1); if(r>=M||c>=N)return;\n" +
-    "  double s=0; for(int k=0;k<K;k++) s+=A[r*K+k]*B[k*N+c]; C[r*N+c]=s;\n" +
-    "}\n" +
-    "__kernel void matmul_tA(__global double* A, __global double* B, __global double* C, int M, int N, int K) {\n" +
-    "  int r=get_global_id(0),c=get_global_id(1); if(r>=M||c>=N)return;\n" +
-    "  double s=0; for(int k=0;k<K;k++) s+=A[k*M+r]*B[k*N+c]; C[r*N+c]=s;\n" +
     "}\n" +
     "__kernel void sgd(__global double* w, __global double* g, double lr, double l2, int n) {\n" +
     "  int i=get_global_id(0); if(i>=n)return; w[i]-=lr*(g[i]+l2*w[i]);\n" +

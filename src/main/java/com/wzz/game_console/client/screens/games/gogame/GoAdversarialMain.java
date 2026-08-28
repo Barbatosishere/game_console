@@ -51,14 +51,26 @@ public final class GoAdversarialMain {
 
         GoAdversarialTrainer trainer = new GoAdversarialTrainer(config, evaluator);
 
-        for (int gen = 0; gen < generations; gen++) {
-            double frac = generations > 1 ? (double) gen / (generations - 1) : 0.0;
-            double currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
-            GoAdversarialTrainer.Result result = trainer.runGeneration(
-                    games, parallelism, epochs, currentLR, seed + gen);
-            System.out.printf("generation=%d lr=%.6f games=%d completed=%d samples=%d ourWins=%d replay=%d meanLoss=%.8f%n",
-                    gen + 1, currentLR, result.games, result.completedGames,
-                    result.samples, result.ourWins, trainer.getReplayBufferSize(), result.meanLoss);
+        try {
+            for (int gen = 0; gen < generations; gen++) {
+                double frac = generations > 1 ? (double) gen / (generations - 1) : 0.0;
+                double currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
+                GoAdversarialTrainer.Result result = trainer.runGeneration(
+                        games, parallelism, epochs, currentLR, seed + gen);
+                System.out.printf("generation=%d lr=%.6f games=%d completed=%d samples=%d ourWins=%d replay=%d meanLoss=%.8f%n",
+                        gen + 1, currentLR, result.games, result.completedGames,
+                        result.samples, result.ourWins, trainer.getReplayBufferSize(), result.meanLoss);
+            }
+        } catch (RuntimeException | Error t) {
+            // ★ 崩溃保存：多代训练中途崩（OOM/GTP 异常/引擎崩溃）时，
+            //   已训练完的各代权重不能随进程一起丢掉
+            try {
+                evaluator.save(weights);
+                System.out.println("saved-on-crash=" + weights.toAbsolutePath());
+            } catch (Exception saveErr) {
+                System.err.println("save-on-crash failed: " + saveErr);
+            }
+            throw t;
         }
 
         evaluator.save(weights);
