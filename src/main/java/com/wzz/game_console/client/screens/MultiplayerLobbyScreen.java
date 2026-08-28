@@ -137,24 +137,42 @@ public class MultiplayerLobbyScreen extends Screen {
             case INVITE_CANCELLED -> {
                 // 主机取消/超时/离开大厅：被邀者清除待处理邀请并提示
                 mc.execute(() -> {
-                    // 仅当取消方确实是当前待处理邀请的发起者时才清除，防止伪造包顶掉正常邀请
+                    // 仅当取消方确实是当前待处理邀请的发起者时才清除并提示，
+                    // 防止伪造包顶掉正常邀请、或无关报文打扰玩家
                     if (pendingInvite != null
                             && Objects.equals(pendingInvite.getSenderUuid(), packet.getSenderUuid())) {
                         pendingInvite = null;
                         inviterName = null;
-                    }
-                    if (mc.player != null) {
-                        mc.player.displayClientMessage(
-                                Component.literal("[游戏机] 邀请已取消/超时"), false);
+                        if (mc.player != null) {
+                            mc.player.displayClientMessage(
+                                    Component.literal("[游戏机] 邀请已取消/超时"), false);
+                        }
                     }
                 });
             }
             case DECLINE_INVITE -> {
                 mc.execute(() -> {
                     if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
-                        // 安全：仅接受被邀请者本人发来的拒绝，防止第三方伪造包误取消邀请
-                        if (lobby.invitedPlayer == null || !lobby.invitedPlayer.equals(packet.getSenderUuid())) {
-                            LOGGER.warn("[游戏机联机] 忽略非受邀玩家的拒绝消息 sender={}", packet.getSenderUuid());
+                        UUID from = packet.getSenderUuid();
+                        // 斗地主批量邀请路径：候选人拒绝则移出名单，凑不齐两人时终止等待
+                        if (from != null && lobby.selectedLanPeers.contains(from)) {
+                            lobby.selectedLanPeers.remove(from);
+                            String nm = packet.getSenderName() == null || packet.getSenderName().isEmpty()
+                                    ? "一位玩家" : packet.getSenderName();
+                            if (lobby.state == LobbyState.WAITING && lobby.selectedLanPeers.size() < 2) {
+                                // 剩余候选不足两人，永远等不到 2 个接受，直接终止
+                                lobby.state = LobbyState.MODE_SELECT;
+                                lobby.resetLanWaitState();
+                                lobby.waitingMessage = nm + " 拒绝了斗地主邀请";
+                            } else if (mc.player != null) {
+                                mc.player.displayClientMessage(
+                                        Component.literal("[游戏机] " + nm + " 拒绝了斗地主邀请"), false);
+                            }
+                            return;
+                        }
+                        // 普通单人邀请路径：仅接受被邀请者本人发来的拒绝，防止第三方伪造包误取消邀请
+                        if (lobby.invitedPlayer == null || !lobby.invitedPlayer.equals(from)) {
+                            LOGGER.warn("[游戏机联机] 忽略非受邀玩家的拒绝消息 sender={}", from);
                             return;
                         }
                         lobby.state = LobbyState.MODE_SELECT;
@@ -206,12 +224,41 @@ public class MultiplayerLobbyScreen extends Screen {
                                     currentGameId, packet.getGameId());
                             return;
                         }
+                        // 来源校验：仅对端本人（多方对局由各 Screen 重写 isLeaveFromPeer 判定），
+                        // 非对局参与者的 LEAVE_GAME 一律忽略
+                        if (!s.isLeaveFromPeer(packet.getSenderUuid())) {
+                            LOGGER.warn("[游戏机联机] 忽略非对端来源的 LEAVE_GAME（sender={}）",
+                                    packet.getSenderUuid());
+                            return;
+                        }
                         String name = packet.getSenderName() == null || packet.getSenderName().isEmpty()
                                 ? "对方" : packet.getSenderName();
                         s.onRemoteLeave(name);
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
                                     Component.literal("[游戏机] " + name + " 已退出对局"), false);
+                        }
+                        mc.setScreen(null);
+                    }
+                });
+            }
+            case PLAYER_QUIT -> {
+                // 服务端断线看门狗（ServerDisconnectWatcher）广播：某玩家退出服务器。
+                // 若退出者正是当前对端，同样按"对方退出对局"处理，避免对端干等
+                mc.execute(() -> {
+                    UUID quitter;
+                    try {
+                        quitter = UUID.fromString(packet.getData().trim());
+                    } catch (Exception e) {
+                        return;
+                    }
+                    if (mc.screen instanceof LanMultiplayerScreen s && s.isLeaveFromPeer(quitter)) {
+                        String name = packet.getSenderName() == null || packet.getSenderName().isEmpty()
+                                ? "对方" : packet.getSenderName();
+                        s.onRemoteLeave(name);
+                        if (mc.player != null) {
+                            mc.player.displayClientMessage(
+                                    Component.literal("[游戏机] " + name + " 已断线，对局结束"), false);
                         }
                         mc.setScreen(null);
                     }
@@ -657,6 +704,7 @@ public class MultiplayerLobbyScreen extends Screen {
                     Minecraft.getInstance().setScreen(clientScreen);
                 } else {
                     state = LobbyState.WAITING;
+                    waitingStartTick = tickCount; // 补超时起点：否则主机永远不开局时客机无限等待
                     waitingMessage = "已接受邀请，等待 " + inviterName + " 开始 " + gameId + "...";
                 }
                 return true;

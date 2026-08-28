@@ -71,10 +71,18 @@ public interface LanMultiplayerScreen {
         onRemoteGameOver(data);
     }
 
-    /**
-     * 收到对方的 LEAVE_GAME 包（对方退出对局，可选实现）。
-     */
+    /** 收到对方的 LEAVE_GAME 包（对方退出对局，可选实现）。 */
     default void onRemoteLeave(String senderName) {}
+
+    /**
+     * LEAVE_GAME/断线通知的来源校验：发送者是否为本对局的合法对端。
+     * 默认仅接受 getLanPeer() 一人；多方对局（如斗地主三人）应重写以接受任一对端。
+     * 防止第三方伪造 LEAVE_GAME 关闭无关玩家的对局界面。
+     */
+    default boolean isLeaveFromPeer(UUID sender) {
+        UUID peer = getLanPeer();
+        return peer != null && sender != null && peer.equals(sender);
+    }
 
     // ── 便捷发包工具方法（接口 default，子类直接调用）─────────────────
 
