@@ -167,6 +167,30 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             if (fc < 0 || fc >= COLS || fr < 0 || fr >= ROWS || tc < 0 || tc >= COLS || tr < 0 || tr >= ROWS) {
                 LOGGER.warn("[中国象棋] 联机走法坐标越界: {}", data); return;
             }
+            // ★ 修复：远程走法落地前校验（坐标越界已在上面过滤），防伪造/乱序报文打乱本地棋盘：
+            //   ① 当前须轮到远程方（LAN 约定 HOST 执红、CLIENT 执黑）且对局未结束；
+            //   ② from 处须存在远程方棋子；
+            //   ③ 走法须在现有合法走法生成结果内（computeLegal 已过滤走后自将）。
+            //   任一不满足仅记日志丢弃，不落盘
+            boolean remoteRed = lanMode == LAN_CLIENT;
+            if (gameOver || lanMode == LAN_NONE || redTurn != remoteRed) {
+                LOGGER.warn("[中国象棋] 丢弃非远程回合/对局已结束的联机走法: {} (redTurn={}, lanMode={})",
+                        data, redTurn, lanMode);
+                return;
+            }
+            int fromPiece = board[fc][fr];
+            if (fromPiece == 0 || remoteRed != (fromPiece > 0)) {
+                LOGGER.warn("[中国象棋] 联机走法起点无远程方棋子: {}", data);
+                return;
+            }
+            boolean legal = false;
+            for (int[] mv : computeLegal(fc, fr)) {
+                if (mv[0] == tc && mv[1] == tr) { legal = true; break; }
+            }
+            if (!legal) {
+                LOGGER.warn("[中国象棋] 联机走法不在合法走法列表内: {}", data);
+                return;
+            }
             receivingRemoteMove = true;
             try {
                 doMove(fc, fr, tc, tr);
@@ -298,7 +322,13 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
                 // 这里仅置 null,GC 回收 Pikafish 子进程资源,下一手 create() 会重建）
                 chessAI = null;
             } finally {
-                aiThinking.set(false);
+                // ★ Bug修复：仅当本线程代数仍是当前代数时才清 thinking 标志。
+                //   迟到线程（悔棋/重开已递增 aiGen）若无条件清除，会误清新一轮
+                //   搜索刚置位的 aiThinking，导致 tick 重复 launchAI。
+                //   旧代数的标志已由 resetBoard/undoMove 主动清除，无需迟到线程代劳
+                if (gen == aiGen) {
+                    aiThinking.set(false);
+                }
             }
         }, "ChessAI");
         aiThread.setDaemon(true);

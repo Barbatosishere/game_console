@@ -12,11 +12,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * 外部 Pikafish（皮卡鱼）引擎封装，通过 UCI 协议通信。
@@ -52,11 +49,12 @@ public class PikafishChessAI implements ChessAI {
     private final Process process;
     private final BufferedWriter writer;
     private final BufferedReader reader;
-    private final ExecutorService readerExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "Pikafish-Reader");
-        t.setDaemon(true);
-        return t;
-    });
+    /** ★ Bug修复：原实现用单线程池提交阻塞 readLine，超时 cancel(true) 后管道读不响应
+     *   中断，僵尸任务永久占住唯一线程并吞行。改为常驻读线程 + 行队列，
+     *   readLine 只做带超时的 poll，超时/取消不再泄漏阻塞任务 */
+    private final LinkedBlockingQueue<String> lineQueue = new LinkedBlockingQueue<>();
+    /** 流结束哨兵：读线程退出时入队并回填，让 poll 中的 readLine 立即感知 EOF 而非白等超时 */
+    private static final String EOF_SENTINEL = "__PIKAFISH_EOF__";
 
     private volatile long searchTimeMs = 2000;
     private volatile boolean connected = false;
@@ -80,6 +78,23 @@ public class PikafishChessAI implements ChessAI {
         this.process = pb.start();
         this.writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         this.reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+
+        // 常驻读线程：循环 readLine 塞入队列，EOF/流异常时退出；
+        // daemon 线程随进程退出，shutdown 销毁引擎后管道关闭自然结束
+        Thread readerThread = new Thread(() -> {
+            try {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lineQueue.offer(line);
+                }
+            } catch (IOException ignored) {
+                // 进程退出/流关闭导致的读异常：读线程自然结束
+            } finally {
+                lineQueue.offer(EOF_SENTINEL); // 唤醒正在 poll 的 readLine，立即感知流结束
+            }
+        }, "Pikafish-Reader");
+        readerThread.setDaemon(true);
+        readerThread.start();
 
         // ★ Bug修复：原版每个实例都 addShutdownHook,跑 N 局仿真 = N 个 hook,
         //   进程退出时 N 次空转 destroy。改为类级共享 LIVE_INSTANCES + 仅一次注册
@@ -201,20 +216,23 @@ public class PikafishChessAI implements ChessAI {
     }
 
     /**
-     * 读取一行，超时抛 TimeoutException（用 Future + get 替代阻塞轮询）。
+     * 读取一行：从常驻读线程的行队列带超时 poll。
+     * 超时或流结束（EOF）返回 null，交由调用方按 null 分支处理
+     * （握手阶段判定 uciok/readyok 失败；搜索阶段走 stop+排空残留响应），
+     * 不再像旧实现那样抛"读取超时"异常导致排空逻辑不可达。
      */
     private String readLine(long timeoutMillis) throws IOException {
-        Future<String> future = readerExecutor.submit(() -> reader.readLine());
         try {
-            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw new IOException("读取超时");
+            String line = lineQueue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
+            if (line == null) return null; // 超时
+            if (EOF_SENTINEL.equals(line)) {
+                lineQueue.offer(EOF_SENTINEL); // 哨兵回填，后续调用同样立即得到 EOF
+                return null;
+            }
+            return line;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("读取被中断");
-        } catch (java.util.concurrent.ExecutionException e) {
-            throw new IOException("读取异常: " + e.getCause().getMessage(), e.getCause());
         }
     }
 
@@ -228,7 +246,7 @@ public class PikafishChessAI implements ChessAI {
         } catch (Exception ignored) {}
         try { if (writer != null) writer.close(); } catch (IOException ignored) {}
         try { if (reader != null) reader.close(); } catch (IOException ignored) {}
-        readerExecutor.shutdownNow();
+        // 常驻读线程为 daemon：reader.close()/进程销毁使管道 EOF 后自动退出，无需显式取消
         if (process != null && process.isAlive()) {
             process.destroy();
             try {

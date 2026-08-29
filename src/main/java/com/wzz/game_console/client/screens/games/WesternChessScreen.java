@@ -147,6 +147,30 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (m[4]<SP_NORMAL||m[4]>SP_PROMOTE) {
                 LOGGER.warn("[国际象棋] 联机走法类型非法: {}", data); return;
             }
+            // ★ 修复：远程走法落地前校验（坐标/类型越界已在上面过滤），防伪造/乱序报文打乱本地棋盘：
+            //   ① 当前须轮到远程方（LAN 约定 HOST 执白、CLIENT 执黑）且对局进行中；
+            //   ② from 处须存在远程方棋子；
+            //   ③ 走法（含特殊走法标记，如易位/吃过路兵/升变）须在现有合法走法生成结果内。
+            //   任一不满足仅记日志丢弃，不落盘
+            boolean remoteWhite = lanMode == LAN_CLIENT;
+            if (state != S.PLAYING || lanMode == LAN_NONE || whiteTurn != remoteWhite) {
+                LOGGER.warn("[国际象棋] 丢弃非远程回合/对局已结束的联机走法: {} (whiteTurn={}, lanMode={})",
+                        data, whiteTurn, lanMode);
+                return;
+            }
+            int fromPiece = board[m[0]][m[1]];
+            if (fromPiece == E || remoteWhite != (fromPiece > 0)) {
+                LOGGER.warn("[国际象棋] 联机走法起点无远程方棋子: {}", data);
+                return;
+            }
+            boolean legal = false;
+            for (int[] mv : legalMoves(board, whiteTurn)) {
+                if (mv[0]==m[0] && mv[1]==m[1] && mv[2]==m[2] && mv[3]==m[3] && mv[4]==m[4]) { legal = true; break; }
+            }
+            if (!legal) {
+                LOGGER.warn("[国际象棋] 联机走法不在合法走法列表内: {}", data);
+                return;
+            }
             if (m[4] == SP_PROMOTE) {
                 // LAN 升变走法：报文携带最终升变子类型（第6字段，缺省兼容旧报文默认升后），
                 // 接收方不弹升变面板、直接按报文完成升变，避免升变子由对手选择导致双端棋盘分叉
@@ -185,6 +209,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         resultMsg=""; particles.clear(); aiThinking=false; inCheck=false;
         promoPending=false; pendingLanPromote=null; state=S.PLAYING;
         resultOutcome=0; halfmoveClock=0; positionKeys.clear(); // 50回合/重复局面计数随新局清零
+        positionKeys.add(positionKey()); // ★ 修复：预置初始局面 key，否则三次重复检测少记一次初始局面（两次回跳即误判和棋）
         boardGen++; // AI 局代号：重开/重连后旧 AI 线程的迟到结果一律作废
     }
 
@@ -213,30 +238,33 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     /** 完整合法走法（过滤走后王被将的情况） */
     private List<int[]> legalMoves(int[][] b, boolean fw) {
         List<int[]> result = new ArrayList<>();
-        for (int[] mv : pseudoMoves(b, fw, epTarget)) {
+        for (int[] mv : pseudoMoves(b, fw, epTarget, null)) { // null=游戏级生成，易位权读全局字段
             int[][] nb = copy(b); applyOn(nb, mv, null, null);
             if (!kingInCheck(nb, fw)) result.add(mv);
         }
         return result;
     }
-    /** 伪合法走法（不检查走后将军）。ep 为该局面的吃过路兵目标格（AI搜索时传节点自身的目标，不能读字段） */
-    private List<int[]> pseudoMoves(int[][] b, boolean fw, int[] ep) {
+    /**
+     * 伪合法走法（不检查走后将军）。ep 为该局面的吃过路兵目标格（AI搜索时传节点自身的目标，不能读字段）。
+     * cf 为该节点易位权 {wCK,wCQ,bCK,bCQ}：AI 搜索传节点自身副本；传 null 则回退读全局字段。
+     */
+    private List<int[]> pseudoMoves(int[][] b, boolean fw, int[] ep, boolean[] cf) {
         List<int[]> m = new ArrayList<>();
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) {
             int p = b[r][c];
             if (p==E || (fw ? p<0 : p>0)) continue;
-            addMoves(b, r, c, fw, m, ep);
+            addMoves(b, r, c, fw, m, ep, cf);
         }
         return m;
     }
-    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
+    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep, boolean[] cf) {
         switch (Math.abs(b[r][c])) {
             case 1 -> pawnMoves(b,r,c,w,o,ep);
             case 2 -> knightMoves(b,r,c,w,o);
             case 3 -> slideMoves(b,r,c,w,o,DIR_BISHOP);
             case 4 -> slideMoves(b,r,c,w,o,DIR_ROOK);
             case 5 -> { slideMoves(b,r,c,w,o,DIR_BISHOP); slideMoves(b,r,c,w,o,DIR_ROOK); }
-            case 6 -> { kingMoves(b,r,c,w,o); castleMoves(b,r,c,w,o); }
+            case 6 -> { kingMoves(b,r,c,w,o); castleMoves(b,r,c,w,o,cf); }
         }
     }
     private void pawnMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
@@ -274,13 +302,17 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (ok(nr,nc) && !friendly(b[nr][nc],w)) o.add(mv(r,c,nr,nc,SP_NORMAL));
         }
     }
-    private void castleMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
+    private void castleMoves(int[][] b, int r, int c, boolean w, List<int[]> o, boolean[] cf) {
         if ((w&&r!=7)||(!w&&r!=0)||c!=4||kingInCheck(b,w)) return;
+        // ★ Bug修复：易位权改从节点级参数读取（null 回退全局字段）。搜索中原先直接读
+        //   全局字段，会无视 applyOn 在棋盘副本上累计的易位权变更，产生非法易位走法
+        boolean wck = cf != null ? cf[0] : wCK, wcq = cf != null ? cf[1] : wCQ;
+        boolean bck = cf != null ? cf[2] : bCK, bcq = cf != null ? cf[3] : bCQ;
         int kr=w?WR:BR, cr=w?7:0;
-        if ((w?wCK:bCK) && b[cr][7]==kr && b[cr][5]==E && b[cr][6]==E
+        if ((w?wck:bck) && b[cr][7]==kr && b[cr][5]==E && b[cr][6]==E
                 && !isAttacked(b,cr,5,!w) && !isAttacked(b,cr,6,!w))
             o.add(mv(r,c,cr,6,SP_CASTLE_K));
-        if ((w?wCQ:bCQ) && b[cr][0]==kr && b[cr][1]==E && b[cr][2]==E && b[cr][3]==E
+        if ((w?wcq:bcq) && b[cr][0]==kr && b[cr][1]==E && b[cr][2]==E && b[cr][3]==E
                 && !isAttacked(b,cr,3,!w) && !isAttacked(b,cr,2,!w))
             o.add(mv(r,c,cr,2,SP_CASTLE_Q));
     }
@@ -436,21 +468,32 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
      */
     private int alphaBeta(int[][] b, int depth, int alpha, int beta, boolean max, boolean[] cf, int[] ep) {
         if (System.currentTimeMillis()-aiT0 > AI_MS) return evalBoard(b);
-        List<int[]> moves = pseudoMoves(b, max, ep); // ← 伪合法，快；ep用搜索节点自身的目标
+        List<int[]> moves = pseudoMoves(b, max, ep, cf); // ← 伪合法，快；ep/cf 用搜索节点自身的副本
         if (moves.isEmpty()) return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
         if (depth == 0) return evalBoard(b);
         // 简单排序：吃子优先
         moves.sort((a,bb) -> Integer.compare(PIECE_VALUE[Math.abs(b[bb[2]][bb[3]])], PIECE_VALUE[Math.abs(b[a[2]][a[3]])]));
         int best = max ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+        boolean hasLegal = false;  // 是否至少评估过一个合法走法
+        boolean timedOut = false;  // 是否因超时中断（此时不能断言将杀/僵局）
         for (int[] mv : moves) {
-            if (System.currentTimeMillis()-aiT0 > AI_MS) break;
+            if (System.currentTimeMillis()-aiT0 > AI_MS) { timedOut = true; break; }
             int[][] nb = copy(b); boolean[] ncf = cf!=null?cf.clone():new boolean[]{true,true,true,true}; int[][] epR = {ep};
             applyOn(nb,mv,ncf,epR);
             if (kingInCheck(nb,max)) continue; // 走后王被将 → 不合法
+            hasLegal = true;
             int score = alphaBeta(nb, depth-1, alpha, beta, !max, ncf, epR[0]);
             if (max) { best=Math.max(best,score); alpha=Math.max(alpha,best); }
             else     { best=Math.min(best,score); beta =Math.min(beta, best); }
             if (beta<=alpha) break;
+        }
+        if (!hasLegal) {
+            // ★ Bug修复：伪合法走法全部非法时，原先退回静态子力分，把将杀/僵局
+            //   误当成普通局面。超时中断（一步合法走法都没算到）仍退回静态分，
+            //   避免把超时误判成必败/必胜
+            if (timedOut) return evalBoard(b);
+            // 被将军 → 将杀分（符号与深度修正和上方 moves.isEmpty() 分支完全一致）；否则僵局 0 分
+            return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
         }
         if (best==Integer.MIN_VALUE||best==Integer.MAX_VALUE) return evalBoard(b);
         return best;

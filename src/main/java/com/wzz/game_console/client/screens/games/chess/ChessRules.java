@@ -392,16 +392,18 @@ public final class ChessRules {
         {0,0,10,0,0,0,10,0,0,0},
     };
 
-    /** 棋子位置额外得分（从该方视角） */
+    /** 棋子位置额外得分（从该方视角）。PST 表按 行=rank（横排）/ 列=col 设计，r 已做红方行号镜像 */
     public static int pstBonus(int abs, int col, int row, boolean red) {
         int r = red ? (9 - row) : row;
+        // ★ Bug修复：原先写成 PST_xxx[col][r]，把列当行用（转置索引），位置分整体错位；
+        //   表尾第 10 列是填充 0，转置后 rank9 一律得 0 分
         return switch (abs) {
-            case HORSE -> PST_HORSE[col][r];
-            case CHARIOT -> PST_CHARIOT[col][r];
-            case CANNON -> PST_CANNON[col][r];
-            case SOLDIER -> PST_SOLDIER[col][r];
-            case ADVISOR -> PST_ADVISOR[col][r];
-            case ELEPHANT -> PST_ELEPHANT[col][r];
+            case HORSE -> PST_HORSE[r][col];
+            case CHARIOT -> PST_CHARIOT[r][col];
+            case CANNON -> PST_CANNON[r][col];
+            case SOLDIER -> PST_SOLDIER[r][col];
+            case ADVISOR -> PST_ADVISOR[r][col];
+            case ELEPHANT -> PST_ELEPHANT[r][col];
             default -> 0;
         };
     }

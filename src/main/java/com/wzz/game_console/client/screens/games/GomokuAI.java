@@ -52,7 +52,8 @@ public class GomokuAI {
         }
     }
 
-    private static final int SIZE = 15;
+    /** Zobrist 表按支持的最大棋盘尺寸预生成（实际棋盘 9~19 路，由 getMove 传入的 board 推导） */
+    private static final int MAX_SIZE = 19;
     /** 单机模式 AI 固定执白 */
     private static final int AI = WHITE;
     /** 执白偏防守的进攻系数 */
@@ -63,6 +64,8 @@ public class GomokuAI {
     private final Difficulty difficulty;
 
     private int[][] chessData;
+    /** 实际棋盘尺寸（9~19），每次 getMove 由 board.length 推导，避免按固定 15 索引越界/漏看 */
+    private int boardSize;
     private int rounds;
     private Point bestPoint;
     private long hashcode;
@@ -112,11 +115,15 @@ public class GomokuAI {
     // ══════════════════════════════════════════
 
     private void initChessData(int[][] board) {
-        this.chessData = new int[SIZE][SIZE];
+        // ★ Bug修复：棋盘尺寸以传入棋盘为准（GomokuScreen 支持 9~19 路切换），
+        //   不再按固定 15 索引——9~13 路时原先会 AIOOBE 使 AI 线程死亡导致卡死，
+        //   17/19 路时 AI 对 15 路域外全盲
+        this.boardSize = board.length;
+        this.chessData = new int[boardSize][boardSize];
         this.hashcode = 0;
         int chessTotal = 0;
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 int type = board[i][j];
                 if (type != EMPTY) {
                     putChess(new Point(i, j, type));
@@ -322,8 +329,8 @@ public class GomokuAI {
         List<Point> killPointList = new ArrayList<>();
 
         int dangerLevel = 0;
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 if (this.chessData[i][j] != EMPTY) {
                     continue;
                 }
@@ -409,8 +416,8 @@ public class GomokuAI {
         List<Point> vcxPointList = new ArrayList<>();
 
         boolean isDanger = false;
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 if (this.chessData[i][j] != EMPTY) {
                     continue;
                 }
@@ -524,8 +531,8 @@ public class GomokuAI {
     private int evaluateAll() {
         int aiScore = 0;
         int foeScore = 0;
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 int type = this.chessData[i][j];
                 if (type == EMPTY) {
                     continue;
@@ -581,8 +588,8 @@ public class GomokuAI {
     private Point getBestPoint() {
         Point best = null;
         int score = -INFINITY;
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 if (this.chessData[i][j] != EMPTY) {
                     continue;
                 }
@@ -636,8 +643,8 @@ public class GomokuAI {
 
     private List<Point> randomPoint(int type, int num) {
         List<Point> pointList = new ArrayList<>();
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < boardSize; i++) {
+            for (int j = 0; j < boardSize; j++) {
                 if (this.chessData[i][j] == EMPTY) {
                     pointList.add(new Point(i, j, type));
                 }
@@ -703,7 +710,7 @@ public class GomokuAI {
             case 8: x += offset; y += offset; break;
             default: break;
         }
-        if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) {
+        if (x < 0 || y < 0 || x >= boardSize || y >= boardSize) {
             return -1;
         }
         return this.chessData[x][y];
@@ -797,14 +804,14 @@ public class GomokuAI {
         }
     }
 
-    /** 黑白双方各 15×15 个格子的 Zobrist 随机值 */
-    private static final long[][] BLACK_ZOBRIST = new long[SIZE][SIZE];
-    private static final long[][] WHITE_ZOBRIST = new long[SIZE][SIZE];
+    /** 黑白双方各 MAX_SIZE×MAX_SIZE 个格子的 Zobrist 随机值（按最大棋盘预生成，各尺寸共用） */
+    private static final long[][] BLACK_ZOBRIST = new long[MAX_SIZE][MAX_SIZE];
+    private static final long[][] WHITE_ZOBRIST = new long[MAX_SIZE][MAX_SIZE];
 
     static {
         ThreadLocalRandom random = ThreadLocalRandom.current();
-        for (int i = 0; i < SIZE; i++) {
-            for (int j = 0; j < SIZE; j++) {
+        for (int i = 0; i < MAX_SIZE; i++) {
+            for (int j = 0; j < MAX_SIZE; j++) {
                 BLACK_ZOBRIST[i][j] = random.nextLong();
                 WHITE_ZOBRIST[i][j] = random.nextLong();
             }
