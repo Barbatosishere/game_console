@@ -917,6 +917,7 @@ public class PianoTilesGameScreen extends Screen {
         goodHits = 0;
         missedHits = 0;
         totalPausedTime = 0;
+        countdownRemaining = 0; // 返回选歌时取消未走完的恢复倒计时，避免残留状态影响下一局
 
         audioPlayer.stop();
         this.clearWidgets();
@@ -938,11 +939,24 @@ public class PianoTilesGameScreen extends Screen {
         gamePaused = false;
         gameOver = false;
         currentGameTime = 0;
+        countdownRemaining = 0; // 取消未走完的恢复倒计时
     }
 
     private void startGame() {
         // 修复：移除全局停声（会误停游戏世界其他声音），改为只停本界面自己的音频
         audioPlayer.stop();
+        // 开局补齐全量状态重置（逐项对齐 initializeGame）：开始按钮直接调用本方法时
+        // 不会先走 initializeGame，否则上一局的分数/连击/判定统计/特效会残留到新局
+        score = 0;
+        combo = 0;
+        maxCombo = 0;
+        perfectHits = 0;
+        greatHits = 0;
+        goodHits = 0;
+        missedHits = 0;
+        hitEffects.clear();
+        currentGameTime = 0;
+        countdownRemaining = 0;
         gameActive = true;
         gamePaused = false;
         gameOver = false;
@@ -984,8 +998,8 @@ public class PianoTilesGameScreen extends Screen {
     public void tick() {
         super.tick();
 
-        // 恢复倒计时处理（在 gamePaused 检查之前执行）
-        if (countdownRemaining > 0) {
+        // 恢复倒计时处理（在 gamePaused 检查之前执行）；退出弹窗/选歌界面期间冻结倒计时
+        if (countdownRemaining > 0 && !showExitConfirm && !songSelectMode) {
             long elapsed = System.currentTimeMillis() - countdownStartTime;
             if (elapsed >= 1000) {
                 countdownRemaining--;

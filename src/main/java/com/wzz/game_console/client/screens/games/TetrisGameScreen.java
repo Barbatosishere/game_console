@@ -102,6 +102,8 @@ public class TetrisGameScreen extends Screen {
     @Override public void tick() {
         tickCount++;
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
         tickCounter++;
         int speed = Math.max(1, 10 - level);
         if (tickCounter >= speed) {
@@ -197,7 +199,7 @@ public class TetrisGameScreen extends Screen {
                                 offsetX + (cx + j + 1) * cellSize - 1, offsetY + (ghostY + i + 1) * cellSize - 1,
                                 GameRenderHelper.withAlpha(currentColor, 40));
 
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);

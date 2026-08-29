@@ -316,6 +316,8 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     @Override
     public void tick() {
         tickCount++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        if (!minecraft.isWindowActive() && !heldKeys.isEmpty()) heldKeys.clear();
         if (lanMode == LAN_CLIENT) {
             // CLIENT：仅发送P2按键输入，游戏逻辑全部由HOST驱动；
             // 直接 return，本地 processHeldKeys/updateGame 等逻辑在联机CLIENT端不会执行

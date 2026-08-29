@@ -194,7 +194,10 @@ public class Minecraft2DScreen extends Screen {
 
     // ══════════════ TICK ══════════════
     @Override public void tick(){
-        super.tick();if(!started)return;
+        super.tick();
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        if (!minecraft.isWindowActive()) { for (int i = 0; i < keys.length; i++) if (keys[i]) { Arrays.fill(keys, false); break; } }
+        if(!started)return;
         if(showExitConfirm)return; // 弹窗期间冻结物理/挖矿/饥饿
         tick++;dayTick=(dayTick+1)%2400;
         if(dead){if(System.currentTimeMillis()-deadAt>3000)respawn();return;}
@@ -519,7 +522,11 @@ public class Minecraft2DScreen extends Screen {
 
     // ══════════════ 输入 ══════════════
     @Override public boolean keyPressed(int k,int sc,int m){
-        if(!started)return super.keyPressed(k,sc,m);
+        if(!started){
+            // 修复：菜单态不拦截 ESC 会走默认 onClose() 退回 Minecraft 世界，改为返回游戏选择界面
+            if(k==GLFW.GLFW_KEY_ESCAPE){Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}
+            return super.keyPressed(k,sc,m);
+        }
         // 修复：退出确认弹窗打开时，仅允许 ESC（再次按 ESC 关闭弹窗），拦截移动等所有游戏按键输入
         if(k==GLFW.GLFW_KEY_ESCAPE){
             if(showExitConfirm){resumeFromExitConfirm();}

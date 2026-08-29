@@ -98,6 +98,9 @@ public class MouseTunnelGameScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
+        //   都会叠加新按钮,玩家点击可能被最底层旧按钮拦截
+        this.clearWidgets();
         super.init();
         boolean playing = gameState == GameState.PLAYING;
         if (!playing) {
@@ -119,6 +122,9 @@ public class MouseTunnelGameScreen extends Screen {
                 .build();
         this.addRenderableWidget(this.exitButton);
         if (playing) {
+            // 游戏进行中用不到这两个菜单按钮，隐藏避免误点（窗口缩放重建按钮后同样处理）
+            this.startButton.visible = false;
+            this.exitButton.visible = false;
             // 游戏进行中：保留现有通道与进度，仅在段数不足时补充新段以覆盖新窗口宽度
             while (tunnelSegments.size() < tunnelSegmentCount) {
                 TunnelSegment lastSegment = tunnelSegments.get(tunnelSegments.size() - 1);

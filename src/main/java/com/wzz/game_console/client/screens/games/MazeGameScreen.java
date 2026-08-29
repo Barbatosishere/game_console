@@ -63,6 +63,10 @@ public class MazeGameScreen extends Screen {
         int centerX = this.width / 2;
         this.addRenderableWidget(Button.builder(Component.literal("重新开始"), b -> {
             currentLevel = 1;
+            // 先按第 1 关尺寸同步迷宫尺寸再重新生成，避免出口落在旧尺寸可达区外（与 tick 自动跳关顺序一致）
+            int newSize = levelMazeSize();
+            MAZE_WIDTH = newSize;
+            MAZE_HEIGHT = newSize;
             generateMaze();
             init();
         }).pos(centerX - 50, this.height - 30).size(100, 20).build());

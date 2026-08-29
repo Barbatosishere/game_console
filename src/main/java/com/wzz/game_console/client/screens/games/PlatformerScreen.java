@@ -55,7 +55,11 @@ public class PlatformerScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        if (!minecraft.isWindowActive()) { for (int i = 0; i < keys.length; i++) if (keys[i]) { Arrays.fill(keys, false); break; } }
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
         // 输入
         if (keys[GLFW.GLFW_KEY_A] || keys[GLFW.GLFW_KEY_LEFT]) velX = -MOVE_SPEED;
         else if (keys[GLFW.GLFW_KEY_D] || keys[GLFW.GLFW_KEY_RIGHT]) velX = MOVE_SPEED;
@@ -167,9 +171,9 @@ public class PlatformerScreen extends Screen {
         g.fill((int)playerX + 3, (int)playerY + 4, (int)playerX + 6, (int)playerY + 7, 0xFFFFFFFF);
         g.fill((int)playerX + 4, (int)playerY + 5, (int)playerX + 6, (int)playerY + 7, 0xFF000000);
 
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "🪙 " + score, 8, 7, 0xFFDD44);
+        g.drawString(font, "金币: " + score, 8, 7, 0xFFDD44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "A/D 移动  W/空格 跳  ESC 菜单  R 重开");
     }
 

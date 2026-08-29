@@ -23,6 +23,8 @@ public class SokobanScreen extends Screen {
     private int levelWidth, levelHeight;
     private int startX, startY;
     private int currentLevel = 1;
+    /** 重开盐：loadLevel 时混入 nanoTime 派生量，使按 R 能生成不同布局（关卡首次进入仍稳定） */
+    private long reshuffleSalt = 0L;
 
     public SokobanScreen() {
         super(Component.literal("推箱子游戏"));
@@ -41,7 +43,8 @@ public class SokobanScreen extends Screen {
 
     /** 生成一关并写入 level 字段；返回 false 表示本次生成出零箱局，需要重试 */
     private boolean generateLevelOnce(int levelNum, int attempt) {
-        Random rand = new Random(levelNum * 7919L + 271L + attempt * 104729L);
+        // 种子混入重开盐：按 R 重开时盐值变化，同一关可生成不同布局，帮助玩家逃离死局
+        Random rand = new Random(levelNum * 7919L + 271L + attempt * 104729L + reshuffleSalt);
 
         // ★ Bug修复：原版关卡参数增速过缓（gridSize 每 3 关 +1，boxCount 每 4 关 +1），
         //   玩家通关 5~6 关仍感觉不到明显难度提升。重新调参为：
@@ -102,8 +105,8 @@ public class SokobanScreen extends Screen {
         grid[playerY][playerX] = '@';
 
         // 打乱阶段：随机移动玩家来推动箱子离开目标点
-        // 此方法保证生成的关卡一定可解（逆向操作即为解）
-        // 使用固定种子确保同一关卡序号生成相同地图
+        // 启发式生成 + 死角校验重试，并不保证一定可解，极端情况仍可能需按 R 重开换一张布局
+        // 种子 = 关卡号 + attempt + 重开盐（盐在 loadLevel 时变化，按 R 可换布局）
         int[] dx = {1, -1, 0, 0};
         int[] dy = {0, 0, 1, -1};
         int pushes = 0;
@@ -126,6 +129,13 @@ public class SokobanScreen extends Screen {
                 int by = ny + dy[dir];
                 if (bx <= 0 || bx >= gridSize - 1 || by <= 0 || by >= gridSize - 1) continue;
                 if (grid[by][bx] == '#' || grid[by][bx] == '+' || grid[by][bx] == '$') continue;
+
+                // 死角校验：箱子被推到非目标点的角落（两个正交相邻方向均为墙/边界）后永远推不动，
+                // 本轮打乱作废，由 generateLevel 以 attempt+1 重来（沿用 attempt 上限模式）
+                if (grid[by][bx] != '.' && isDeadCorner(grid, gridSize, bx, by)) {
+                    level = grid;
+                    return false;
+                }
 
                 char oldPos = grid[playerY][playerX];
                 grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
@@ -166,9 +176,20 @@ public class SokobanScreen extends Screen {
         return boxCount > 0;
     }
 
+    /** 死角判定：箱子四周存在一组正交相邻方向（上/下/左/右）均为墙或边界（调用前需确认箱子不在目标点上） */
+    private boolean isDeadCorner(char[][] grid, int gridSize, int bx, int by) {
+        boolean up = by - 1 < 0 || grid[by - 1][bx] == '#';
+        boolean down = by + 1 >= gridSize || grid[by + 1][bx] == '#';
+        boolean left = bx - 1 < 0 || grid[by][bx - 1] == '#';
+        boolean right = bx + 1 >= gridSize || grid[by][bx + 1] == '#';
+        return (up && left) || (up && right) || (down && left) || (down && right);
+    }
+
     private void loadLevel(int levelNum) {
         if (levelNum < 1) levelNum = 1;
         currentLevel = levelNum;
+        // 更新重开盐：按 R 重开同一关时种子随之变化，可生成不同布局逃离死局
+        reshuffleSalt += System.nanoTime();
         generateLevel(currentLevel);
         // ★ Bug修复：generateLevel 会随关卡数增大 levelWidth/levelHeight，
         // 但 TILE_SIZE/startX/startY 及重置/下一关按钮的尺寸位置只在首次 init() 时算过一次；

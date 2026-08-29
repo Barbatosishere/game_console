@@ -297,6 +297,8 @@ public class TowerDefenseScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        // 结算画面（胜利/失败）下禁止再建塔扣币
+        if (gameOver || !gameStarted) return super.mouseClicked(mouseX, mouseY, button);
         if (selectedTowerType != null && button == 0) {
             GridPos pos = screenToGrid((int)mouseX, (int)mouseY);
             if (canPlaceTower(pos.x, pos.y) && coins >= selectedTowerType.cost) {

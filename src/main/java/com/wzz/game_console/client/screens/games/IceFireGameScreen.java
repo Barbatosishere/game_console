@@ -317,7 +317,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 win ? 0xFF44FF44 : 0xFFFF4444);
 
         if (win) {
-            drawShadowedCenteredText(g, "🎉  游戏通关！  🎉", cx, cy - 50, 0x44FF44, 1);
+            drawShadowedCenteredText(g, "游戏通关！", cx, cy - 50, 0x44FF44, 1);
             g.drawCenteredString(font, "恭喜两位勇士一起完成了所有关卡！", cx, cy - 30, 0xCCFFCC);
         } else {
             drawShadowedCenteredText(g, "游戏结束！", cx, cy - 50, 0xFF4444, 1);
@@ -355,8 +355,9 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void init() {
         super.init();
-        // LAN 联机：跳过菜单直接开始
-        if (lanMode != LAN_NONE) startGame();
+        // LAN 联机：跳过菜单直接开始；仅在本局尚未创建 session 时启动，
+        // 否则窗口缩放重调 init() 会把整局重置
+        if (lanMode != LAN_NONE && session == null) startGame();
     }
 
     @Override
@@ -367,6 +368,9 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void tick() {
         tickCount++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态,
+        //   切窗/弹系统窗时收不到 keyReleased 也不影响,焦点回来时按键集合已被清空
+        if (!minecraft.isWindowActive() && !heldKeys.isEmpty()) heldKeys.clear();
 
         // ★ Bug修复：LAN_CLIENT 即使在 GAME_OVER 状态也要处理来自 HOST 的最新状态，
         //   以便跟随 HOST 的重开信号（hostGameOver=0 → CLIENT 从 GAME_OVER 恢复 PLAYING）

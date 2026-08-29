@@ -81,6 +81,8 @@ public class BlackHoleGameScreen extends Screen {
         this.cameraX = 0;
         this.cameraY = 0;
         this.cameraZ = 50;
+        // 重开局时恢复为进行中状态，否则游戏结束后重开会一直停留在结算界面
+        this.gameState = GameState.PLAYING;
     }
     
     @Override

@@ -259,6 +259,11 @@ public class JumpGameScreen extends Screen {
     @Override
     public void tick() {
         tick++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态,
+        //   切窗时收不到 keyReleased 也无影响(与 ESC 弹窗清蓄力逻辑同源)
+        if (!minecraft.isWindowActive() && (charging || charge > 0 || predictWX != null)) {
+            charging = false; charge = 0; predictWX = null; predictWZ = null; predictWY = null;
+        }
         if (showExitConfirm) return; // 弹窗期间暂停游戏（含物理/蓄力/粒子）
 
         // ── 物理更新（gameOver 时也继续，保证掉落动画正常播放）──
