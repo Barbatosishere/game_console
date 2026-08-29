@@ -539,7 +539,10 @@ public class MCTSGoAI implements GoAI {
         for (int i = 0; i < parallelThreads; i++) {
             futures.add(SHARED_POOL.submit(() -> {
                 int iters = 0, cap = maxIterations / parallelThreads;
-                while (iters < cap && System.currentTimeMillis() < deadline) {
+                // ★ 修复：worker 循环原本不响应中断——cancel(true) 中断后仍会跑满
+                //   剩余 iters/deadline 预算，占用 CPU 并继续写 currentRoot
+                while (iters < cap && System.currentTimeMillis() < deadline
+                        && !Thread.currentThread().isInterrupted()) {
                     if (shouldTerminateEarly(totalIterations.get())) break;
                     iters++;
                     totalIterations.incrementAndGet();
@@ -622,9 +625,18 @@ public class MCTSGoAI implements GoAI {
             if (needsForward) node.forwardInFlight = true;
         }
         if (needsForward) {
-            NeuralEvaluator.ForwardResult fr = neuralEvaluator.forward(
-                    neuralEvaluator.buildInputPlanes(node.board, node.player, node.move),
-                    neuralEvaluator.extractAuxFeatures(node.board, node.player));
+            NeuralEvaluator.ForwardResult fr = null;
+            try {
+                fr = neuralEvaluator.forward(
+                        neuralEvaluator.buildInputPlanes(node.board, node.player, node.move),
+                        neuralEvaluator.extractAuxFeatures(node.board, node.player));
+            } finally {
+                // ★ 修复：前向抛异常时占位无人释放，forwardInFlight 会永久卡 true，
+                //   其他线程既无法再抢占位、也永远等不到 policyCache——失败路径也必须释放
+                if (fr == null) {
+                    synchronized (node) { node.forwardInFlight = false; }
+                }
+            }
 
             // 策略头引导展开顺序 + Top-K 剪枝（必须在 synchronized 内操作 untriedMoves）
             synchronized (node) {
@@ -672,6 +684,16 @@ public class MCTSGoAI implements GoAI {
 
             // 策略先验：从缓存中查找该走法的概率
             double prior = 1.0;
+            // ★ 修复：并发先验竞态——本线程未抢到 forwardInFlight 时 policyCache 可能
+            //   仍在计算中，直接回退 1.0 会让子节点永久失去真实策略先验。
+            //   有界自旋等待 ~20ms（不持锁：forwardInFlight 为 volatile，循环内
+            //   Thread.yield() 让出 CPU，不会死锁）；超时仍未拿到才回退 1.0（保持旧行为）
+            if (node.policyCache == null && node.forwardInFlight) {
+                long spinDeadline = System.nanoTime() + 20_000_000L;
+                while (node.forwardInFlight && System.nanoTime() < spinDeadline) {
+                    Thread.yield();
+                }
+            }
             if (node.policyCache != null) {
                 int moveIdx = move[0] * BOARD_SIZE + move[1];
                 if (moveIdx >= 0 && moveIdx < 361) {

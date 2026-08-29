@@ -180,7 +180,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     /**
-     * 游戏结束时计算胜负（中国规则：数子法，黑子贴目3.75目）。
+     * 游戏结束时计算胜负（中国规则数子法，黑棋贴目 7.5）。
      * 修复 Bug：原版 endGame() 不计算胜者，导致局域网双方都显示"你赢了"。
      */
     private void finishGame() {
@@ -192,9 +192,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         // 中国规则数子法（区域计分）：得分 = 棋盘活子数 + 单独围空。
         // 修复：不再把提子数加进总分——提掉的子已从对方区域中消失，
         // 区域计分天然包含了提子收益，再加一次属于双重计分。
-        // 黑棋贴3.75子（等价于贴目7.5）。
+        // 黑棋贴目 7.5（中国规则数子法）。
         double blackScore = blackTerritory;
-        double whiteScore = whiteTerritory + 3.75;
+        double whiteScore = whiteTerritory + 7.5;
 
         boolean blackWins = blackScore > whiteScore;
 
@@ -278,6 +278,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         }
         if (key == GLFW.GLFW_KEY_P && state == State.PLAYING && !game.isGameOver()) {
             if (lanMode == LAN_NONE) {
+                // ★ 修复：单机 AI 模式下 AI 执白，AI 回合（含思考中）不允许玩家代为虚着
+                if (game.isAiMode() && game.getCurrentPlayer() == GoPlayer.WHITE) return true;
                 game.pass();
                 if (game.isGameOver()) finishGame();
             } else if (myTurn) {
@@ -556,6 +558,12 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         }
         if (state == State.PLAYING && btn == 0 && !game.isGameOver()) {
             boolean canPlay = (lanMode == LAN_NONE) || myTurn;
+            // ★ 修复：单机 AI 模式下 AI 执白，AI 回合（含思考中）不允许玩家代落子；
+            //   LAN 模式行为不变
+            if (lanMode == LAN_NONE && game.isAiMode()
+                    && game.getCurrentPlayer() == GoPlayer.WHITE) {
+                canPlay = false;
+            }
             if (!canPlay) return true;
 
             int[] pos = getBoardPos((int)mx, (int)my);

@@ -114,7 +114,9 @@ public class KataGoGoAI implements GoAI {
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         // ★ Bug修复：stderr 不并入 stdout——stdout 必须保持纯 GTP 流，
-        //   引擎日志混入后会被响应解析吞掉/错位；日志改走本进程 stderr
+        //   引擎日志混入后会被响应解析吞掉/错位；日志改走本进程 stderr。
+        //   stderr 也不能完全不消费——管道缓冲写满会挂死引擎，继承到本进程 stderr
+        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         this.process = pb.start();
 
         this.writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
@@ -205,13 +207,13 @@ public class KataGoGoAI implements GoAI {
      * 同步棋盘状态到 KataGo（增量同步）。
      * <p>
      * KataGo 内部会缓存棋盘状态，避免每步都 clear_board 丢失缓存。
-     * 只有在棋盘为空或历史大幅倒退（如重开）时才全量同步。
+     * 只有在棋盘为空或历史收缩（如重开，任何手数倒退）时才全量同步。
      */
     private void syncBoard(GoGame game) throws IOException, TimeoutException {
         List<GoMove> history = game.getMoveHistory();
 
-        // 如果棋盘为空或历史大幅倒退（如重开），全量同步
-        if (lastSyncedMoveCount == 0 || history.size() < lastSyncedMoveCount - 5) {
+        // 如果棋盘为空或历史收缩（如重开，任何手数倒退都可能是分叉），全量同步
+        if (lastSyncedMoveCount == 0 || history.size() < lastSyncedMoveCount) {
             sendCommand("clear_board");
             lastSyncedMoveCount = 0;
             for (GoMove move : history) {
@@ -230,6 +232,11 @@ public class KataGoGoAI implements GoAI {
             if (move.x >= 0 && move.y >= 0) {
                 String color = move.player == GoPlayer.BLACK ? "black" : "white";
                 sendCommand("play " + color + " " + formatMove(move.x, move.y));
+            } else {
+                // ★ 修复：pass 也要转发给引擎，否则引擎端回合指针与本地棋盘脱节，
+                //   genmove 会给错误的行棋方出招
+                String color = move.player == GoPlayer.BLACK ? "black" : "white";
+                sendCommand("play " + color + " pass");
             }
         }
         lastSyncedMoveCount = history.size();

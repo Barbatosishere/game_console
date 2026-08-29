@@ -304,24 +304,31 @@ public class GoGame implements AutoCloseable {
     }
     
     public void pass() {
-        if (gameOver) return;
-
-        // 先按当前玩家记录弃权（原先在switchPlayer之后记录，会把弃权记到对手名下）
+        // ★ 修复：consecutivePasses/switchPlayer/endGame 原先在 stateLock 之外修改，
+        //   与 placeStone 的持锁协议不一致——并发读端可能看到"已记弃权未换手"的
+        //   撕裂状态。整段状态变更持锁；这里只有内存操作，无 IO 重活，不会长期占锁
         synchronized (stateLock) {
-            moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
-        }
+            if (gameOver) return;
 
-        consecutivePasses++;
-        if (consecutivePasses >= 2) {
-            endGame();
-        } else {
-            switchPlayer();
+            // 先按当前玩家记录弃权（原先在switchPlayer之后记录，会把弃权记到对手名下）
+            moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
+
+            consecutivePasses++;
+            if (consecutivePasses >= 2) {
+                endGame();
+            } else {
+                switchPlayer();
+            }
         }
     }
-    
+
     public void resign() {
-        gameOver = true;
-        // 可以记录谁认输了
+        // 认输只置终态标志，同样持锁与 isGameOver() 的持锁读对齐；
+        // GoGame 没有记录认输方的字段，保持现状不扩字段
+        synchronized (stateLock) {
+            gameOver = true;
+            // 可以记录谁认输了
+        }
     }
     
     public void makeAiMove() {

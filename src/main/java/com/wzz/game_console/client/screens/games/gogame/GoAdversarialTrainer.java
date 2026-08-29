@@ -210,7 +210,9 @@ public final class GoAdversarialTrainer {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(exeFile.getParentFile()); // 设置工作目录为 KataGo 目录（找到 DLL 和调优缓存）
             // ★ 修复：不再 redirectErrorStream——stdout 必须保持纯 GTP 流，
-            //   引擎日志混入 stdout 会被当作响应解析，导致 GTP 解析错位分叉
+            //   引擎日志混入 stdout 会被当作响应解析，导致 GTP 解析错位分叉；
+            //   stderr 也不能完全不消费——管道缓冲写满会挂死引擎，继承到本进程 stderr
+            pb.redirectError(ProcessBuilder.Redirect.INHERIT);
             process = pb.start();
             java.io.BufferedWriter writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(process.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
@@ -298,7 +300,9 @@ public final class GoAdversarialTrainer {
                 boolean ourWin = kataResigned
                         ? true
                         : (ourIsBlack && margin > 0) || (!ourIsBlack && margin < 0);
-                double blackValue = kataResigned ? 1.0 : clamp(margin / 100.0);
+                // ★ 修复：resign 是"黑方（KataGo 或我方）认输"——我方执白时黑（对手）实际输了，
+                //   blackValue 应为 -1 而非 +1，否则训练标签方向完全颠倒
+                double blackValue = kataResigned ? (ourIsBlack ? 1.0 : -1.0) : clamp(margin / 100.0);
 
                 for (Sample s : samples) {
                     s.valueTarget = (s.player == GoPlayer.BLACK) ? blackValue : -blackValue;
