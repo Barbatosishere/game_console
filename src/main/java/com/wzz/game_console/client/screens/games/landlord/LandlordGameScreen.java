@@ -174,8 +174,11 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
                 game.applyState(data.substring(6),myPlayerIdx,h);
                 if(cardSelected.length!=h.size())cardSelected=new boolean[h.size()];
                 // ★ Bug修复:applyState 后牌数变化,旧 selectedCards 列表残留旧索引,
-                //   玩家点击可能选中错误的牌。同步清空选牌列表
+                //   玩家点击可能选中错误的牌。同步清空选牌列表与选中标记数组
+                //   （原版只清 selectedCards,cardSelected[] 残留 true 会导致
+                //   syncSel 把未点击的旧牌重新塞回 selectedCards）
                 selectedCards.clear();
+                Arrays.fill(cardSelected,false);
             }else if(data.startsWith("REJECT:")){
                 // 主机拒绝了客机的出牌/叫牌（如状态滞后、牌型不合法），给出可见反馈
                 showMsg("主机拒绝: "+data.substring(7));

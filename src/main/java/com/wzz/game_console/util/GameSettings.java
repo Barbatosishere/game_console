@@ -124,11 +124,11 @@ public class GameSettings {
                 }
             }
         } catch (Exception e) {
-            // ★ Bug修复：原版 JSON 损坏仍设 loaded=true,后续 getInt/getString 永不重试
-            //   损坏文件,玩家只能重启游戏。改为解析失败时 loaded=false,
-            //   下次 ensureLoaded() 会再次尝试读取
-            LOGGER.warn("加载游戏设置失败（使用默认值，下次访问会重试）: {}", e.getMessage());
-            loaded = false;
+            // ★ Bug修复：损坏 JSON 若保持 loaded=false，render 每帧调用的 getInt/getString
+            //   都会重新读盘并刷一条 WARN，卡顿且日志刷屏。改为本轮会话直接锁定默认
+            //   配置不再重试；文件修复后重启游戏（或导入设置）即可重新生效
+            LOGGER.warn("加载游戏设置失败，本次会话使用默认配置（不再重试）: {}", e.getMessage());
+            loaded = true;
             return;
         }
         loaded = true;

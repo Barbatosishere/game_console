@@ -77,12 +77,20 @@ public class MultiplayerLobbyScreen extends Screen {
     // ─── 分页 ───
     private int playerListPage = 0;
     private static final int PLAYERS_PER_PAGE = 8;
+    private int gamesPage = 0;                                            // 游戏选择列表当前页
+    private static final int GAMES_PER_PAGE = 7;                          // 1080p 自动缩放下一页最多画 7 张卡
 
     // ─── 收到的邀请 ───
     private static MultiplayerGamePacket pendingInvite = null;
     private static String inviterName = null;
     private static long pendingInviteArrivalMs = 0;                       // 邀请到达时间戳
     private static final long INVITE_TIMEOUT_MS = 60_000;                 // 邀请 60 秒过期
+    // 已接受邀请的主机与时间戳：候选者接受邀请后会切到对局界面等待开局（pendingInvite 已清空），
+    // 主机此后发来的 INVITE_CANCELLED 需要靠它做兜底通知（见 handleIncomingPacket）
+    private static UUID acceptedInviteHostUuid = null;
+    private static long acceptedInviteMs = 0;
+    /** 兜底通知有效窗口：主机等待上限 30 秒，60 秒足以覆盖其流产通知，又防过期报文误伤 */
+    private static final long ACCEPTED_INVITE_VALID_MS = 60_000;
     /** 等待动画 "." 帧表(预计算,避免 renderWaiting 每帧 repeat 分配) */
     private static final String[] WAIT_DOTS = { "", ".", "..", "..." };
     // 说明：主机不在大厅时到达的 ACCEPT_INVITE 不再缓存回放。
@@ -146,6 +154,23 @@ public class MultiplayerLobbyScreen extends Screen {
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
                                     Component.literal("[游戏机] 邀请已取消/超时"), false);
+                        }
+                        return;
+                    }
+                    // ★ Bug修复：兜底——候选者已接受邀请并切到对局界面等待开局时，
+                    //   pendingInvite 已在接受时清空，上面的分支不会命中，主机流产
+                    //   会让玩家永远停在"等待游戏开始"界面。此处校验取消方是当初
+                    //   接受邀请的主机且仍在有效窗口内，防止伪造/过期报文误伤；
+                    //   回到大厅并用 chat 提示（沿用"邀请已取消/超时"的提示机制）
+                    if (acceptedInviteHostUuid != null
+                            && Objects.equals(acceptedInviteHostUuid, packet.getSenderUuid())
+                            && System.currentTimeMillis() - acceptedInviteMs <= ACCEPTED_INVITE_VALID_MS
+                            && !(mc.screen instanceof MultiplayerLobbyScreen)) {
+                        acceptedInviteHostUuid = null;
+                        mc.setScreen(new MultiplayerLobbyScreen());
+                        if (mc.player != null) {
+                            mc.player.displayClientMessage(
+                                    Component.literal("[游戏机] 主机已取消对局"), false);
                         }
                     }
                 });
@@ -261,6 +286,10 @@ public class MultiplayerLobbyScreen extends Screen {
                                     Component.literal("[游戏机] " + name + " 已断线，对局结束"), false);
                         }
                         mc.setScreen(null);
+                    } else if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
+                        // ★ Bug修复：大厅侧同样要处理——退出者是候选/被邀玩家时
+                        //   移出名单并提前终止等待，避免主机干等到 30 秒超时
+                        lobby.onPeerQuit(quitter);
                     }
                 });
             }
@@ -348,6 +377,34 @@ public class MultiplayerLobbyScreen extends Screen {
         waitingStartTick = 0;
     }
 
+    /**
+     * 终止当前等待（等待超时/对端断线共用的终止路径）：
+     * 先通知其余被邀者邀请作废，再回到模式选择并给出原因提示。
+     */
+    private void terminateWaiting(String reason) {
+        notifyInviteCancelled(); // 先通知被邀者，避免对方无限等待
+        state = LobbyState.MODE_SELECT;
+        resetLanWaitState();
+        waitingMessage = reason; // resetLanWaitState会清空，重新设置提示
+    }
+
+    /**
+     * PLAYER_QUIT（服务端断线看门狗广播）的大厅侧处理。
+     * (a) 将退出者移出斗地主候选名单；(b) 若正处于等待其接受的 WAITING 态
+     * （单邀的 invitedPlayer 或批量邀的候选含该 UUID），复用超时终止路径
+     * 提前结束等待，避免主机干等到 30 秒超时。
+     */
+    private void onPeerQuit(UUID quitter) {
+        if (quitter == null) return;
+        boolean wasCandidate = selectedLanPeers.contains(quitter);
+        boolean wasInvitee = quitter.equals(invitedPlayer);
+        if (!wasCandidate && !wasInvitee) return; // 与当前邀请无关的退出者，忽略
+        selectedLanPeers.remove(quitter);
+        if (state == LobbyState.WAITING) {
+            terminateWaiting("对方已断线");
+        }
+    }
+
     private void onInviteAccepted(MultiplayerGamePacket packet) {
         // 接受者身份一律以服务端盖章的 senderUuid/senderName 为准
         // （targetPlayer 是收件人即主机自己，不可用作接受者身份）
@@ -411,10 +468,7 @@ public class MultiplayerLobbyScreen extends Screen {
         // 等待超时机制：长时间无人接受则自动取消邀请
         if (state == LobbyState.WAITING && waitingStartTick > 0
                 && tickCount - waitingStartTick > WAIT_TIMEOUT_TICKS) {
-            notifyInviteCancelled(); // 超时前先通知被邀者，避免对方无限等待
-            state = LobbyState.MODE_SELECT;
-            resetLanWaitState();
-            waitingMessage = "等待超时，邀请已取消"; // resetLanWaitState会清空，重新设置提示
+            terminateWaiting("等待超时，邀请已取消");
         }
         // 收到的邀请超时清理：避免过期的邀请弹窗一直遮挡界面
         if (pendingInvite != null && System.currentTimeMillis() - pendingInviteArrivalMs > INVITE_TIMEOUT_MS) {
@@ -451,20 +505,27 @@ public class MultiplayerLobbyScreen extends Screen {
 
     private void renderGameSelect(GuiGraphics g, int mx, int my) {
         int cx = width / 2;
-        g.drawCenteredString(font, "选择多人游戏", cx, 38, 0xCCCCCC);
+        // ★ Bug修复：11 张卡一页画不下（1080p 自动缩放下超出屏幕且无法点选），
+        //   参照 renderPlayerList 的分页模式，只渲染当前页
+        int totalPages = Math.max(1, (MP_GAMES.size() + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE);
+        if (gamesPage >= totalPages) gamesPage = totalPages - 1;
+        // 页码指示沿用玩家列表的写法（标题带 当前页/总页数）
+        g.drawCenteredString(font, "选择多人游戏  (" + (gamesPage + 1) + "/" + totalPages + ")", cx, 38, 0xCCCCCC);
 
         int startY = 55;
         int cardW = 220;
         int cardH = 24;
         hoveredGameIndex = -1;
 
-        for (int i = 0; i < MP_GAMES.size(); i++) {
+        int startIdx = gamesPage * GAMES_PER_PAGE;
+        int endIdx = Math.min(startIdx + GAMES_PER_PAGE, MP_GAMES.size());
+        for (int i = startIdx; i < endIdx; i++) {
             MultiplayerGame game = MP_GAMES.get(i);
             int cardX = cx - cardW / 2;
-            int cardY = startY + i * (cardH + 3);
+            int cardY = startY + (i - startIdx) * (cardH + 3);
 
             boolean hover = mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH;
-            if (hover) hoveredGameIndex = i;
+            if (hover) hoveredGameIndex = i; // 绝对索引，点击处理与原逻辑一致
 
             int bg = hover ? 0xFF252555 : 0xFF1A1A38;
             g.fill(cardX, cardY, cardX + cardW, cardY + cardH, bg);
@@ -482,6 +543,12 @@ public class MultiplayerLobbyScreen extends Screen {
             if (game.supportsLAN) modes.append("联机");
             int mw = font.width(modes.toString());
             g.drawString(font, modes.toString(), cardX + cardW - mw - 5, cardY + 8, 0x888888);
+        }
+
+        // 翻页提示：游戏列表用滚轮/PageUp/PageDown 翻页（玩家列表用的是底部按钮位，此处空间不足）
+        if (totalPages > 1) {
+            g.drawCenteredString(font, "滚轮 / PgUp·PgDn 翻页", cx,
+                    startY + (endIdx - startIdx) * (cardH + 3) + 4, 0x666666);
         }
     }
 
@@ -685,6 +752,10 @@ public class MultiplayerLobbyScreen extends Screen {
                         MultiplayerGamePacket.PacketType.ACCEPT_INVITE,
                         hostUuid, gameId, ""
                 ));
+                // 记录已接受邀请的主机：主机此后流产(INVITE_CANCELLED)时用于兜底通知，
+                // 否则已切到对局界面等待的候选者收不到任何通知
+                acceptedInviteHostUuid = hostUuid;
+                acceptedInviteMs = System.currentTimeMillis();
                 pendingInvite = null;
                 // 被邀请方作为 CLIENT 直接启动游戏
                 // CLIENT 侧：以 isHost=false 启动对应联机实例
@@ -877,7 +948,24 @@ public class MultiplayerLobbyScreen extends Screen {
     }
 
     @Override
+    public boolean mouseScrolled(double mx, double my, double scrollX, double scrollY) {
+        // 游戏选择列表滚轮翻页（邀请弹窗显示时不翻页，避免隔空误操作）
+        if (pendingInvite == null && state == LobbyState.GAME_SELECT) {
+            int totalPages = Math.max(1, (MP_GAMES.size() + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE);
+            if (scrollY < 0 && gamesPage < totalPages - 1) { gamesPage++; return true; }
+            if (scrollY > 0 && gamesPage > 0) { gamesPage--; return true; }
+        }
+        return super.mouseScrolled(mx, my, scrollX, scrollY);
+    }
+
+    @Override
     public boolean keyPressed(int key, int scan, int mods) {
+        // 游戏选择列表 PageUp/PageDown 翻页（与滚轮等效）
+        if (pendingInvite == null && state == LobbyState.GAME_SELECT) {
+            int totalPages = Math.max(1, (MP_GAMES.size() + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE);
+            if (key == GLFW.GLFW_KEY_PAGE_DOWN && gamesPage < totalPages - 1) { gamesPage++; return true; }
+            if (key == GLFW.GLFW_KEY_PAGE_UP && gamesPage > 0) { gamesPage--; return true; }
+        }
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             switch (state) {
                 case MODE_SELECT -> { state = LobbyState.GAME_SELECT; return true; }

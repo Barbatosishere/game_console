@@ -298,14 +298,15 @@ public class AIPlayer {
         // 找合适的三张
         for (int tripleValue : groups.keySet()) {
             if (tripleValue > targetValue && groups.get(tripleValue).size() >= 3) {
-                // 找一张单牌（优先散牌，避免拆对）
-                for (int singleValue : groups.keySet()) {
-                    if (singleValue != tripleValue && groups.get(singleValue).size() >= 1) {
-                        List<Card> result = new ArrayList<>();
-                        result.addAll(groups.get(tripleValue).subList(0, 3));
-                        result.add(groups.get(singleValue).get(0));
-                        return result;
-                    }
+                // 找一张单牌当翅膀：★ Bug修复：原版按 size>=1 取最小值组，会把对子
+                //   甚至炸弹（4张组）拆掉。改为先取精确散牌(size==1)，没有才从
+                //   非炸弹的更大组里拆（见 pickWingGroup），永不碰炸弹
+                Integer singleValue = pickWingGroup(groups, tripleValue, 1);
+                if (singleValue != null) {
+                    List<Card> result = new ArrayList<>();
+                    result.addAll(groups.get(tripleValue).subList(0, 3));
+                    result.add(groups.get(singleValue).get(0));
+                    return result;
                 }
             }
         }
@@ -318,18 +319,40 @@ public class AIPlayer {
         // 找合适的三张
         for (int tripleValue : groups.keySet()) {
             if (tripleValue > targetValue && groups.get(tripleValue).size() >= 3) {
-                // 找一对
-                for (int pairValue : groups.keySet()) {
-                    if (pairValue != tripleValue && groups.get(pairValue).size() >= 2) {
-                        List<Card> result = new ArrayList<>();
-                        result.addAll(groups.get(tripleValue).subList(0, 3));
-                        result.addAll(groups.get(pairValue).subList(0, 2));
-                        return result;
-                    }
+                // 找一对当翅膀：★ Bug修复：原版按 size>=2 取最小值组，会把三张
+                //   甚至炸弹（4张组）拆掉。改为优先精确对子(size==2)，没有才从
+                //   非炸弹的更大组里拆（见 pickWingGroup），永不碰炸弹
+                Integer pairValue = pickWingGroup(groups, tripleValue, 2);
+                if (pairValue != null) {
+                    List<Card> result = new ArrayList<>();
+                    result.addAll(groups.get(tripleValue).subList(0, 3));
+                    result.addAll(groups.get(pairValue).subList(0, 2));
+                    return result;
                 }
             }
         }
         return findAnyBomb(hand);
+    }
+
+    /**
+     * 为三带一/三带二挑翅膀组（TreeMap 升序迭代，取最小值者）：
+     * 优先张数恰好匹配的组；找不到才从更大的组拆，但绝不碰 size==4 的炸弹，
+     * 避免为凑翅膀拆掉炸弹（旧逻辑 size>=n 的判断会命中 4 张组）。
+     *
+     * @param exactSize 翅膀精确张数（单牌=1，对子=2）
+     * @param exclude   三张主牌的值，不能从自身拆
+     * @return 翅膀组的值；没有合法组返回 null
+     */
+    private Integer pickWingGroup(Map<Integer, List<Card>> groups, int exclude, int exactSize) {
+        // 1) 精确张数的组（最小值优先）
+        Integer exact = pickGroupExact(groups, exactSize, exclude);
+        if (exact != null) return exact;
+        // 2) 从更大的组拆（跳过炸弹与主牌本身）
+        for (Map.Entry<Integer, List<Card>> e : groups.entrySet()) {
+            int sz = e.getValue().size();
+            if (e.getKey() != exclude && sz > exactSize && sz != 4) return e.getKey();
+        }
+        return null;
     }
 
     private List<Card> findMinimalStraight(List<Card> hand, int targetValue, int length) {
