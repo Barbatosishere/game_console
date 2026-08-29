@@ -18,10 +18,10 @@ base {
     archivesName = mod_id
 }
 
-// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta5.jar
+// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta6.jar
 var loaderName = "NeoForge"
 tasks.named('jar') {
-    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta5"
+    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta6"
     archiveVersion = ''
     archiveClassifier = ''
 }
