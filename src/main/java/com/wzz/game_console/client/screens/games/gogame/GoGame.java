@@ -481,23 +481,27 @@ public class GoGame implements AutoCloseable {
         for (int x = 0; x < BOARD_SIZE; x++) {
             for (int y = 0; y < BOARD_SIZE; y++) {
                 if (visited[x][y] || board[x][y] != GoPlayer.NONE) continue;
-                // BFS 找连通空区
+                // BFS 只遍历空点；边界棋子仅记录颜色，不能共享空区 visited 标记。
                 java.util.List<int[]> region = new java.util.ArrayList<>();
-                java.util.Queue<int[]> queue = new java.util.LinkedList<>();
+                java.util.Queue<int[]> queue = new java.util.ArrayDeque<>();
                 queue.add(new int[]{x, y});
+                visited[x][y] = true;
                 boolean touchBlack = false, touchWhite = false;
                 while (!queue.isEmpty()) {
-                    int[] pos = queue.poll();
+                    int[] pos = queue.remove();
                     int px = pos[0], py = pos[1];
-                    if (px < 0 || px >= BOARD_SIZE || py < 0 || py >= BOARD_SIZE) continue;
-                    if (visited[px][py]) continue;
-                    visited[px][py] = true;
-                    GoPlayer st = board[px][py];
-                    if (st == GoPlayer.BLACK) { touchBlack = true; continue; }
-                    if (st == GoPlayer.WHITE) { touchWhite = true; continue; }
-                    region.add(new int[]{px, py});
-                    for (int[] d : DIRS)
-                        queue.add(new int[]{px + d[0], py + d[1]});
+                    region.add(pos);
+                    for (int[] d : DIRS) {
+                        int nx = px + d[0], ny = py + d[1];
+                        if (nx < 0 || nx >= BOARD_SIZE || ny < 0 || ny >= BOARD_SIZE) continue;
+                        GoPlayer st = board[nx][ny];
+                        if (st == GoPlayer.BLACK) touchBlack = true;
+                        else if (st == GoPlayer.WHITE) touchWhite = true;
+                        else if (!visited[nx][ny]) {
+                            visited[nx][ny] = true;
+                            queue.add(new int[]{nx, ny});
+                        }
+                    }
                 }
                 int pts = region.size();
                 if (touchBlack && !touchWhite) blackT += pts;

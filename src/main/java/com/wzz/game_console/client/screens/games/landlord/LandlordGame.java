@@ -1,8 +1,10 @@
 package com.wzz.game_console.client.screens.games.landlord;
 
 import java.util.*;
+import java.util.logging.Logger;
 
 public class LandlordGame {
+    private static final Logger LOGGER = Logger.getLogger(LandlordGame.class.getName());
     public enum GameState {
         DEALING, BIDDING, PLAYING, ENDED
     }
@@ -296,28 +298,44 @@ public class LandlordGame {
             return new CardPattern(CardPattern.Type.FOUR_WITH_TWO_PAIRS, countToValues.get(4).get(0), 1);
         }
 
-        // 飞机检查（三张的连续）
+        // 飞机检查：主体必须是恰好三张且牌值连续，翅牌不能占用主体牌值。
         if (countToValues.containsKey(3)) {
-            List<Integer> tripleValues = countToValues.get(3);
+            List<Integer> tripleValues = new ArrayList<>();
+            for (Map.Entry<Integer, Integer> entry : valueCount.entrySet()) {
+                if (entry.getValue() == 3) tripleValues.add(entry.getKey());
+            }
+            Collections.sort(tripleValues);
             if (tripleValues.size() >= 2 && isConsecutiveValues(tripleValues)) {
                 int tripleCount = tripleValues.size();
-                int expectedSize = tripleCount * 3; // 基础飞机大小
+                int expectedSize = tripleCount * 3;
+                Set<Integer> bodyValues = new HashSet<>(tripleValues);
+                int wingCards = 0;
+                boolean validSingleWings = true;
+                boolean validPairWings = true;
+                int pairWingValues = 0;
+                for (Map.Entry<Integer, Integer> entry : valueCount.entrySet()) {
+                    if (bodyValues.contains(entry.getKey())) continue;
+                    int count = entry.getValue();
+                    wingCards += count;
+                    if (count >= 3) validSingleWings = false;
+                    if (count != 2) validPairWings = false;
+                    if (count == 2) pairWingValues++;
+                }
 
                 // 纯飞机
-                if (size == expectedSize) {
+                if (size == expectedSize && wingCards == 0) {
                     return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
                 }
-
-                // 飞机带单牌：翅牌为任意散牌（对子可拆作两单，如 333444+5+5）。
-                // 三张值本身因 valueCount 按整值分组，不可能混入翅牌
-                if (size == expectedSize + tripleCount) {
-                    return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
+                // 飞机带单：每个翅占一张，允许同值散牌，但不能带出额外三张。
+                if (size == expectedSize + tripleCount && wingCards == tripleCount && validSingleWings) {
+                    return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT_WITH_SINGLE,
+                            tripleValues.get(0), tripleCount);
                 }
-
-                // 飞机带对子
-                if (size == expectedSize + tripleCount * 2 && countToValues.containsKey(2) &&
-                    countToValues.get(2).size() == tripleCount) {
-                    return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT, tripleValues.get(0), tripleCount);
+                // 飞机带对：每个翅是不同牌值的完整对子，不能拆三张或炸弹。
+                if (size == expectedSize + tripleCount * 2 && wingCards == tripleCount * 2
+                        && validPairWings && pairWingValues == tripleCount) {
+                    return new CardPattern(CardPattern.Type.TRIPLE_STRAIGHT_WITH_PAIR,
+                            tripleValues.get(0), tripleCount);
                 }
             }
         }
@@ -380,14 +398,14 @@ public class LandlordGame {
             }
             if (landlordWins) {
                 // 地主获胜
-                scores[landlordPlayer] = baseScore * 2 * multiplier;
-                scores[farmerA] = -baseScore * multiplier;
-                scores[farmerB] = -baseScore * multiplier;
+                scores[landlordPlayer] += baseScore * 2 * multiplier;
+                scores[farmerA] += -baseScore * multiplier;
+                scores[farmerB] += -baseScore * multiplier;
             } else {
                 // 农民获胜
-                scores[landlordPlayer] = -baseScore * 2 * multiplier;
-                scores[farmerA] = baseScore * multiplier;
-                scores[farmerB] = baseScore * multiplier;
+                scores[landlordPlayer] += -baseScore * 2 * multiplier;
+                scores[farmerA] += baseScore * multiplier;
+                scores[farmerB] += baseScore * multiplier;
             }
         }
     }
@@ -470,37 +488,108 @@ public class LandlordGame {
      * 从序列化字符串恢复状态（客户端调用）。
      * myPlayerIndex: 本地玩家是哪一位（0/1/2）
      */
-    public void applyState(String data, int myPlayerIndex, List<Card> myHand) {
-        String[] parts = data.split("\\|", -1);
-        if (parts.length < 9) return;
-        gameState      = GameState.valueOf(parts[0]);
-        currentPlayer  = Integer.parseInt(parts[1]);
-        landlordPlayer = Integer.parseInt(parts[2]);
-        lastPlayer     = Integer.parseInt(parts[3]);
-        // 手牌：只有自己的是准确的，其他人只知数量
-        List<Card> myCards = deserializeCards(parts[4]);
-        playerHands.set(myPlayerIndex, myCards);
-        myHand.clear(); myHand.addAll(myCards);
-        lastPlayedCards = deserializeCards(parts[5]);
-        String[] cnts = parts[6].split(",");
-        // 更新其他玩家手牌数量（用空Card占位，渲染时只显示数量）
-        for (int i = 0; i < 3; i++) {
-            if (i == myPlayerIndex) continue;
-            int cnt = Integer.parseInt(cnts[i]);
-            List<Card> ph = playerHands.get(i);
-            ph.clear();
-            // 用 placeholder（不能用于真实出牌，只用于显示数量）
-            for (int k = 0; k < cnt; k++) ph.add(new Card(Card.Suit.SPADES, Card.Rank.THREE));
+    public boolean applyState(String data, int myPlayerIndex, List<Card> myHand) {
+        try {
+            if (data == null || myHand == null || myPlayerIndex < 0 || myPlayerIndex >= 3) {
+                throw new IllegalArgumentException("invalid player index or null state");
+            }
+            String[] parts = data.split("\\|", -1);
+            if (parts.length != 9) throw new IllegalArgumentException("invalid state field count");
+            GameState parsedState = GameState.valueOf(parts[0]);
+            int parsedCurrent = parseRequiredPlayerIndex(parts[1]);
+            int parsedLandlord = parsePlayerIndex(parts[2], true);
+            int parsedLast = parsePlayerIndex(parts[3], true);
+
+            List<Card> parsedHand = deserializeCardsStrict(parts[4]);
+            List<Card> parsedLastCards = deserializeCardsStrict(parts[5]);
+            List<Card> parsedBottom = deserializeCardsStrict(parts[8]);
+            if (parsedHand == null || parsedLastCards == null || parsedBottom == null) {
+                throw new IllegalArgumentException("invalid card list");
+            }
+            String[] cnts = parts[6].split(",", -1);
+            String[] scs = parts[7].split(",", -1);
+            if (cnts.length != 3 || scs.length != 3) throw new IllegalArgumentException("invalid array length");
+            int[] parsedCounts = new int[3];
+            int[] parsedScores = new int[3];
+            for (int i = 0; i < 3; i++) {
+                parsedCounts[i] = parseNonNegativeInt(cnts[i]);
+                if (parsedCounts[i] > 54) throw new IllegalArgumentException("invalid hand count");
+                parsedScores[i] = parseInt(scs[i]);
+            }
+            if (parsedCounts[myPlayerIndex] != parsedHand.size()
+                    || parsedHand.size() > 54 || parsedLastCards.size() > 54 || parsedBottom.size() > 3) {
+                throw new IllegalArgumentException("invalid card list size");
+            }
+
+            List<List<Card>> newHands = new ArrayList<>();
+            for (int i = 0; i < 3; i++) newHands.add(new ArrayList<>());
+            newHands.set(myPlayerIndex, parsedHand);
+            for (int i = 0; i < 3; i++) {
+                if (i != myPlayerIndex) {
+                    for (int k = 0; k < parsedCounts[i]; k++) {
+                        newHands.get(i).add(new Card(Card.Suit.SPADES, Card.Rank.THREE));
+                    }
+                }
+            }
+            gameState = parsedState;
+            currentPlayer = parsedCurrent;
+            landlordPlayer = parsedLandlord;
+            lastPlayer = parsedLast;
+            playerHands = newHands;
+            lastPlayedCards = parsedLastCards;
+            System.arraycopy(parsedScores, 0, scores, 0, scores.length);
+            if (landlordPlayer == -1) landlordCards = parsedBottom;
+            myHand.clear();
+            myHand.addAll(parsedHand);
+        } catch (RuntimeException e) {
+            LOGGER.warning("[斗地主] 丢弃非法状态报文: " + e);
+            return false;
         }
-        String[] scs = parts[7].split(",");
-        for (int i = 0; i < 3; i++) scores[i] = Integer.parseInt(scs[i]);
-        // ★ Bug修复：原版无条件用 parts[8] 覆盖 landlordCards，但 BID 阶段 HOST
-        //   端行 92 landlordCards.clear() 后序列化的就是空 list，覆盖后 CLIENT
-        //   getLandlordCards() 永远返回空、底牌不可见。改为仅在 BID 前
-        //   (landlordPlayer==-1 时 parts[8] 是有效底牌) 覆盖，已发牌阶段保留
-        //   本地状态（联机中途重入场景也能恢复底牌显示）。
-        if (landlordPlayer == -1) {
-            landlordCards = deserializeCards(parts[8]);
+        return true;
+    }
+
+    private static int parseInt(String value) {
+        if (value == null || value.isEmpty()) throw new IllegalArgumentException("empty integer");
+        return Integer.parseInt(value);
+    }
+
+    private static int parseNonNegativeInt(String value) {
+        int result = parseInt(value);
+        if (result < 0) throw new IllegalArgumentException("negative integer");
+        return result;
+    }
+
+    private static int parsePlayerIndex(String value, boolean allowSentinel) {
+        int result = parseInt(value);
+        if ((allowSentinel && result == -1) || result >= 0 && result < 3) return result;
+        throw new IllegalArgumentException("invalid player index");
+    }
+
+    private static int parseRequiredPlayerIndex(String value) {
+        int result = parseInt(value);
+        if (result < 0 || result >= 3) throw new IllegalArgumentException("invalid player index");
+        return result;
+    }
+
+    public static List<Card> deserializeCardsStrict(String value) {
+        if (value == null || value.isEmpty()) return new ArrayList<>();
+        List<Card> result = new ArrayList<>();
+        for (String part : value.split(",", -1)) {
+            String[] fields = part.split("_", -1);
+            if (fields.length != 2) return null;
+            try {
+                int suitIndex = parseInt(fields[0]);
+                int rankValue = parseInt(fields[1]);
+                Card.Suit[] suits = Card.Suit.values();
+                if (suitIndex < 0 || suitIndex >= suits.length || rankValue < 3 || rankValue > 17) return null;
+                Card.Suit suit = suits[suitIndex];
+                Card.Rank rank = Arrays.stream(Card.Rank.values()).filter(r -> r.getValue() == rankValue).findFirst().orElse(null);
+                if (rank == null || (suit == Card.Suit.JOKER) != (rankValue >= 16)) return null;
+                result.add(new Card(suit, rank));
+            } catch (RuntimeException e) {
+                return null;
+            }
         }
+        return result;
     }
 }

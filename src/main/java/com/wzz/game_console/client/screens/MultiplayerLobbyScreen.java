@@ -37,7 +37,7 @@ public class MultiplayerLobbyScreen extends Screen {
             new MultiplayerGame("chess",     "中国象棋",  "♚",  true, true, true),
             new MultiplayerGame("icefire",   "森林冰火人","❄",  false, true, true),
             new MultiplayerGame("colorchase","颜色追逐",  "🎨", true, true, true),
-            new MultiplayerGame("landlord",  "斗地主",    "🃏\uFE0F", true, false, true),
+            new MultiplayerGame("landlord",  "斗地主",    "🃏\uFE0F", true, true, true),
             new MultiplayerGame("breakout",  "打砖块",    "🧱", false, true, false),
             new MultiplayerGame("maze",      "迷宫",      "🌀", false, true, false),
             new MultiplayerGame("snake",     "贪吃蛇",    "🐍", false, true, false),
@@ -783,16 +783,7 @@ public class MultiplayerLobbyScreen extends Screen {
 
             // 拒绝按钮：nx+nw-130, ny+nh-28, 宽110, 高22
             if (mx >= nx + nw - 130 && mx <= nx + nw - 20 && my >= ny + nh - 28 && my <= ny + nh - 6) {
-                // 拒绝消息发给服务端盖章的邀请者（targetPlayer 仍是自己，不能用）
-                UUID inviterUuid = pendingInvite.getSenderUuid();
-                if (inviterUuid != null) {
-                    ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                            MultiplayerGamePacket.PacketType.DECLINE_INVITE,
-                            inviterUuid,
-                            pendingInvite.getGameId(), ""
-                    ));
-                }
-                pendingInvite = null;
+                declinePendingInvite();
                 return true;
             }
             return true; // 弹窗显示时屏蔽所有背景点击
@@ -808,13 +799,17 @@ public class MultiplayerLobbyScreen extends Screen {
                 }
             }
             case MODE_SELECT -> {
-                if (hoveredModeIndex == 0) {
-                    launchGame("ai");
+                MultiplayerGame selected = MP_GAMES.get(selectedGameIndex);
+                int modeIndex = 0;
+                if (selected.supportsAI && hoveredModeIndex == modeIndex++) {
+                    launchGame("AI");
                     return true;
-                } else if (hoveredModeIndex == 1) {
-                    launchGame("local");
+                }
+                if (selected.supportsLocal && hoveredModeIndex == modeIndex++) {
+                    launchGame("LOCAL_TWO_PLAYER");
                     return true;
-                } else if (hoveredModeIndex == 2) {
+                }
+                if (selected.supportsLAN && hoveredModeIndex == modeIndex) {
                     // 局域网 - 斗地主需要选2人
                     MultiplayerGame curGame = MP_GAMES.get(selectedGameIndex);
                     if ("landlord".equals(curGame.id())) {
@@ -910,16 +905,20 @@ public class MultiplayerLobbyScreen extends Screen {
 
     private void launchGame(String mode) {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
+        boolean ai = "AI".equalsIgnoreCase(mode) || "HUMAN".equalsIgnoreCase(mode);
+        boolean localTwoPlayer = "LOCAL_TWO_PLAYER".equalsIgnoreCase(mode) || "LOCAL".equalsIgnoreCase(mode);
         Screen gameScreen = switch (game.id) {
             case "gomoku"    -> new com.wzz.game_console.client.screens.games.GomokuScreen();
             case "go"        -> new com.wzz.game_console.client.screens.games.gogame.GoGameScreen(
                     new com.wzz.game_console.client.screens.games.gogame.GoGame());
             case "tictactoe" -> new com.wzz.game_console.client.screens.games.tictactoe.TicTacToeScreen(
                     com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame.GameMode.SINGLE_PLAYER);
-            case "chess"     -> new com.wzz.game_console.client.screens.games.ChessGameScreen();
+            case "chess"     -> new com.wzz.game_console.client.screens.games.ChessGameScreen(
+                    ai ? com.wzz.game_console.client.screens.games.ChessGameScreen.GameMode.PVA
+                            : com.wzz.game_console.client.screens.games.ChessGameScreen.GameMode.PVP);
             case "icefire"   -> new com.wzz.game_console.client.screens.games.IceFireGameScreen();
-            case "colorchase"-> new com.wzz.game_console.client.screens.games.ColorChaseGameScreen();
-            case "landlord"  -> new com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen();
+            case "colorchase"-> new com.wzz.game_console.client.screens.games.ColorChaseGameScreen(localTwoPlayer);
+            case "landlord"  -> new com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen(localTwoPlayer);
             case "breakout"  -> new com.wzz.game_console.client.screens.games.BreakoutScreen();
             case "maze"      -> new com.wzz.game_console.client.screens.games.MazeGameScreen();
             case "snake"     -> new com.wzz.game_console.client.screens.games.SnakeGameScreen();
@@ -958,8 +957,27 @@ public class MultiplayerLobbyScreen extends Screen {
         return super.mouseScrolled(mx, my, scrollX, scrollY);
     }
 
+    private void declinePendingInvite() {
+        MultiplayerGamePacket invite = pendingInvite;
+        if (invite == null) return;
+        UUID inviterUuid = invite.getSenderUuid();
+        if (inviterUuid == null) {
+            LOGGER.warn("[游戏机联机] 无法拒绝缺少邀请方身份的邀请");
+        } else {
+            ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+                    MultiplayerGamePacket.PacketType.DECLINE_INVITE,
+                    inviterUuid, invite.getGameId(), ""));
+        }
+        pendingInvite = null;
+        inviterName = null;
+    }
+
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
+        if (key == GLFW.GLFW_KEY_ESCAPE && pendingInvite != null) {
+            declinePendingInvite();
+            return true;
+        }
         // 游戏选择列表 PageUp/PageDown 翻页（与滚轮等效）
         if (pendingInvite == null && state == LobbyState.GAME_SELECT) {
             int totalPages = Math.max(1, (MP_GAMES.size() + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE);

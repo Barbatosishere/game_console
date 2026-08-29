@@ -794,7 +794,7 @@ public class PianoTilesGameScreen extends Screen {
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) { if (showExitConfirm) { closeExitConfirmDialog(); } else { openExitConfirmDialog(); } return true; }
-        if (showExitConfirm) return true;
+        if (showExitConfirm || countdownRemaining > 0) return true;
         // 如果在歌曲选择模式，使用默认的键盘处理
         if (songSelectMode) {
             // 可以添加方向键切换歌曲的功能
@@ -1553,6 +1553,8 @@ public class PianoTilesGameScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { closeExitConfirmDialog(); return true; } return true; }
+        // 倒计时显示仍处于暂停态，必须吞掉点击，避免穿透到底层轨道或控件。
+        if (showExitConfirm || countdownRemaining > 0) return true;
         if (songSelectMode || !gameActive || gamePaused || gameOver || button != 0) {
             return super.mouseClicked(mouseX, mouseY, button);
         }

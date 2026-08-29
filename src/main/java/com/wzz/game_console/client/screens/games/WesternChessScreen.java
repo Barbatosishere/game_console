@@ -531,7 +531,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             return super.mouseClicked(mx,my,btn);
         }
         if (promoPending) { handlePromoClick((int)mx,(int)my); return true; }
-        int col=((int)mx-bx)/cellSize, row=((int)my-by)/cellSize;
+        int col=Math.floorDiv((int)mx-bx,cellSize), row=Math.floorDiv((int)my-by,cellSize);
         if (col<0||col>=8||row<0||row>=8) return super.mouseClicked(mx,my,btn);
         // 禁止非己方操作
         if (vsAI && (!whiteTurn||aiThinking)) return true;
@@ -593,7 +593,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (lanMode!=LAN_CLIENT) { initBoard(); if (lanMode==LAN_HOST) sendMove("RESTART"); }
             return true;
         }
-        return true;
+        return super.keyPressed(k, sc, mod);
     }
 
     // ══════════════ 渲染 ══════════════

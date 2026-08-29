@@ -475,8 +475,8 @@ public class SudokuGameScreen extends Screen {
             return true;
         }
         if (button == 0 && !gameCompleted) { // 左键点击
-            int gridX = (int) (mouseX - gameStartX) / CELL_SIZE;
-            int gridY = (int) (mouseY - gameStartY) / CELL_SIZE;
+            int gridX = Math.floorDiv((int) mouseX - gameStartX, CELL_SIZE);
+            int gridY = Math.floorDiv((int) mouseY - gameStartY, CELL_SIZE);
 
             if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
                 selectedRow = gridY;

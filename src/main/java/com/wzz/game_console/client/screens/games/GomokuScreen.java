@@ -327,7 +327,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 }
                 return true;
             } else {
-                return true;
+                return super.keyPressed(key, scan, mods);
             }
         } else {
             if (showExitConfirm) { showExitConfirm = false; return true; }
@@ -393,8 +393,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 return true;
             }
 
-            int hx = ((int)mx - this.boardStartX) / this.cellSize;
-            int hy = ((int)my - this.boardStartY) / this.cellSize;
+            int hx = Math.floorDiv((int)mx - this.boardStartX, this.cellSize);
+            int hy = Math.floorDiv((int)my - this.boardStartY, this.cellSize);
             if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int myPiece = this.lanMode == 2 ? 2 : 1;
                 this.board[hx][hy] = myPiece;
@@ -523,8 +523,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         if (this.playerTurn && this.winner == 0) {
-            int hx = (mx - this.boardStartX) / this.cellSize;
-            int hy = (my - this.boardStartY) / this.cellSize;
+            int hx = Math.floorDiv(mx - this.boardStartX, this.cellSize);
+            int hy = Math.floorDiv(my - this.boardStartY, this.cellSize);
             if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int scx = this.boardStartX + hx * this.cellSize + this.cellSize / 2;
                 int scy = this.boardStartY + hy * this.cellSize + this.cellSize / 2;

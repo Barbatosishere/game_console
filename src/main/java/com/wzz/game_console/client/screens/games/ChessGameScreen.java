@@ -39,7 +39,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     // ══════════════════════════════════════════════
     //  游戏模式
     // ══════════════════════════════════════════════
-    enum GameMode { MENU, PVP, PVA }
+    public enum GameMode { MENU, PVP, PVA }
     enum Difficulty { EASY, MEDIUM, HARD }
 
     GameMode   gameMode   = GameMode.MENU;
@@ -61,7 +61,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     // 悔棋（最多2步用于人机模式）
     int[][][] undoBoards   = new int[2][][];
     boolean[] undoRedTurns = new boolean[2];
+    @SuppressWarnings("unchecked")
+    List<String>[] undoPositionHistories = new List[2];
     int undoCount = 0;
+
+    /** 局面历史（棋盘内容 + 行棋方），用于中国象棋三次重复和棋判定。 */
+    final List<String> positionHistory = new ArrayList<>();
 
     int selCol = -1, selRow = -1;
     List<int[]> legalMoves = new ArrayList<>();
@@ -81,6 +86,9 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     long aiStartTick = 0;
     /** AI 引擎实例（懒加载，关屏时释放）。volatile 因为由 AI 线程首次创建 */
     private volatile ChessAI chessAI = null;
+    /** 串行化引擎创建、搜索和销毁，避免 worker 与 removed() 竞态。 */
+    private final Object aiLifecycleLock = new Object();
+    private volatile boolean aiClosed = false;
     /** AI 思考结果异常中止（如引擎无合法走法），防止 tick 死循环重启 */
     boolean aiStalled = false;
     /** AI 局代号：重开/悔棋时递增，迟到的 AI 结果落地前比对作废（参照 WesternChessScreen.boardGen） */
@@ -137,22 +145,29 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         sendLeaveGame();
     }
 
+    private void cleanupAi() {
+        Thread worker = aiThread;
+        if (worker != null) worker.interrupt();
+        synchronized (aiLifecycleLock) {
+            if (aiClosed) return;
+            aiClosed = true;
+            aiGen++;
+            ChessAI engine = chessAI;
+            chessAI = null;
+            if (engine != null) engine.shutdown();
+        }
+    }
+
     @Override
     public void onClose() {
-        if (chessAI != null) chessAI.shutdown();
+        cleanupAi();
         sendLeaveGameOnce();
         super.onClose();
     }
 
-    /**
-     * ★ 修复进程泄漏：ESC 被拦截后所有退出路径走 Minecraft.setScreen(...)，
-     * 只触发 removed()（本类原先未重写，onClose 不可达），在此释放 Pikafish
-     * 等外部引擎进程。联机模式为纯双人，chessAI 不会被创建，判空即可。
-     */
     @Override
     public void removed() {
-        if (aiThread != null) aiThread.interrupt();
-        if (chessAI != null) { chessAI.shutdown(); chessAI = null; }
+        cleanupAi();
         super.removed();
     }
 
@@ -215,6 +230,11 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         super(Component.literal("中国象棋"));
     }
 
+    public ChessGameScreen(GameMode mode) {
+        this();
+        startGame(mode);
+    }
+
     @Override
     public void init() {
         super.init();
@@ -247,7 +267,9 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         redTurn=true; gameOver=false; resultMsg="";
         redInCheck=blackInCheck=false;
         lastFC=lastFR=lastTC=lastTR=-1;
-        undoCount=0; Arrays.fill(undoBoards,null);
+        undoCount=0; Arrays.fill(undoBoards,null); Arrays.fill(undoPositionHistories,null);
+        positionHistory.clear();
+        positionHistory.add(positionKey());
         aiPendingMove=null;
         aiGen++; // 重开：旧 AI 线程的迟到结果一律作废
         if (aiThread!=null) aiThread.interrupt();
@@ -296,31 +318,35 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         };
         aiThread = new Thread(() -> {
             try {
-                if (Thread.currentThread().isInterrupted()) return; // 已重开/退出，不再创建引擎
-                if (chessAI == null) {
-                    chessAI = ChessAI.create(); // 懒加载（首次AI落子才建引擎）
+                synchronized (aiLifecycleLock) {
+                    if (aiClosed || Thread.currentThread().isInterrupted()) return; // 退出后不再创建引擎
+                    if (chessAI == null) {
+                        chessAI = ChessAI.create(); // 懒加载（首次AI落子才建引擎）
+                    }
+                    chessAI.setSearchTime(budgetMs);
+                    chessAI.setMaxDepth(maxDepth);
+                    int[] best = chessAI.getBestMove(snapshot, false); // false=黑方走
+                    if (Thread.currentThread().isInterrupted()) return; // 新对局已开始，丢弃旧结果
+                    if (gen != aiGen || aiClosed) return; // 局代号过期，旧结果绝不落地
+                    if (best == null) {
+                        // ★ Bug修复：引擎无合法走法时必须设 aiStalled=true,否则
+                        //   tick 下一帧再次启动 launchAI 死循环,玩家看到"思考中…"永不落子
+                        aiStalled = true;
+                        aiErrorMessage = "AI 引擎无合法走法";
+                    }
+                    aiPendingGen = gen;
+                    aiPendingMove = best;
+                    if (best != null) aiErrorMessage = null; // 成功才清错
                 }
-                chessAI.setSearchTime(budgetMs);
-                chessAI.setMaxDepth(maxDepth);
-                int[] best = chessAI.getBestMove(snapshot, false); // false=黑方走
-                if (Thread.currentThread().isInterrupted()) return; // 新对局已开始，丢弃旧结果
-                if (gen != aiGen) return; // 局代号过期（悔棋/重开），旧结果绝不落地
-                if (best == null) {
-                    // ★ Bug修复：引擎无合法走法时必须设 aiStalled=true,否则
-                    //   tick 下一帧再次启动 launchAI 死循环,玩家看到"思考中…"永不落子
-                    aiStalled = true;
-                    aiErrorMessage = "AI 引擎无合法走法";
-                }
-                aiPendingGen = gen;
-                aiPendingMove = best;
-                if (best != null) aiErrorMessage = null; // 成功才清错
             } catch (Throwable t) {
                 // ★ Bug修复：原版静默吞所有异常,玩家看到"AI 思考中…"但实际引擎崩了
                 //   永远不会落子。现把异常记到 aiErrorMessage,在 HUD 显示给玩家。
                 aiErrorMessage = "AI 引擎异常: " + t.getClass().getSimpleName() + " - " + t.getMessage();
-                // 强制销毁,下一手退回 BuiltInChessAI（ChessAI 接口无 close,
-                // 这里仅置 null,GC 回收 Pikafish 子进程资源,下一手 create() 会重建）
-                chessAI = null;
+                synchronized (aiLifecycleLock) {
+                    ChessAI failedEngine = chessAI;
+                    chessAI = null;
+                    if (failedEngine != null) failedEngine.shutdown();
+                }
             } finally {
                 // ★ Bug修复：仅当本线程代数仍是当前代数时才清 thinking 标志。
                 //   迟到线程（悔棋/重开已递增 aiGen）若无条件清除，会误清新一轮
@@ -792,12 +818,15 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         if(undoCount<2){
             undoBoards[undoCount]=deepCopy(board);
             undoRedTurns[undoCount]=redTurn;
+            undoPositionHistories[undoCount]=new ArrayList<>(positionHistory);
             undoCount++;
         } else {
             undoBoards[0]=undoBoards[1];
             undoRedTurns[0]=undoRedTurns[1];
+            undoPositionHistories[0]=undoPositionHistories[1];
             undoBoards[1]=deepCopy(board);
             undoRedTurns[1]=redTurn;
+            undoPositionHistories[1]=new ArrayList<>(positionHistory);
         }
         board[tc][tr]=board[fc][fr];
         board[fc][fr]=0;
@@ -807,28 +836,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         redTurn=!redTurn;
         redInCheck=isInCheck(true);
         blackInCheck=isInCheck(false);
-        if(isCheckmate(redTurn)){
-            gameOver=true;
-            if(gameMode==GameMode.PVA)
-                resultMsg=(redTurn?"AI胜利！玩家被将死。":"玩家胜利！AI被将死。");
-            else if(lanMode==LAN_HOST)
-                resultMsg=(redTurn?"黑方（对手）胜利！":"红方（你）胜利！");
-            else if(lanMode==LAN_CLIENT)
-                resultMsg=(redTurn?"黑方（你）胜利！":"红方（对手）胜利！");
-            else
-                resultMsg=(redTurn?"黑":"红")+"方胜利！"+(redTurn?"红":"黑")+"方被将死！";
-        } else if(isStalemate(redTurn)){
-            gameOver=true;
-            if(gameMode==GameMode.PVA)
-                resultMsg=(redTurn?"AI胜利！玩家无子可动。":"玩家胜利！AI无子可动。");
-            else if(lanMode==LAN_HOST)
-                resultMsg=(redTurn?"黑方（对手）胜！":"红方（你）胜！");
-            else if(lanMode==LAN_CLIENT)
-                resultMsg=(redTurn?"黑方（你）胜！":"红方（对手）胜！");
-            else
-                resultMsg=(redTurn?"红":"黑")+"方无子可动，"+(redTurn?"黑":"红")+"方胜！";
+        positionHistory.add(positionKey());
+        checkNoLegalMovesEnd(); // 走子后：严格区分将死、困毙与仍可继续
+        if (!gameOver && countPosition(positionKey()) >= 3) {
+            gameOver = true;
+            resultMsg = "三次重复局面，和棋！";
         }
-        checkNoLegalMovesEnd(); // 走子后兜底：当前回合方无合法走法时立即结算
     }
 
     void undoMove(){
@@ -838,7 +851,10 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         undoCount=Math.max(0,undoCount-steps);
         board=deepCopy(undoBoards[undoCount]);
         redTurn=undoRedTurns[undoCount];
+        positionHistory.clear();
+        positionHistory.addAll(undoPositionHistories[undoCount]);
         undoBoards[undoCount]=null;
+        undoPositionHistories[undoCount]=null;
         selCol=selRow=-1; legalMoves.clear();
         redInCheck=isInCheck(true); blackInCheck=isInCheck(false);
         gameOver=false; resultMsg="";
@@ -990,28 +1006,50 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
      */
     void checkNoLegalMovesEnd(){
         if(gameOver || gameMode==GameMode.MENU) return;
-        if(!isCheckmate(redTurn)) return; // 仍有合法走法
-        gameOver=true;
-        if(gameMode==GameMode.PVA)
-            resultMsg=(redTurn?"AI胜利！玩家无合法走法。":"玩家胜利！AI无合法走法。");
-        else if(lanMode==LAN_HOST)
-            resultMsg=(redTurn?"黑方（对手）胜利！":"红方（你）胜利！");
-        else if(lanMode==LAN_CLIENT)
-            resultMsg=(redTurn?"黑方（你）胜利！":"红方（对手）胜利！");
-        else
-            resultMsg=(redTurn?"红":"黑")+"方无合法走法，"+(redTurn?"黑":"红")+"方胜利！";
+        boolean inCheck = isInCheck(redTurn);
+        if (hasLegalMove(redTurn)) return;
+        gameOver = true;
+        if (inCheck) {
+            if(gameMode==GameMode.PVA)
+                resultMsg=(redTurn?"AI胜利！玩家被将死。":"玩家胜利！AI被将死。");
+            else if(lanMode==LAN_HOST)
+                resultMsg=(redTurn?"黑方（对手）胜利！":"红方（你）胜利！");
+            else if(lanMode==LAN_CLIENT)
+                resultMsg=(redTurn?"黑方（你）胜利！":"红方（对手）胜利！");
+            else
+                resultMsg=(redTurn?"黑":"红")+"方胜利！"+(redTurn?"红":"黑")+"方被将死！";
+        } else {
+            resultMsg = "困毙，和棋！";
+        }
     }
 
-    boolean isCheckmate(boolean isRed){
+    boolean hasLegalMove(boolean isRed){
         for(int c=0;c<COLS;c++) for(int r=0;r<ROWS;r++){
             int p=board[c][r];
-            if((isRed&&p>0)||(!isRed&&p<0)) if(!computeLegal(c,r).isEmpty()) return false;
+            if((isRed&&p>0)||(!isRed&&p<0)) if(!computeLegal(c,r).isEmpty()) return true;
         }
-        return true;
+        return false;
+    }
+    boolean isCheckmate(boolean isRed){
+        return isInCheck(isRed) && !hasLegalMove(isRed);
     }
     boolean isStalemate(boolean isRed){
-        if(isInCheck(isRed)) return false;
-        return isCheckmate(isRed);
+        return !isInCheck(isRed) && !hasLegalMove(isRed);
+    }
+
+    private String positionKey() {
+        StringBuilder key = new StringBuilder(COLS * ROWS + 1);
+        key.append(redTurn ? 'r' : 'b');
+        for (int c = 0; c < COLS; c++) {
+            for (int r = 0; r < ROWS; r++) key.append((char) ('0' + board[c][r] + 7));
+        }
+        return key.toString();
+    }
+
+    private int countPosition(String key) {
+        int count = 0;
+        for (String previous : positionHistory) if (previous.equals(key)) count++;
+        return count;
     }
 
     // ══════════════════════════════════════════════

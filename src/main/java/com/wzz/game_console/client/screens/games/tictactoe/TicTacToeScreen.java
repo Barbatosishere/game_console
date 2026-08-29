@@ -136,7 +136,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
             if (lanMode == LAN_HOST) sendMove("RESTART");
             return true;
         }
-        return true;
+        return super.keyPressed(key, scan, mods);
     }
 
     @Override public void render(GuiGraphics g, int mx, int my, float pt) {
@@ -203,8 +203,8 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
 
         // 悬停
         if (!game.isGameOver() && game.isPlayerTurn()) {
-            int hc = (mx - gridStartX) / cellSize;
-            int hr = (my - gridStartY) / cellSize;
+            int hc = Math.floorDiv(mx - gridStartX, cellSize);
+            int hr = Math.floorDiv(my - gridStartY, cellSize);
             if (hc >= 0 && hc < 3 && hr >= 0 && hr < 3 && game.getCell(hr, hc) == TicTacToeGame.Player.NONE) {
                 g.fill(gridStartX + hc * cellSize, gridStartY + hr * cellSize,
                     gridStartX + (hc+1) * cellSize, gridStartY + (hr+1) * cellSize, 0x22FFFFFF);
@@ -262,8 +262,8 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         if (state == State.PLAYING && !game.isGameOver()) {
             // 联机时只有轮到自己才能落子
             if (lanMode != LAN_NONE && !isMyTurn) return true;
-            int hc = ((int)mx - gridStartX) / cellSize;
-            int hr = ((int)my - gridStartY) / cellSize;
+            int hc = Math.floorDiv((int)mx - gridStartX, cellSize);
+            int hr = Math.floorDiv((int)my - gridStartY, cellSize);
             if (hc >= 0 && hc < 3 && hr >= 0 && hr < 3) {
                 if (game.makeMove(hr, hc)) {
                     if (lanMode != LAN_NONE) {

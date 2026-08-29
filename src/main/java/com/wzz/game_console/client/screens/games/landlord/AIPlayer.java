@@ -239,6 +239,10 @@ public class AIPlayer {
             case PAIR_STRAIGHT -> findMinimalPairStraight(hand, targetPattern.getValue(), targetPattern.getLength());
             case TRIPLE_STRAIGHT ->
                     findMinimalTripleStraight(hand, targetPattern.getValue(), targetPattern.getLength());
+            case TRIPLE_STRAIGHT_WITH_SINGLE ->
+                    findMinimalTripleStraightWithWings(hand, targetPattern.getValue(), targetPattern.getLength(), false);
+            case TRIPLE_STRAIGHT_WITH_PAIR ->
+                    findMinimalTripleStraightWithWings(hand, targetPattern.getValue(), targetPattern.getLength(), true);
             case FOUR_WITH_TWO_SINGLES -> findAnyBomb(hand);
             case FOUR_WITH_TWO_PAIRS -> findAnyBomb(hand);
             case BOMB -> findMinimalBomb(hand, targetPattern.getValue());
@@ -413,6 +417,54 @@ public class AIPlayer {
                 for (int j = 0; j < length; j++)
                     result.addAll(groups.get(tripleValues.get(i + j)).subList(0, 3));
                 return result;
+            }
+        }
+        return findAnyBomb(hand);
+    }
+
+    /** 找同长度且主值更大的飞机，并按牌型严格凑齐翅牌；不拆四张炸弹。 */
+    private List<Card> findMinimalTripleStraightWithWings(List<Card> hand, int targetValue,
+                                                           int length, boolean pairs) {
+        Map<Integer, List<Card>> groups = groupByValue(hand);
+        List<Integer> tripleValues = new ArrayList<>();
+        for (int value : groups.keySet()) {
+            // 新牌型不能以拆炸弹的三张作为主体。
+            if (value >= 3 && value <= 14 && groups.get(value).size() == 3) tripleValues.add(value);
+        }
+        for (int i = 0; i <= tripleValues.size() - length; i++) {
+            boolean consecutive = true;
+            for (int j = 1; j < length; j++) {
+                if (tripleValues.get(i + j) != tripleValues.get(i) + j) {
+                    consecutive = false;
+                    break;
+                }
+            }
+            if (!consecutive || tripleValues.get(i) <= targetValue) continue;
+
+            Set<Integer> body = new HashSet<>(tripleValues.subList(i, i + length));
+            List<Card> result = new ArrayList<>();
+            for (int value : body) result.addAll(groups.get(value));
+            if (pairs) {
+                int added = 0;
+                for (Map.Entry<Integer, List<Card>> entry : groups.entrySet()) {
+                    if (!body.contains(entry.getKey()) && entry.getValue().size() == 2) {
+                        result.addAll(entry.getValue());
+                        if (++added == length) return result;
+                    }
+                }
+            } else {
+                int added = 0;
+                for (Map.Entry<Integer, List<Card>> entry : groups.entrySet()) {
+                    if (body.contains(entry.getKey())) continue;
+                    // 四张组是炸弹不能拆；单/对/三张组可拆作单翅。
+                    if (entry.getValue().size() <= 3) {
+                        int take = Math.min(entry.getValue().size(), Math.min(2, length - added));
+                        for (int index = 0; index < take; index++) {
+                            result.add(entry.getValue().get(index));
+                            if (++added == length) return result;
+                        }
+                    }
+                }
             }
         }
         return findAnyBomb(hand);

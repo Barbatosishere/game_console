@@ -49,6 +49,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private UUID hostUuid    = null;
     private int  myPlayerIdx = 0;
     private boolean waitingStart = false;
+    private boolean localTwoPlayer = false;
 
     // ── UI 状态 ───────────────────────────────────────
     private String msg=""; private long msgTick=-9999;
@@ -60,7 +61,12 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
 
     // ══ 构造器 ════════════════════════════════════════
     public LandlordGameScreen(){
+        this(false);
+    }
+
+    public LandlordGameScreen(boolean localTwoPlayer){
         super(Component.literal("斗地主"));
+        this.localTwoPlayer = localTwoPlayer;
         game=new LandlordGame(); ai1=new AIPlayer(); ai2=new AIPlayer();
         // 让AI使用完整牌型分析（否则只走findSimpleBeat，无炸弹时不会应对顺子/连对等）
         ai1.setGameReference(game); ai2.setGameReference(game);
@@ -104,13 +110,16 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         }
         try{
             if(data.startsWith("BID:")){
-                String[]p=data.substring(4).split(":");
-                if(p.length<2)return;
-                boolean w="1".equals(p[1]);
+                String[] p = data.substring(4).split(":", -1);
+                if (p.length != 2 || !String.valueOf(pl).equals(p[0])
+                        || !("0".equals(p[1]) || "1".equals(p[1]))) return;
+                boolean w = "1".equals(p[1]);
                 if(game.bid(pl,w)){showMsg(name(pl)+(w?" 叫地主！":" 不叫"));broadcastState();}
             }else if(data.startsWith("PLAY:")){
-                String[]p=data.substring(5).split(":",2);
-                List<Card> cards=(p.length>1)?LandlordGame.deserializeCards(p[1]):new ArrayList<>();
+                String[] p = data.substring(5).split(":", -1);
+                if (p.length != 2 || !String.valueOf(pl).equals(p[0])) return;
+                List<Card> cards = LandlordGame.deserializeCardsStrict(p[1]);
+                if (cards == null) return;
                 if(game.playCards(pl,cards)){
                     lastInfo=name(pl)+(cards.isEmpty()?" 过牌":" 出: "+cardsStr(cards));
                     showMsg(lastInfo);broadcastState();
@@ -163,15 +172,15 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
                 if(sep<=0)return;
                 myPlayerIdx=Integer.parseInt(body.substring(0,sep));
                 if(myPlayerIdx<1||myPlayerIdx>2)return; // 客机只能是座位1/2
-                waitingStart=false;
                 List<Card> h=new ArrayList<>();
-                game.applyState(body.substring(sep+1),myPlayerIdx,h);
+                if (!game.applyState(body.substring(sep+1), myPlayerIdx, h)) return;
+                waitingStart=false;
                 cardSelected=new boolean[h.size()];
                 showMsg("游戏开始！你是 "+name(myPlayerIdx));
             }else if(data.startsWith("STATE:")){
                 if(myPlayerIdx<0)return;
                 List<Card> h=new ArrayList<>();
-                game.applyState(data.substring(6),myPlayerIdx,h);
+                if (!game.applyState(data.substring(6), myPlayerIdx, h)) return;
                 if(cardSelected.length!=h.size())cardSelected=new boolean[h.size()];
                 // ★ Bug修复:applyState 后牌数变化,旧 selectedCards 列表残留旧索引,
                 //   玩家点击可能选中错误的牌。同步清空选牌列表与选中标记数组
@@ -216,7 +225,8 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         }
         if(lanMode==LAN_NONE){
             int cp=game.getCurrentPlayer();
-            if((cp==1||cp==2)&&tickCount-lastAiTick>AI_DELAY){
+            boolean aiTurn = cp == 1 && !localTwoPlayer || cp == 2;
+            if(aiTurn&&tickCount-lastAiTick>AI_DELAY){
                 lastAiTick=tickCount;
                 AIPlayer ai=cp==1?ai1:ai2;
                 if(game.getGameState()==LandlordGame.GameState.BIDDING){
@@ -289,8 +299,13 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void drawSideHands(GuiGraphics g){
-        drawSideHand(g,game.getPlayerHand(1).size(),name(1),14,height/2-70,game.getCurrentPlayer()==1);
-        drawSideHand(g,game.getPlayerHand(2).size(),name(2),width-54,height/2-70,game.getCurrentPlayer()==2);
+        if (myPlayerIdx < 0 || myPlayerIdx >= 3) return;
+        int leftPlayer = (myPlayerIdx + 1) % 3;
+        int rightPlayer = (myPlayerIdx + 2) % 3;
+        drawSideHand(g, game.getPlayerHand(leftPlayer).size(), name(leftPlayer), 14, height / 2 - 70,
+                game.getCurrentPlayer() == leftPlayer);
+        drawSideHand(g, game.getPlayerHand(rightPlayer).size(), name(rightPlayer), width - 54, height / 2 - 70,
+                game.getCurrentPlayer() == rightPlayer);
     }
 
     private void drawSideHand(GuiGraphics g,int cnt,String nm,int x,int y,boolean active){
@@ -378,8 +393,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         int cx=width/2,cy=height/2;
         g.flush(); // 防止先绘制的扑克牌文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xAA000000);
-        int[]sc=game.getScores();
-        boolean win=sc[myPlayerIdx]>0;
+        int[] sc = game.getScores();
+        if (myPlayerIdx < 0 || myPlayerIdx >= sc.length) return;
+        boolean win = sc[myPlayerIdx] > 0;
         int cw=300,ch=130,cax=cx-cw/2,cay=cy-ch/2;
         g.fill(cax-2,cay-2,cax+cw+2,cay+ch+2,win?0xFF44FF44:0xFFFF4444);
         g.fill(cax,cay,cax+cw,cay+ch,0xFF070F1E);
@@ -551,6 +567,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         return "P"+(id+1);
     }
     private String cardsStr(List<Card> c){StringBuilder sb=new StringBuilder();for(Card x:c){if(sb.length()>0)sb.append(' ');sb.append(x);}return sb.toString();}
-    private String getPatternName(CardPattern p){return switch(p.getType()){case SINGLE->"单";case PAIR->"对";case TRIPLE->"三张";case TRIPLE_WITH_ONE->"三带一";case TRIPLE_WITH_PAIR->"三带二";case STRAIGHT->"顺子";case PAIR_STRAIGHT->"连对";case TRIPLE_STRAIGHT->"飞机";case FOUR_WITH_TWO_SINGLES->"四带二单";case FOUR_WITH_TWO_PAIRS->"四带两对";case BOMB->"炸弹";case JOKER_BOMB->"王炸";};}
+    private String getPatternName(CardPattern p){return switch(p.getType()){case SINGLE->"单";case PAIR->"对";case TRIPLE->"三张";case TRIPLE_WITH_ONE->"三带一";case TRIPLE_WITH_PAIR->"三带二";case STRAIGHT->"顺子";case PAIR_STRAIGHT->"连对";case TRIPLE_STRAIGHT->"飞机";case TRIPLE_STRAIGHT_WITH_SINGLE->"飞机带单";case TRIPLE_STRAIGHT_WITH_PAIR->"飞机带对";case FOUR_WITH_TWO_SINGLES->"四带二单";case FOUR_WITH_TWO_PAIRS->"四带两对";case BOMB->"炸弹";case JOKER_BOMB->"王炸";};}
     @Override public boolean isPauseScreen(){return false;}
 }

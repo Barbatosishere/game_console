@@ -13,7 +13,9 @@ public class CardPattern {
         FOUR_WITH_TWO_SINGLES, // 四带两单
         FOUR_WITH_TWO_PAIRS,   // 四带两对
         BOMB,                 // 炸弹
-        JOKER_BOMB            // 王炸
+        JOKER_BOMB,           // 王炸
+        TRIPLE_STRAIGHT_WITH_SINGLE, // 飞机带单
+        TRIPLE_STRAIGHT_WITH_PAIR    // 飞机带对
     }
 
     private Type type;
@@ -46,7 +48,7 @@ public class CardPattern {
             return false;
         }
         
-        // 同类型比较
+        // 同类型且长度相同才可比较；飞机带单/带对是独立牌型
         if (type == other.type && length == other.length) {
             return value > other.value;
         }

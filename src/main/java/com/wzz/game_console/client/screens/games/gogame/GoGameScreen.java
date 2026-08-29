@@ -74,8 +74,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     /** LAN 联机构造 */
     public GoGameScreen(boolean isHost, java.util.UUID remote) {
         super(Component.literal("围棋"));
-        this.game       = new GoGame();
-        this.game.setAiMode(false);
+        this.game       = new GoGame(false);
         this.lanMode    = isHost ? LAN_HOST : LAN_CLIENT;
         this.remotePeer = remote;
         this.myTurn     = isHost; // HOST（黑）先手
@@ -105,19 +104,38 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         sendLeaveGame();
     }
 
-    /** 后台 AI 计算线程（onClose 时 interrupt 防止 screen 泄漏到 GC 之外） */
+    /** 后台 AI 计算线程（cleanup 时 interrupt 并等待其退出） */
     private volatile Thread aiWorker = null;
+    private boolean cleanedUp = false;
+
+    /** 统一、幂等地释放本屏幕拥有的 worker 和棋局资源。 */
+    private synchronized void cleanup() {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        aiGeneration++;
+        Thread t = aiWorker;
+        aiWorker = null;
+        aiThinking = false;
+        aiComputed = false;
+        aiPendingMove = null;
+        if (t != null && t != Thread.currentThread()) {
+            t.interrupt();
+            try { t.join(2000L); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+        try { game.close(); } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void removed() {
+        cleanup();
+        super.removed();
+    }
 
     @Override
     public void onClose() {
         sendLeaveGameOnce();
-        // ★ Bug修复：原版只发 LEAVE_GAME,后台 AI 线程仍在跑（MCTS 搜索 1-12s）
-        //   闭包持有 game/screen 引用 → screen 永不 GC → 神经网络/Zobrist/树内存
-        //   全部泄漏。interrupt 后 MCTS 主循环 deadline 检查外层加 Thread.interrupted()
-        //   加速回收；同时 close GoGame（AutoCloseable）释放 AI 资源。
-        Thread t = aiWorker;
-        if (t != null) t.interrupt();
-        try { if (game != null) game.close(); } catch (Exception ignored) {}
+        cleanup();
         super.onClose();
     }
 

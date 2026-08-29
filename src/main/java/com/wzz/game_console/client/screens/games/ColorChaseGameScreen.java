@@ -89,6 +89,11 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         super(net.minecraft.network.chat.Component.literal("颜色追逐"));
     }
 
+    public ColorChaseGameScreen(boolean twoPlayer) {
+        this();
+        initGame(twoPlayer);
+    }
+
     /** LAN 联机构造：HOST 控制P1，CLIENT 控制P2 */
     public ColorChaseGameScreen(boolean isHost, java.util.UUID remote) {
         super(net.minecraft.network.chat.Component.literal("颜色追逐-联机"));

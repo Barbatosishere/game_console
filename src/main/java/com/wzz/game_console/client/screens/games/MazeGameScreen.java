@@ -48,14 +48,12 @@ public class MazeGameScreen extends Screen {
 
     @Override
     public void init() {
-        // 窗口缩放时 Screen.resize 会重调 init，widget 需要先清理避免叠加
+        // resize() 会重新调用 init；先清理旧控件，再按当前关卡重算棋盘几何。
         super.init();
         this.clearWidgets();
-        // 根据当前关卡调整迷宫尺寸，并计算 tile 尺寸
         int size = levelMazeSize();
         MAZE_WIDTH = size;
         MAZE_HEIGHT = size;
-        // 计算绘制起始位置，使迷宫居中
         TILE_SIZE = Math.max(8, Math.min((this.width - 40) / MAZE_WIDTH, (this.height - 80) / MAZE_HEIGHT));
         startX = (this.width - MAZE_WIDTH * TILE_SIZE) / 2;
         startY = (this.height - MAZE_HEIGHT * TILE_SIZE) / 2;
@@ -63,7 +61,6 @@ public class MazeGameScreen extends Screen {
         int centerX = this.width / 2;
         this.addRenderableWidget(Button.builder(Component.literal("重新开始"), b -> {
             currentLevel = 1;
-            // 先按第 1 关尺寸同步迷宫尺寸再重新生成，避免出口落在旧尺寸可达区外（与 tick 自动跳关顺序一致）
             int newSize = levelMazeSize();
             MAZE_WIDTH = newSize;
             MAZE_HEIGHT = newSize;
