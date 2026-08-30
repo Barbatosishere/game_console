@@ -522,13 +522,15 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
         }
 
-        if (this.playerTurn && this.winner == 0) {
+        boolean canPreview = this.lanMode == 0 ? this.playerTurn : this.isMyTurn;
+        if (canPreview && this.winner == 0) {
             int hx = Math.floorDiv(mx - this.boardStartX, this.cellSize);
             int hy = Math.floorDiv(my - this.boardStartY, this.cellSize);
             if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int scx = this.boardStartX + hx * this.cellSize + this.cellSize / 2;
                 int scy = this.boardStartY + hy * this.cellSize + this.cellSize / 2;
-                GameRenderHelper.drawCircle(g, scx, scy, stoneR, 1712394513);
+                int previewColor = this.lanMode == 2 ? 0x66EEEEEE : 0x66111111;
+                GameRenderHelper.drawCircle(g, scx, scy, stoneR, previewColor);
             }
         }
 

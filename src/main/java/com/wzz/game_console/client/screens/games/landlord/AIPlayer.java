@@ -148,8 +148,8 @@ public class AIPlayer {
             return new ArrayList<>(groups.get(pairValue).subList(0, 2));
         }
 
-        // 最后出单牌
-        return Arrays.asList(hand.get(0));
+        // 最后出单牌；返回独立可变列表，避免固定大小列表或输入视图泄漏给调用方
+        return new ArrayList<>(List.of(hand.get(0)));
     }
 
     /** 找最小的组大小 ≥ size 的值（允许拆更大的组）；找不到返回 null。 */
@@ -223,29 +223,31 @@ public class AIPlayer {
     }
 
     private List<Card> findMinimalBeat(List<Card> hand, List<Card> lastCards) {
-        Collections.sort(hand);
+        // 跟牌搜索需要升序，但不得重排游戏持有的原始手牌。
+        List<Card> sortedHand = new ArrayList<>(hand);
+        Collections.sort(sortedHand);
         if (gameReference == null) {
-            return findSimpleBeat(hand, lastCards);
+            return findSimpleBeat(sortedHand, lastCards);
         }
         CardPattern targetPattern = gameReference.analyzeCards(lastCards);
         if (targetPattern == null) return null;
         return switch (targetPattern.getType()) {
-            case SINGLE -> findMinimalSingle(hand, targetPattern.getValue());
-            case PAIR -> findMinimalPair(hand, targetPattern.getValue());
-            case TRIPLE -> findMinimalTriple(hand, targetPattern.getValue());
-            case TRIPLE_WITH_ONE -> findMinimalTripleWithOne(hand, targetPattern.getValue());
-            case TRIPLE_WITH_PAIR -> findMinimalTripleWithPair(hand, targetPattern.getValue());
-            case STRAIGHT -> findMinimalStraight(hand, targetPattern.getValue(), targetPattern.getLength());
-            case PAIR_STRAIGHT -> findMinimalPairStraight(hand, targetPattern.getValue(), targetPattern.getLength());
+            case SINGLE -> findMinimalSingle(sortedHand, targetPattern.getValue());
+            case PAIR -> findMinimalPair(sortedHand, targetPattern.getValue());
+            case TRIPLE -> findMinimalTriple(sortedHand, targetPattern.getValue());
+            case TRIPLE_WITH_ONE -> findMinimalTripleWithOne(sortedHand, targetPattern.getValue());
+            case TRIPLE_WITH_PAIR -> findMinimalTripleWithPair(sortedHand, targetPattern.getValue());
+            case STRAIGHT -> findMinimalStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
+            case PAIR_STRAIGHT -> findMinimalPairStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
             case TRIPLE_STRAIGHT ->
-                    findMinimalTripleStraight(hand, targetPattern.getValue(), targetPattern.getLength());
+                    findMinimalTripleStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
             case TRIPLE_STRAIGHT_WITH_SINGLE ->
-                    findMinimalTripleStraightWithWings(hand, targetPattern.getValue(), targetPattern.getLength(), false);
+                    findMinimalTripleStraightWithWings(sortedHand, targetPattern.getValue(), targetPattern.getLength(), false);
             case TRIPLE_STRAIGHT_WITH_PAIR ->
-                    findMinimalTripleStraightWithWings(hand, targetPattern.getValue(), targetPattern.getLength(), true);
-            case FOUR_WITH_TWO_SINGLES -> findAnyBomb(hand);
-            case FOUR_WITH_TWO_PAIRS -> findAnyBomb(hand);
-            case BOMB -> findMinimalBomb(hand, targetPattern.getValue());
+                    findMinimalTripleStraightWithWings(sortedHand, targetPattern.getValue(), targetPattern.getLength(), true);
+            case FOUR_WITH_TWO_SINGLES -> findAnyBomb(sortedHand);
+            case FOUR_WITH_TWO_PAIRS -> findAnyBomb(sortedHand);
+            case BOMB -> findMinimalBomb(sortedHand, targetPattern.getValue());
             case JOKER_BOMB -> null;
         };
 
@@ -268,7 +270,7 @@ public class AIPlayer {
     private List<Card> findMinimalSingle(List<Card> hand, int targetValue) {
         for (Card card : hand) {
             if (card.getValue() > targetValue) {
-                return Arrays.asList(card);
+                return new ArrayList<>(List.of(card));
             }
         }
         return findAnyBomb(hand);
@@ -279,7 +281,7 @@ public class AIPlayer {
 
         for (int value : pairs.keySet()) {
             if (value > targetValue && pairs.get(value).size() >= 2) {
-                return pairs.get(value).subList(0, 2);
+                return new ArrayList<>(pairs.get(value).subList(0, 2));
             }
         }
         return findAnyBomb(hand);
@@ -290,7 +292,7 @@ public class AIPlayer {
 
         for (int value : groups.keySet()) {
             if (value > targetValue && groups.get(value).size() >= 3) {
-                return groups.get(value).subList(0, 3);
+                return new ArrayList<>(groups.get(value).subList(0, 3));
             }
         }
         return findAnyBomb(hand);

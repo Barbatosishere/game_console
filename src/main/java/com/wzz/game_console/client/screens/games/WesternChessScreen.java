@@ -682,8 +682,29 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         boolean win = resultOutcome == 1; // 白方胜（vsAI 时玩家执白，即"玩家胜"）
         // 本地双人/联机也按 checkEnd 记录的实际胜方渲染，不再被 vsAI 误判为失败样式
         int outcome = draw ? 0 : (win ? 1 : -1);
-        String subtitle = !vsAI ? "精彩对局！" : draw ? "势均力敌，和棋！" : (win ? "恭喜战胜AI！" : "再接再厉！");
-        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,outcome,resultMsg.replace("§c","").replace("§a","").replace("§e",""),subtitle);
+        if (!draw && lanMode != LAN_NONE) {
+            boolean iAmWhite = lanMode == LAN_HOST;
+            outcome = ((iAmWhite && resultOutcome == 1) || (!iAmWhite && resultOutcome == -1)) ? 1 : -1;
+        }
+        String title;
+        String subtitle;
+        if (draw) {
+            title = "和棋";
+            subtitle = "势均力敌！";
+        } else if (lanMode != LAN_NONE) {
+            // LAN 下按本地座位显示胜负，HOST 执白、CLIENT 执黑。
+            boolean iAmWhite = lanMode == LAN_HOST;
+            boolean iWon = (iAmWhite && resultOutcome == 1) || (!iAmWhite && resultOutcome == -1);
+            title = iWon ? "你赢了！" : "你输了！";
+            subtitle = iWon ? "恭喜取得胜利！" : "再接再厉！";
+        } else if (vsAI) {
+            title = win ? "你赢了！" : "AI 获胜！";
+            subtitle = win ? "恭喜战胜AI！" : "再接再厉！";
+        } else {
+            title = resultMsg.replace("§c", "").replace("§a", "").replace("§e", "");
+            subtitle = "精彩对局！";
+        }
+        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,outcome,title,subtitle);
         GameRenderHelper.drawPrimaryButton(g,font,"R - 再来一局",cx2-70,cy2+22,140,18,mx,my);
         GameRenderHelper.drawSecondaryButton(g,font,"ESC - 返回",cx2-70,cy2+44,140,18,mx,my);
     }

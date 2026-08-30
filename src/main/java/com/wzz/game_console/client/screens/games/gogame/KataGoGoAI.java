@@ -156,8 +156,8 @@ public class KataGoGoAI implements GoAI {
     private void initGTP() throws IOException {
         // 设置棋盘大小
         sendCommand("boardsize " + BOARD_SIZE);
-        // 设置贴目（中国规则黑贴 7.5 目）
-        sendCommand("komi 7.5");
+        // 设置贴目，与 GoGame 的计分配置保持一致。
+        sendCommand("komi " + GoGame.getConfiguredKomi());
         // 清空棋盘
         sendCommand("clear_board");
     }

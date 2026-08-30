@@ -74,7 +74,7 @@ public interface GoAI {
             engine = GameSettings.getString("go", "engine", "mcts");
         } catch (Throwable t) {
             // GameSettings 不可用时使用默认 MCTS
-            return new MCTSGoAI();
+            return MCTSGoAI.createFromSettings();
         }
         return create(engine);
     }
@@ -90,7 +90,7 @@ public interface GoAI {
             logger = getFactoryLogger();
         } catch (Throwable t) {
             // slf4j 不可用时使用默认 MCTS
-            return new MCTSGoAI();
+            return MCTSGoAI.createFromSettings();
         }
         if ("katago".equalsIgnoreCase(engine)) {
             String katagoPath;
@@ -98,11 +98,11 @@ public interface GoAI {
                 katagoPath = GameSettings.getString("go", "katagoPath", "");
             } catch (Throwable t) {
                 logger.warn("[围棋AI] KataGo 路径读取失败，回退到 MCTS");
-                return new MCTSGoAI();
+                return MCTSGoAI.createFromSettings();
             }
             if (katagoPath.isEmpty()) {
                 logger.warn("[围棋AI] KataGo 路径未配置，回退到 MCTS");
-                return new MCTSGoAI();
+                return MCTSGoAI.createFromSettings();
             }
             try {
                 KataGoGoAI katago = new KataGoGoAI(katagoPath);
@@ -110,11 +110,11 @@ public interface GoAI {
                 return katago;
             } catch (Exception e) {
                 logger.warn("[围棋AI] KataGo 启动失败，回退到 MCTS: {}", e.getMessage());
-                return new MCTSGoAI();
+                return MCTSGoAI.createFromSettings();
             }
         }
         // 默认 MCTS
         logger.info("[围棋AI] 使用改进版 MCTS 引擎");
-        return new MCTSGoAI();
+        return MCTSGoAI.createFromSettings();
     }
 }

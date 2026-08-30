@@ -4,284 +4,276 @@ import net.neoforged.fml.loading.FMLPaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/**
- * 外部文件管理器
- * 在 .minecraft 目录下创建 game_console 文件夹，并管理其子目录和文件读取。
- *
- * 目录结构：
- * .minecraft/game_console/
- *   ├── music/    (谱面文件 .pts)
- *   ├── voice/    (音频/语音文件)
- *   └── data/     (其他数据文件)
- */
-public class ExternalFileManager {
+/** 管理游戏目录下 game_console 文件夹中的外部文件。 */
+public final class ExternalFileManager {
 
-    /** 日志记录器 */
     private static final Logger LOGGER = LoggerFactory.getLogger("GameConsole");
 
-    /** 根文件夹名称 */
     public static final String ROOT_FOLDER = "game_console";
-    /** 子文件夹名称 */
     public static final String MUSIC_FOLDER = "music";
     public static final String VOICE_FOLDER = "voice";
     public static final String DATA_FOLDER = "data";
 
-    private static Path gameDir;
-    private static Path rootDir;
-    private static volatile boolean initialized = false;
+    private enum InitState {
+        UNINITIALIZED,
+        INITIALIZED,
+        FAILED
+    }
+
+    private static final Object INIT_LOCK = new Object();
+    private static volatile InitState initState = InitState.UNINITIALIZED;
+    private static volatile Path gameDir;
+    private static volatile Path rootDir;
+
+    private ExternalFileManager() {}
 
     /**
-     * 初始化：创建所有必要的文件夹。
-     * 应在模组启动时调用（commonSetup 或 clientSetup）。
+     * 初始化并创建标准目录。初始化仅执行一次；失败后固定为 FAILED，避免并发重试和重复日志。
      */
     public static void init() {
-        if (initialized) return;
-        gameDir = FMLPaths.GAMEDIR.get();
-        rootDir = gameDir.resolve(ROOT_FOLDER);
-        try {
-            // 创建根目录和子目录
-            Files.createDirectories(rootDir);
-            Files.createDirectories(rootDir.resolve(MUSIC_FOLDER));
-            Files.createDirectories(rootDir.resolve(VOICE_FOLDER));
-            Files.createDirectories(rootDir.resolve(DATA_FOLDER));
+        if (initState != InitState.UNINITIALIZED) return;
 
-            initialized = true;
-            LOGGER.info("外部文件夹已创建: {}", rootDir.toAbsolutePath());
-        } catch (IOException e) {
-            LOGGER.error("创建外部文件夹失败", e);
+        synchronized (INIT_LOCK) {
+            if (initState != InitState.UNINITIALIZED) return;
+            try {
+                Path resolvedGameDir = FMLPaths.GAMEDIR.get();
+                Path resolvedRootDir = resolvedGameDir.resolve(ROOT_FOLDER);
+                Files.createDirectories(resolvedRootDir);
+                Files.createDirectories(resolvedRootDir.resolve(MUSIC_FOLDER));
+                Files.createDirectories(resolvedRootDir.resolve(VOICE_FOLDER));
+                Files.createDirectories(resolvedRootDir.resolve(DATA_FOLDER));
+
+                gameDir = resolvedGameDir;
+                rootDir = resolvedRootDir;
+                initState = InitState.INITIALIZED;
+                LOGGER.info("外部文件夹已创建: {}", resolvedRootDir.toAbsolutePath());
+            } catch (Throwable failure) {
+                // 先发布失败状态，确保即使日志后续出现问题也不会重复初始化或重复记录该失败。
+                gameDir = null;
+                rootDir = null;
+                initState = InitState.FAILED;
+                try {
+                    LOGGER.error("创建外部文件夹失败，外部文件 API 将安全降级", failure);
+                } catch (Throwable ignored) {
+                    // 日志后端异常不能越过公共 API 的异常边界。
+                }
+            }
         }
     }
 
-    /**
-     * 获取 .minecraft 游戏目录
-     */
     public static Path getGameDir() {
-        if (!initialized) init();
-        return gameDir;
+        ensureInitialized();
+        return initState == InitState.INITIALIZED ? gameDir : null;
     }
 
-    /**
-     * 获取根目录 (.minecraft/game_console/)
-     */
     public static Path getRootDir() {
-        if (!initialized) init();
-        return rootDir;
+        return availableRoot();
     }
 
-    /**
-     * 获取 music 子目录
-     */
     public static Path getMusicDir() {
-        if (!initialized || rootDir == null) init(); // rootDir==null 时再尝试 init 一次
-        if (rootDir == null) return null; // 初始化仍失败：返回 null，交由调用方已有的 catch/判空处理
-        return rootDir.resolve(MUSIC_FOLDER);
+        return resolveSubFolder(MUSIC_FOLDER);
     }
 
-    /**
-     * 获取 voice 子目录
-     */
     public static Path getVoiceDir() {
-        if (!initialized || rootDir == null) init(); // rootDir==null 时再尝试 init 一次
-        if (rootDir == null) return null; // 初始化仍失败：返回 null，交由调用方已有的 catch/判空处理
-        return rootDir.resolve(VOICE_FOLDER);
+        return resolveSubFolder(VOICE_FOLDER);
     }
 
-    /**
-     * 获取 data 子目录
-     */
     public static Path getDataDir() {
-        if (!initialized) init();
-        return rootDir.resolve(DATA_FOLDER);
+        return resolveSubFolder(DATA_FOLDER);
     }
 
-    /**
-     * 列出指定子目录中匹配扩展名的文件
-     * @param subFolder 子文件夹名（如 "music"）
-     * @param extension 文件扩展名（如 ".pts"），传 null 则列出所有文件
-     * @return 文件路径列表
-     */
     public static List<Path> listFiles(String subFolder, String extension) {
-        if (!initialized) init();
-        Path dir = rootDir.resolve(subFolder);
-        if (!Files.exists(dir) || !Files.isDirectory(dir)) {
-            return Collections.emptyList();
-        }
-        try (Stream<Path> stream = Files.list(dir)) {
-            return stream
-                    .filter(Files::isRegularFile)
-                    .filter(p -> extension == null || p.getFileName().toString().endsWith(extension))
-                    .sorted()
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            LOGGER.error("列出文件失败", e);
+        Path dir = resolveSubFolder(subFolder);
+        if (dir == null) return Collections.emptyList();
+        try {
+            if (!Files.isDirectory(dir)) return Collections.emptyList();
+            try (Stream<Path> stream = Files.list(dir)) {
+                return stream.filter(Files::isRegularFile)
+                        .filter(path -> extension == null || path.getFileName().toString().endsWith(extension))
+                        .sorted()
+                        .toList();
+            }
+        } catch (Throwable failure) {
+            logOperationFailure("列出文件失败: " + dir, failure);
             return Collections.emptyList();
         }
     }
 
-    /**
-     * 列出指定子目录中的所有文件
-     */
     public static List<Path> listFiles(String subFolder) {
         return listFiles(subFolder, null);
     }
 
-    /**
-     * 列出根目录下的所有子文件夹名称
-     */
     public static List<String> listSubFolders() {
-        if (!initialized) init();
-        if (!Files.exists(rootDir) || !Files.isDirectory(rootDir)) {
-            return Collections.emptyList();
-        }
-        try (Stream<Path> stream = Files.list(rootDir)) {
-            return stream
-                    .filter(Files::isDirectory)
-                    .map(p -> p.getFileName().toString())
-                    .sorted()
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            LOGGER.error("列出子文件夹失败", e);
+        Path root = availableRoot();
+        if (root == null) return Collections.emptyList();
+        try {
+            if (!Files.isDirectory(root)) return Collections.emptyList();
+            try (Stream<Path> stream = Files.list(root)) {
+                return stream.filter(Files::isDirectory)
+                        .map(path -> path.getFileName().toString())
+                        .sorted()
+                        .toList();
+            }
+        } catch (Throwable failure) {
+            logOperationFailure("列出子文件夹失败: " + root, failure);
             return Collections.emptyList();
         }
     }
 
-    /**
-     * 文件名净化守卫：fileName 含 ".."、'/'、'\\' 时视为路径穿越/子目录写法，拒绝访问。
-     * @return true 表示文件名安全
-     */
+    private static boolean isSafePathPart(String value) {
+        return value != null && !value.isEmpty() && !value.equals(".") && !value.contains("..")
+                && !value.contains("/") && !value.contains("\\");
+    }
+
     private static boolean isSafeFileName(String fileName) {
-        return fileName != null && !fileName.contains("..")
-                && !fileName.contains("/") && !fileName.contains("\\");
+        return isSafePathPart(fileName);
     }
 
-    /**
-     * 读取文本文件内容
-     * @param subFolder 子文件夹名
-     * @param fileName  文件名
-     * @return 文件内容字符串，失败返回 null
-     */
     public static String readTextFile(String subFolder, String fileName) {
-        if (!initialized) init();
-        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return null; }
-        Path file = rootDir.resolve(subFolder).resolve(fileName);
-        if (!Files.exists(file)) return null;
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null) return null;
         try {
-            return Files.readString(file, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            LOGGER.error("读取文件失败: {}", file, e);
+            return Files.isRegularFile(file) ? Files.readString(file, StandardCharsets.UTF_8) : null;
+        } catch (Throwable failure) {
+            logOperationFailure("读取文件失败: " + file, failure);
             return null;
         }
     }
 
-    /**
-     * 读取二进制文件内容
-     * @param subFolder 子文件夹名
-     * @param fileName  文件名
-     * @return 文件字节数组，失败返回 null
-     */
     public static byte[] readBytes(String subFolder, String fileName) {
-        if (!initialized) init();
-        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return null; }
-        Path file = rootDir.resolve(subFolder).resolve(fileName);
-        if (!Files.exists(file)) return null;
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null) return null;
         try {
-            return Files.readAllBytes(file);
-        } catch (IOException e) {
-            LOGGER.error("读取文件失败: {}", file, e);
+            return Files.isRegularFile(file) ? Files.readAllBytes(file) : null;
+        } catch (Throwable failure) {
+            logOperationFailure("读取文件失败: " + file, failure);
             return null;
         }
     }
 
-    /**
-     * 写入文本文件
-     * @param subFolder 子文件夹名
-     * @param fileName  文件名
-     * @param content   内容
-     * @return 是否成功
-     */
     public static boolean writeTextFile(String subFolder, String fileName, String content) {
-        if (!initialized) init();
-        if (!isSafeFileName(fileName)) { LOGGER.warn("拒绝非法文件名: {}", fileName); return false; }
-        Path file = rootDir.resolve(subFolder).resolve(fileName);
-        // ★ Bug修复：原版 Files.writeString 直接覆盖,若进程写到一半被 kill
-        //   (JVM 崩溃/断电/Alt+F4),game_settings.json 截断成 0 字节,下次启动
-        //   全部设置丢失。改为"写到 .tmp + 原子 rename"模式,与 NeuralEvaluator.save
-        //   一致,失败时 .tmp 不影响原文件
-        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
-        try {
-            Files.createDirectories(file.getParent());
-            Files.writeString(temp, content, StandardCharsets.UTF_8);
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            return true;
-        } catch (IOException e) {
-            // 清理半成品 .tmp
-            try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
-            LOGGER.error("写入文件失败: {}", file, e);
-            return false;
-        }
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null || content == null) return false;
+        return atomicWrite(file, temp -> Files.writeString(temp, content, StandardCharsets.UTF_8));
     }
 
-    /**
-     * 写入二进制文件
-     * @param subFolder 子文件夹名
-     * @param fileName  文件名
-     * @param data      字节数据
-     * @return 是否成功
-     */
     public static boolean writeBytes(String subFolder, String fileName, byte[] data) {
-        if (!initialized) init();
-        Path file = rootDir.resolve(subFolder).resolve(fileName);
-        // ★ Bug修复：同 writeTextFile,二进制写也走原子模式
-        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null || data == null) return false;
+        return atomicWrite(file, temp -> Files.write(temp, data));
+    }
+
+    public static String getFilePath(String subFolder, String fileName) {
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null) return null;
         try {
-            Files.createDirectories(file.getParent());
-            Files.write(temp, data);
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            return true;
-        } catch (IOException e) {
-            try { Files.deleteIfExists(temp); } catch (IOException ignored) {}
-            LOGGER.error("写入文件失败: {}", file, e);
+            return file.toAbsolutePath().toString();
+        } catch (Throwable failure) {
+            logOperationFailure("获取文件路径失败: " + file, failure);
+            return null;
+        }
+    }
+
+    public static boolean fileExists(String subFolder, String fileName) {
+        Path file = resolveFile(subFolder, fileName);
+        if (file == null) return false;
+        try {
+            return Files.exists(file);
+        } catch (Throwable failure) {
+            logOperationFailure("检查文件失败: " + file, failure);
             return false;
         }
     }
 
-    /**
-     * 获取文件的完整路径
-     * @param subFolder 子文件夹名
-     * @param fileName  文件名
-     * @return 完整路径字符串
-     */
-    public static String getFilePath(String subFolder, String fileName) {
-        if (!initialized) init();
-        return rootDir.resolve(subFolder).resolve(fileName).toAbsolutePath().toString();
-    }
-
-    /**
-     * 检查文件是否存在
-     */
-    public static boolean fileExists(String subFolder, String fileName) {
-        if (!initialized) init();
-        return Files.exists(rootDir.resolve(subFolder).resolve(fileName));
-    }
-
-    /**
-     * 确保子目录存在（用于动态创建新子目录）
-     * @param subFolder 子文件夹名
-     */
     public static void ensureSubFolder(String subFolder) {
-        if (!initialized) init();
+        Path dir = resolveSubFolder(subFolder);
+        if (dir == null) return;
         try {
-            Files.createDirectories(rootDir.resolve(subFolder));
-        } catch (IOException e) {
-            LOGGER.error("创建子文件夹失败: {}", subFolder, e);
+            Files.createDirectories(dir);
+        } catch (Throwable failure) {
+            logOperationFailure("创建子文件夹失败: " + subFolder, failure);
         }
+    }
+
+    private static void ensureInitialized() {
+        try {
+            init();
+        } catch (Throwable failure) {
+            // init 本身已有完整边界；此处作为公共 API 的最后防线。
+            synchronized (INIT_LOCK) {
+                if (initState == InitState.UNINITIALIZED) initState = InitState.FAILED;
+            }
+        }
+    }
+
+    private static Path availableRoot() {
+        ensureInitialized();
+        return initState == InitState.INITIALIZED ? rootDir : null;
+    }
+
+    private static Path resolveSubFolder(String subFolder) {
+        Path root = availableRoot();
+        if (root == null || !isSafePathPart(subFolder)) return null;
+        try {
+            return root.resolve(subFolder);
+        } catch (Throwable failure) {
+            logOperationFailure("解析子文件夹失败: " + subFolder, failure);
+            return null;
+        }
+    }
+
+    private static Path resolveFile(String subFolder, String fileName) {
+        if (!isSafeFileName(fileName)) return null;
+        Path dir = resolveSubFolder(subFolder);
+        if (dir == null) return null;
+        try {
+            return dir.resolve(fileName);
+        } catch (Throwable failure) {
+            logOperationFailure("解析文件失败: " + fileName, failure);
+            return null;
+        }
+    }
+
+    private static boolean atomicWrite(Path file, ThrowingPathWriter writer) {
+        Path temp = null;
+        try {
+            Files.createDirectories(file.getParent());
+            temp = Files.createTempFile(file.getParent(), file.getFileName().toString() + ".", ".tmp");
+            writer.write(temp);
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            return true;
+        } catch (Throwable failure) {
+            logOperationFailure("写入文件失败: " + file, failure);
+            return false;
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (Throwable ignored) {
+                    // 临时文件清理失败不改变写入结果。
+                }
+            }
+        }
+    }
+
+    private static void logOperationFailure(String message, Throwable failure) {
+        try {
+            LOGGER.error(message, failure);
+        } catch (Throwable ignored) {
+            // 日志系统不可用时仍保持 API 安全降级。
+        }
+    }
+
+    @FunctionalInterface
+    private interface ThrowingPathWriter {
+        void write(Path path) throws Exception;
     }
 }

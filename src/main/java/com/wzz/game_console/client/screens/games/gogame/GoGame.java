@@ -4,6 +4,17 @@ import java.util.*;
 
 public class GoGame implements AutoCloseable {
     private static final int BOARD_SIZE = 19;
+    /** Shared komi configuration used by scoring and external engines. */
+    public static final double DEFAULT_KOMI = 7.5;
+
+    public static double getConfiguredKomi() {
+        try {
+            double komi = com.wzz.game_console.util.GameSettings.getDouble("go", "komi", DEFAULT_KOMI);
+            return Double.isFinite(komi) ? Math.max(0.0, Math.min(100.0, komi)) : DEFAULT_KOMI;
+        } catch (Throwable ignored) {
+            return DEFAULT_KOMI;
+        }
+    }
     private static final int[][] DIRS = {{0,1}, {1,0}, {0,-1}, {-1,0}};
     private GoPlayer[][] board;
     private GoPlayer currentPlayer;
@@ -106,7 +117,7 @@ public class GoGame implements AutoCloseable {
         } catch (Throwable t) {
             // 任何异常（包括 ClassNotFoundException、NoClassDefFoundError）
             // 都使用默认的 MCTSGoAI
-            this.ai = new MCTSGoAI();
+            this.ai = MCTSGoAI.createFromSettings();
         }
     }
 
@@ -350,13 +361,18 @@ public class GoGame implements AutoCloseable {
             pass();
             return;
         }
-        // 最优落子非法（劫争/自杀）时，扫描棋盘找第一个合法点，避免直接弃权
-        if (placeStone(move[0], move[1])) {
+        // 校验 AI 坐标后再尝试落子，避免畸形引擎响应触发越界。
+        if (move.length >= 2 && isValidPosition(move[0], move[1]) && placeStone(move[0], move[1])) {
             return;
         }
-        for (int x = 0; x < BOARD_SIZE; x++) {
-            for (int y = 0; y < BOARD_SIZE; y++) {
-                if (placeStone(x, y)) return;
+        // 最优落子非法时从中心向外扫描，优先选择自然的中腹点。
+        int center = BOARD_SIZE / 2;
+        for (int radius = 0; radius < BOARD_SIZE; radius++) {
+            for (int x = center - radius; x <= center + radius; x++) {
+                for (int y = center - radius; y <= center + radius; y++) {
+                    if (Math.max(Math.abs(x - center), Math.abs(y - center)) == radius
+                            && isValidPosition(x, y) && placeStone(x, y)) return;
+                }
             }
         }
         // 全盘无合法落子则弃权
@@ -523,7 +539,7 @@ public class GoGame implements AutoCloseable {
             territory = calcTerritoryInternal();
         }
         double score = (player == GoPlayer.BLACK ? territory[0] : territory[1]);
-        if (player == GoPlayer.WHITE) score += 7.5; // 贴目：中国规则贴 3¾ 子 = 7.5 点（黑须 > 184.25/361）
+        if (player == GoPlayer.WHITE) score += getConfiguredKomi();
         return score;
     }
 

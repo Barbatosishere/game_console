@@ -6,6 +6,7 @@ import com.wzz.game_console.util.GameRenderHelper;
 import com.wzz.game_console.util.GameSettings;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
@@ -49,6 +50,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private int settingsSearchTime = GameSettings.getInt("go", "searchTime", 3000);
     /** 设置界面中当前的 KataGo 路径 */
     private String settingsKatagoPath = GameSettings.getString("go", "katagoPath", "");
+    private EditBox katagoPathEditBox;
 
     /** AI 后台思考标记（防止重复启动线程） */
     private volatile boolean aiThinking = false;
@@ -162,8 +164,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             if (p.length < 2) return;
             int x = Integer.parseInt(p[0]);
             int y = Integer.parseInt(p[1]);
-            if (x < 0 || x >= 19 || y < 0 || y >= 19) return;
-            game.placeStone(x, y);
+            if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE
+                    || !game.canPlaceStone(x, y)) return;
+            if (!game.placeStone(x, y)) return;
             myTurn = true;
             if (game.isGameOver()) finishGame();
         } catch (Exception ignored) {}
@@ -175,6 +178,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private void sendLanMove(String moveData) {
         if (lanMode == LAN_NONE) return;
         sendMove(moveData);
+    }
+
+    /** 单一入口判断本地玩家当前是否可落子/虚着/显示预览。 */
+    private boolean canLocalPlayerMove() {
+        if (state != State.PLAYING || game.isGameOver()) return false;
+        if (lanMode != LAN_NONE) return myTurn;
+        return !game.isAiMode() || game.getCurrentPlayer() == GoPlayer.BLACK;
     }
 
     // ── 游戏逻辑 ──────────────────────────────────────────────
@@ -202,18 +212,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
      * 修复 Bug：原版 endGame() 不计算胜者，导致局域网双方都显示"你赢了"。
      */
     private void finishGame() {
-        // 计算双方领地（中国规则数子法，复用 GoGame 的公共计分方法）
-        int[] territory = game.calcTerritory();
-        int blackTerritory = territory[0];
-        int whiteTerritory = territory[1];
-
-        // 中国规则数子法（区域计分）：得分 = 棋盘活子数 + 单独围空。
-        // 修复：不再把提子数加进总分——提掉的子已从对方区域中消失，
-        // 区域计分天然包含了提子收益，再加一次属于双重计分。
-        // 黑棋贴目 7.5（中国规则数子法）。
-        double blackScore = blackTerritory;
-        double whiteScore = whiteTerritory + 7.5;
-
+        // 统一使用 GoGame 的计分实现，确保贴目配置与所有结算路径一致。
+        double blackScore = game.getScore(GoPlayer.BLACK);
+        double whiteScore = game.getScore(GoPlayer.WHITE);
         boolean blackWins = blackScore > whiteScore;
 
         if (lanMode == LAN_NONE) {
@@ -237,6 +238,19 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                     myWin ? "你" : "对方", blackScore, whiteScore);
         }
         state = State.GAME_OVER;
+    }
+
+    @Override protected void init() {
+        super.init();
+        int cx = width / 2, cy = height / 2;
+        int px = cx - 160, py = cy - 130;
+        int pathY = py + 45 + 45 + 45;
+        katagoPathEditBox = new EditBox(font, px + 90, pathY - 4, 215, 22, Component.literal("KataGo 路径"));
+        katagoPathEditBox.setValue(settingsKatagoPath == null ? "" : settingsKatagoPath);
+        katagoPathEditBox.setMaxLength(512);
+        katagoPathEditBox.setResponder(value -> settingsKatagoPath = value);
+        katagoPathEditBox.setVisible(state == State.SETTINGS && "katago".equals(settingsEngine));
+        addRenderableWidget(katagoPathEditBox);
     }
 
     @Override public void tick() {
@@ -282,11 +296,22 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     @Override public boolean keyPressed(int key, int scan, int mods) {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
-            if (state == State.SETTINGS) { state = State.MENU; return true; }
+            if (state == State.SETTINGS) {
+                state = State.MENU;
+                if (katagoPathEditBox != null) {
+                    katagoPathEditBox.setFocused(false);
+                    katagoPathEditBox.setVisible(false);
+                }
+                return true;
+            }
             if (state != State.MENU) { showExitConfirm = true; return true; }
             Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
         }
         if (showExitConfirm) return true;
+        if (katagoPathEditBox != null && katagoPathEditBox.visible
+                && katagoPathEditBox.isFocused() && super.keyPressed(key, scan, mods)) {
+            return true;
+        }
         if (key == GLFW.GLFW_KEY_N) {
             // LAN：CLIENT 不能单方面重开；HOST 重开需广播 RESTART 同步对端，否则双方棋盘永久分叉
             if (lanMode == LAN_CLIENT) return true;
@@ -295,9 +320,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             return true;
         }
         if (key == GLFW.GLFW_KEY_P && state == State.PLAYING && !game.isGameOver()) {
+            if (!canLocalPlayerMove()) return true;
             if (lanMode == LAN_NONE) {
-                // ★ 修复：单机 AI 模式下 AI 执白，AI 回合（含思考中）不允许玩家代为虚着
-                if (game.isAiMode() && game.getCurrentPlayer() == GoPlayer.WHITE) return true;
                 game.pass();
                 if (game.isGameOver()) finishGame();
             } else if (myTurn) {
@@ -333,6 +357,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             case SETTINGS -> renderSettings(g, mx, my);
             case PLAYING -> renderPlaying(g, mx, my);
             case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g, mx, my); }
+        }
+        if (katagoPathEditBox != null && katagoPathEditBox.visible) {
+            katagoPathEditBox.render(g, mx, my, pt);
         }
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
     }
@@ -456,16 +483,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             }
 
         // 悬停预览
-        if (state == State.PLAYING && !game.isGameOver()) {
-            boolean canPlay = (lanMode == LAN_NONE) || myTurn;
-            if (canPlay) {
-                int[] pos = getBoardPos(mx, my);
-                if (pos != null && game.canPlaceStone(pos[0], pos[1])) {
-                    int scx = boardStartX + pos[0] * cellSize + cellSize/2;
-                    int scy = boardStartY + pos[1] * cellSize + cellSize/2;
-                    int color = game.getCurrentPlayer() == GoPlayer.BLACK ? 0x66111111 : 0x66EEEEEE;
-                    GameRenderHelper.drawCircle(g, scx, scy, stoneR, color);
-                }
+        if (canLocalPlayerMove()) {
+            int[] pos = getBoardPos(mx, my);
+            if (pos != null && game.canPlaceStone(pos[0], pos[1])) {
+                int scx = boardStartX + pos[0] * cellSize + cellSize/2;
+                int scy = boardStartY + pos[1] * cellSize + cellSize/2;
+                int color = game.getCurrentPlayer() == GoPlayer.BLACK ? 0x66111111 : 0x66EEEEEE;
+                GameRenderHelper.drawCircle(g, scx, scy, stoneR, color);
             }
         }
 
@@ -529,6 +553,11 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
         // ── 设置界面 ──
         if (state == State.SETTINGS) {
+            if (katagoPathEditBox != null && katagoPathEditBox.visible
+                    && katagoPathEditBox.mouseClicked(mx, my, btn)) {
+                return true;
+            }
+            if (katagoPathEditBox != null) katagoPathEditBox.setFocused(false);
             int cx = width / 2, cy = height / 2;
             int pw = 320, ph = 260;
             int px = cx - pw / 2, py = cy - ph / 2;
@@ -537,10 +566,12 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             int optionY = py + 45;
             if (mx >= px + 90 && mx <= px + 200 && my >= optionY - 4 && my <= optionY + 18) {
                 settingsEngine = "mcts";
+                if (katagoPathEditBox != null) katagoPathEditBox.setVisible(false);
                 return true;
             }
             if (mx >= px + 205 && mx <= px + 305 && my >= optionY - 4 && my <= optionY + 18) {
                 settingsEngine = "katago";
+                if (katagoPathEditBox != null) katagoPathEditBox.setVisible(true);
                 return true;
             }
 
@@ -559,6 +590,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                 // 保存设置到 GameSettings
                 saveSettings();
                 state = State.MENU;
+                if (katagoPathEditBox != null) {
+                    katagoPathEditBox.setFocused(false);
+                    katagoPathEditBox.setVisible(false);
+                }
                 return true;
             }
             return true;
@@ -571,18 +606,13 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             }
             // 设置按钮
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+58 && my <= cy+80) {
-                state = State.SETTINGS; return true;
+                state = State.SETTINGS;
+                if (katagoPathEditBox != null) katagoPathEditBox.setVisible("katago".equals(settingsEngine));
+                return true;
             }
         }
         if (state == State.PLAYING && btn == 0 && !game.isGameOver()) {
-            boolean canPlay = (lanMode == LAN_NONE) || myTurn;
-            // ★ 修复：单机 AI 模式下 AI 执白，AI 回合（含思考中）不允许玩家代落子；
-            //   LAN 模式行为不变
-            if (lanMode == LAN_NONE && game.isAiMode()
-                    && game.getCurrentPlayer() == GoPlayer.WHITE) {
-                canPlay = false;
-            }
-            if (!canPlay) return true;
+            if (!canLocalPlayerMove()) return true;
 
             int[] pos = getBoardPos((int)mx, (int)my);
             if (pos != null && game.canPlaceStone(pos[0], pos[1])) {
@@ -649,6 +679,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             goSettings.put("searchTime", settingsSearchTime);
             if (settingsKatagoPath != null && !settingsKatagoPath.isBlank()) {
                 goSettings.put("katagoPath", settingsKatagoPath);
+            } else {
+                // 允许在 EditBox 中清空路径，并从配置中移除旧值。
+                goSettings.remove("katagoPath");
             }
             allSettings.put("go", goSettings);
 
@@ -656,7 +689,11 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             // 时截断 settings.json 导致玩家全部游戏配置丢失
             com.google.gson.Gson gson = new com.google.gson.GsonBuilder().setPrettyPrinting().create();
             String json = gson.toJson(allSettings);
-            com.wzz.game_console.util.ExternalFileManager.writeTextFile("data", "game_settings.json", json);
+            if (!com.wzz.game_console.util.ExternalFileManager.writeTextFile("data", "game_settings.json", json)) {
+                throw new java.io.IOException("写入 game_settings.json 失败");
+            }
+            // 刷新 GameSettings 的内存快照，让下一局初始化 AI/Komi 时立即使用新配置。
+            GameSettings.importFromFile(settingsPath);
 
             LOGGER.info("[围棋] AI 设置已保存: engine={}, searchTime={}ms", settingsEngine, settingsSearchTime);
         } catch (Exception e) {

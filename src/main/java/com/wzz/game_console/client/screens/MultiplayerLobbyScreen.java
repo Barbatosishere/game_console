@@ -326,6 +326,13 @@ public class MultiplayerLobbyScreen extends Screen {
         ));
     }
 
+    /** 按玩家点击选择的先后顺序生成快照；不要依赖 ConcurrentHashMap 的遍历顺序分配座位。 */
+    private List<UUID> selectedLanPeersInOrder() {
+        synchronized (selectedLanPeers) {
+            return new ArrayList<>(selectedLanPeers);
+        }
+    }
+
     /** 斗地主：选好2个玩家后批量发邀请 */
     private void sendLandlordInvites() {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
@@ -334,7 +341,7 @@ public class MultiplayerLobbyScreen extends Screen {
                 mc.player.getGameProfile().getName() : "???";
         // 记录主机UUID，启动游戏时传入三个UUID（主机+两个接受者）
         lanHostUuid = mc.player != null ? mc.player.getGameProfile().getId() : null;
-        for (UUID uuid : selectedLanPeers) {
+        for (UUID uuid : selectedLanPeersInOrder()) {
             ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
                     MultiplayerGamePacket.PacketType.INVITE, uuid, game.id, senderName
             ));
@@ -429,9 +436,13 @@ public class MultiplayerLobbyScreen extends Screen {
             waitingMessage = "等待两位玩家接受邀请 (" + pendingAccepts + "/2)...";
 
             if (pendingAccepts >= 2) {
-                // 两人都接受，启动游戏（传入三个UUID：主机 + 两个接受者）
-                UUID[] peers = acceptedPeers.keySet().toArray(new UUID[0]);
-                UUID p1 = peers[0], p2 = peers[1];
+                // 座位严格按 selectedLanPeers 的邀请顺序确定，接受包到达顺序不影响 peer1/peer2。
+                List<UUID> invitedOrder=selectedLanPeersInOrder();
+                if(invitedOrder.size()!=2||!acceptedPeers.keySet().containsAll(invitedOrder)){
+                    LOGGER.warn("[游戏机联机] 斗地主接受名单与邀请顺序不一致，暂不启动");
+                    return;
+                }
+                UUID p1=invitedOrder.get(0),p2=invitedOrder.get(1);
                 Screen gs = new com.wzz.game_console.client.screens.games.landlord
                         .LandlordGameScreen(true, lanHostUuid, p1, p2);
                 // 先清理再切屏：避免 setScreen 触发 removed() 时误发 INVITE_CANCELLED
@@ -497,7 +508,7 @@ public class MultiplayerLobbyScreen extends Screen {
                 case MODE_SELECT -> renderModeSelect(g, mx, my);
                 case PLAYER_LIST -> renderPlayerList(g, mx, my);
                 case PLAYER_LIST_MULTI -> renderPlayerListMulti(g, mx, my);
-                case WAITING     -> renderWaiting(g);
+                case WAITING     -> renderWaiting(g, mx, my);
             }
             GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 返回");
         }
@@ -697,12 +708,12 @@ public class MultiplayerLobbyScreen extends Screen {
         GameRenderHelper.drawSecondaryButton(g, font, "◀ 返回", cx - 40, height - 28, 80, 18, mx, my);
     }
 
-    private void renderWaiting(GuiGraphics g) {
+    private void renderWaiting(GuiGraphics g, int mx, int my) {
         int cx = width / 2, cy = height / 2;
         // 动画点（查表,帧表为类级预计算常量）
         String dots = WAIT_DOTS[(int)(tickCount / 10 % WAIT_DOTS.length)];
         g.drawCenteredString(font, waitingMessage + dots, cx, cy - 10, 0xFFFF44);
-        GameRenderHelper.drawSecondaryButton(g, font, "取消", cx - 40, cy + 10, 80, 18, 0, 0);
+        GameRenderHelper.drawSecondaryButton(g, font, "取消", cx - 40, cy + 10, 80, 18, mx, my);
     }
 
     private void renderInviteNotification(GuiGraphics g, int mx, int my) {
