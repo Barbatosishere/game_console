@@ -10,6 +10,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
+import org.lwjgl.glfw.GLFW;
 import net.minecraft.sounds.SoundSource;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
@@ -75,6 +76,9 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
+        //   都会叠加 3 个新按钮,玩家点击可能被最底层旧按钮拦截
+        this.clearWidgets();
         super.init();
         calculateLayout();
         createButtons();
@@ -223,7 +227,7 @@ public class WhackAMoleScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
         if (gameState == GameState.PLAYING && button == 0) {
             // 检查是否点击了地鼠
             for (MoleHole hole : holes) {
@@ -369,9 +373,9 @@ public class WhackAMoleScreen extends Screen {
     }
 
     private void renderHammer(GuiGraphics guiGraphics, int mouseX, int mouseY) {
-        // 简单的锤子图标（使用方块模拟）
-        guiGraphics.fill(mouseX - 2, mouseY - 8, mouseX + 2, mouseY - 4, 0xFF8B4513); // 锤柄
-        guiGraphics.fill(mouseX - 6, mouseY - 10, mouseX + 6, mouseY - 6, 0xFF696969); // 锤头
+        // 锤子图标：锤头置于鼠标光标处（底部为打击面），锤柄向上延伸
+        guiGraphics.fill(mouseX - 6, mouseY - 6, mouseX + 6, mouseY, 0xFF696969); // 锤头（底边与光标对齐）
+        guiGraphics.fill(mouseX - 2, mouseY - 14, mouseX + 2, mouseY - 6, 0xFF8B4513); // 锤柄
     }
 
     private void renderGameOver(GuiGraphics guiGraphics) {
@@ -421,15 +425,33 @@ public class WhackAMoleScreen extends Screen {
         return "多多练习！";
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移地鼠/游戏计时，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    private void resumeFromExitConfirm() {
+        long pausedMs = System.currentTimeMillis() - pauseStartTime;
+        gameStartTime += pausedMs;
+        lastMoleSpawnTime += pausedMs;
+        for (MoleHole hole : holes) hole.offsetTime(pausedMs);
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) {
-            if (showExitConfirm) { showExitConfirm = false; }
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            if (showExitConfirm) { resumeFromExitConfirm(); }
             else if (gameState == GameState.MENU) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); } // 菜单态ESC直接退出，与其他游戏一致
-            else { showExitConfirm = true; }
+            else { pauseStartTime = System.currentTimeMillis(); showExitConfirm = true; }
             return true;
         }
+        // ★ 修复：showExitConfirm 拦截上移到 R 键处理之前，
+        //   防止退出确认弹窗期间按 R 直接重开（弹窗仍悬浮在重开后的对局上）
         if (showExitConfirm) return true;
+        // ★ 用户体验：R 在 GAME_OVER 或 MENU 时直接重开,符合常见约定
+        if (keyCode == GLFW.GLFW_KEY_R && (gameState == GameState.GAME_OVER || gameState == GameState.MENU)) {
+            startGame();
+            return true;
+        }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
@@ -502,6 +524,12 @@ public class WhackAMoleScreen extends Screen {
             return false;
         }
 
+        /** ESC 弹窗关闭时补偿暂停期间流逝的墙钟时间，防止暂停期间即将超时的地鼠一恢复就被秒判漏打 */
+        public void offsetTime(long pausedMs) {
+            moleSpawnTime += pausedMs;
+            hitTime += pausedMs;
+        }
+
         public void hitMole() {
             isHit = true;
             moleSpawnTime = System.currentTimeMillis(); // 重置时间用于下沉动画
@@ -524,34 +552,61 @@ public class WhackAMoleScreen extends Screen {
             if (hasMole) {
                 int moleRenderY = (int) (y + HOLE_SIZE - MOLE_SIZE + moleY);
                 int moleRenderX = x + (HOLE_SIZE - MOLE_SIZE) / 2;
-
+                guiGraphics.enableScissor(x, y, x + HOLE_SIZE, y + HOLE_SIZE);
                 try {
-                    ResourceLocation texture = moleType.getTexture();
-                    // 渲染地鼠头像（从怪物纹理中截取头部）
-                    guiGraphics.blit(texture,
-                            moleRenderX, moleRenderY,
-                            8, 8, // 纹理上头部的位置
-                            MOLE_SIZE, MOLE_SIZE,
-                            64, 64); // MC皮肤纹理尺寸
-                } catch (Exception e) {
-                    // 备用渲染
-                    int color = moleType == MoleType.CREEPER ? 0xFF00FF00 :
-                            moleType == MoleType.SKELETON ? 0xFFCCCCCC : 0xFF00AA00;
-                    guiGraphics.fill(moleRenderX, moleRenderY,
-                            moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, color);
-                }
+
+                // ★ Bug修复：原版用 64x64 实体纹理中裁切 8x8 头部再缩放到 32x32，
+                //   但 OptiFine/资源包常使 zombie/creeper/skeleton 纹理尺寸异常
+                //   (32x16 / 32x32 / 64x32 等)，强制按 64x64 采样会显示错位像素。
+                //   这里直接走色块 + 表情符号兜底，兼容性最好，玩家不会看到错位贴图。
+                int bodyColor = moleType == MoleType.CREEPER ? 0xFF00CC00 :
+                        moleType == MoleType.SKELETON ? 0xFFCCCCCC : 0xFF2A8A2A;
+                int eyeColor  = moleType == MoleType.CREEPER ? 0xFF003300 :
+                        moleType == MoleType.SKELETON ? 0xFF333333 : 0xFF000000;
+                // 身体色块
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, bodyColor);
+                // 边框
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + 2, 0xFF000000);
+                guiGraphics.fill(moleRenderX, moleRenderY + MOLE_SIZE - 2,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0xFF000000);
+                guiGraphics.fill(moleRenderX, moleRenderY,
+                        moleRenderX + 2, moleRenderY + MOLE_SIZE, 0xFF000000);
+                guiGraphics.fill(moleRenderX + MOLE_SIZE - 2, moleRenderY,
+                        moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0xFF000000);
+                // 两只眼睛
+                int eyeSize = Math.max(3, MOLE_SIZE / 6);
+                int eyeY = moleRenderY + MOLE_SIZE / 3;
+                guiGraphics.fill(moleRenderX + MOLE_SIZE / 3 - eyeSize / 2, eyeY,
+                        moleRenderX + MOLE_SIZE / 3 + eyeSize / 2, eyeY + eyeSize, eyeColor);
+                guiGraphics.fill(moleRenderX + 2 * MOLE_SIZE / 3 - eyeSize / 2, eyeY,
+                        moleRenderX + 2 * MOLE_SIZE / 3 + eyeSize / 2, eyeY + eyeSize, eyeColor);
+                // 嘴
+                int mouthY = moleRenderY + 2 * MOLE_SIZE / 3;
+                guiGraphics.fill(moleRenderX + MOLE_SIZE / 3, mouthY,
+                        moleRenderX + 2 * MOLE_SIZE / 3, mouthY + Math.max(2, eyeSize - 1), eyeColor);
+
+                // ★ 删除上一版"备用 blit 7 参数"逻辑：
+                //   blit 签名 (texture, x, y, uOffset, vOffset, uWidth, vHeight)
+                //   强制按 64x64 纹理 8,8 偏移裁 32x32，会在非 64x64 资源包下采样错位
+                //   导致头部像素显示在身体之外（"贴图错位"原 bug）。改用纯色块 + 表情符号
+                //   兜底，跨资源包/字体均一致。
 
                 // 如果被打中，渲染打击效果
                 if (isHit) {
                     guiGraphics.fill(moleRenderX, moleRenderY,
                             moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0x80FF0000);
                 }
+                } finally {
+                    guiGraphics.disableScissor();
+                }
             }
         }
 
         public boolean isClicked(double mouseX, double mouseY) {
-            return mouseX >= x && mouseX <= x + HOLE_SIZE &&
-                    mouseY >= y && mouseY <= y + HOLE_SIZE;
+            return MoleHitbox.containsVisiblePart(x, y, HOLE_SIZE, MOLE_SIZE,
+                    moleY, hasMole, mouseX, mouseY);
         }
 
         public boolean hasMole() { return hasMole; }

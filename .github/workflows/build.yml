@@ -1,0 +1,53 @@
+name: Build & Verify
+
+on:
+  push:
+    branches: [ main, gpu-accel ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Check whitespace
+        run: |
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^..HEAD
+          else
+            git show --check --oneline HEAD
+          fi
+
+      - name: Compile and test
+        run: bash ./gradlew compileJava test --no-daemon --stacktrace
+
+      - name: Package jar
+        run: bash ./gradlew jar --no-daemon
+
+      - name: Verify jar contents
+        shell: bash
+        run: |
+          test -n "$(find build/libs -maxdepth 1 -type f -name '*.jar' -print -quit)"
+          ! jar tf build/libs/*.jar | grep -E '(^|/)(jna|jna-platform)-[^/]+\.jar$|^com/sun/jna/'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameConsole-jar
+          path: build/libs/*.jar
+          retention-days: 14

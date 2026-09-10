@@ -45,6 +45,7 @@ public class MouseTunnelGameScreen extends Screen {
     private long survivalTime = 0;
     private int score = 0;
     private int bestScore = 0;
+    private boolean isWin = false;
 
     // 通道数据
     private List<TunnelSegment> tunnelSegments = new ArrayList<>();
@@ -54,6 +55,8 @@ public class MouseTunnelGameScreen extends Screen {
     // 鼠标追踪
     private int playerX;
     private int playerY;
+    private int latestMouseX;
+    private int latestMouseY;
     private boolean mouseInTunnel = true;
 
     // 游戏参数
@@ -97,6 +100,9 @@ public class MouseTunnelGameScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
+        //   都会叠加新按钮,玩家点击可能被最底层旧按钮拦截
+        this.clearWidgets();
         super.init();
         boolean playing = gameState == GameState.PLAYING;
         if (!playing) {
@@ -109,15 +115,18 @@ public class MouseTunnelGameScreen extends Screen {
         tunnelSegmentCount = (this.width / SEGMENT_WIDTH) + 20; // 额外20段作为缓冲
 
         this.startButton = Button.builder(Component.literal("开始游戏"), button -> startGame())
-                .bounds(this.width / 2 - 50, this.height / 2 + 50, 100, 20)
+                .bounds(this.width / 2 - 50, this.height / 2 + 30, 100, 20)
                 .build();
         this.addRenderableWidget(this.startButton);
 
         this.exitButton = Button.builder(Component.literal("返回"), button -> Minecraft.getInstance().setScreen(new GameSelectorScreen()))
-                .bounds(this.width / 2 - 50, this.height / 2 + 80, 100, 20)
+                .bounds(this.width / 2 - 50, this.height / 2 + 60, 100, 20)
                 .build();
         this.addRenderableWidget(this.exitButton);
         if (playing) {
+            // 游戏进行中用不到这两个菜单按钮，隐藏避免误点（窗口缩放重建按钮后同样处理）
+            this.startButton.visible = false;
+            this.exitButton.visible = false;
             // 游戏进行中：保留现有通道与进度，仅在段数不足时补充新段以覆盖新窗口宽度
             while (tunnelSegments.size() < tunnelSegmentCount) {
                 TunnelSegment lastSegment = tunnelSegments.get(tunnelSegments.size() - 1);
@@ -160,9 +169,12 @@ public class MouseTunnelGameScreen extends Screen {
         difficulty = 1;
         scrollOffset = 0;
         mouseInTunnel = true;
+        latestMouseX = playerX;
+        latestMouseY = playerY;
         // 重置难度计时基准与宽限计时，避免开局瞬间触发难度提升或误判游戏结束
         lastDifficultyIncrease = System.currentTimeMillis();
         outOfTunnelSince = 0;
+        isWin = false;
 
         generateInitialTunnel();
 
@@ -181,12 +193,9 @@ public class MouseTunnelGameScreen extends Screen {
         GameRenderHelper.fillDarkBackground(graphics, width, height);
 
         if (gameState == GameState.PLAYING) {
-            // 更新鼠标位置
-            playerX = mouseX;
-            playerY = mouseY;
-
-            // 检查碰撞（弹窗期间暂停判定，否则宽限计时会持续走完导致暂停中被判失败）
-            if (!showExitConfirm) checkCollision();
+            // 游戏逻辑统一在 tick() 推进；render 只读取已更新的位置。
+            playerX = latestMouseX;
+            playerY = latestMouseY;
 
             // 渲染游戏
             renderGame(graphics);
@@ -264,7 +273,7 @@ public class MouseTunnelGameScreen extends Screen {
         graphics.drawString(this.font, title, (this.width - titleWidth) / 2, this.height / 2 - 50, 0xFFFFFF);
 
         if (gameState == GameState.GAME_OVER) {
-            String gameOverText = "游戏结束!";
+            String gameOverText = isWin ? "胜利!" : "游戏结束!";
             String finalScoreText = "最终分数: " + score;
             String bestScoreText = "最佳分数: " + bestScore;
 
@@ -290,6 +299,12 @@ public class MouseTunnelGameScreen extends Screen {
                     (this.width - textWidth) / 2,
                     this.height / 2 + 120 + i * 12, 0xFFCCCCCC);
         }
+    }
+
+    @Override
+    public void mouseMoved(double mx, double my) {
+        latestMouseX = (int) mx;
+        latestMouseY = (int) my;
     }
 
     private void checkCollision() {
@@ -328,32 +343,53 @@ public class MouseTunnelGameScreen extends Screen {
             bestScore = score;
         }
 
+        // ★ Bug修复：100 分胜利 / 碰墙失败后确保退出弹窗状态被清掉，
+        //   否则开始/返回按钮可见但被 showExitConfirm 拦截点击，导致"100分后无反应"
+        showExitConfirm = false;
+        exitDialogOpenedAtMs = 0;
+
         // 显示按钮
         this.startButton.visible = true;
         this.exitButton.visible = true;
 
-        playFailSound();
+        if (isWin) {
+            playSuccessSound();
+        } else {
+            playFailSound();
+        }
     }
 
     @Override
     public void tick() {
         super.tick();
 
-        if (gameState == GameState.PLAYING && mouseInTunnel && !showExitConfirm) { // 弹窗期间暂停滚动与计时
+        if (gameState == GameState.PLAYING && !showExitConfirm) { // 弹窗期间暂停滚动与计时
+            playerX = latestMouseX;
+            playerY = latestMouseY;
+            checkCollision();
+            if (!mouseInTunnel) return;
             // 更新生存时间
             long currentTime = System.currentTimeMillis();
             survivalTime = currentTime - gameStartTime;
-            score = (int)(survivalTime / 100); // 每100毫秒1分
+            MouseTunnelProgress.Snapshot progress = MouseTunnelProgress.calculate(
+                    survivalTime, currentTime - lastDifficultyIncrease);
+            score = progress.score();
+
+            // Increase difficulty before evaluating victory so every scheduled level is observable.
+            for (int i = 0; i < progress.difficultyIncreases(); i++) {
+                difficulty++;
+                lastDifficultyIncrease += MouseTunnelProgress.DIFFICULTY_INTERVAL_MILLIS;
+                generateMoreChallengingTunnel();
+            }
+
+            if (progress.won()) {
+                isWin = true;
+                gameOver();
+                return;
+            }
 
             // 滚动通道
             scrollOffset += SCROLL_SPEED + (difficulty - 1);
-
-            // 增加难度
-            if (currentTime - lastDifficultyIncrease > 10000) { // 每10秒增加难度
-                difficulty++;
-                lastDifficultyIncrease = currentTime;
-                generateMoreChallengingTunnel();
-            }
 
             // 生成新的通道段 - 修改触发条件
             if (scrollOffset >= SEGMENT_WIDTH) {

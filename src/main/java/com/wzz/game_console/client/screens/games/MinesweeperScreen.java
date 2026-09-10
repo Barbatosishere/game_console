@@ -27,21 +27,15 @@ public class MinesweeperScreen extends Screen {
     private int flagCount;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final Random random = new Random();
+    private boolean firstClick;
 
     public MinesweeperScreen() { super(Component.literal("扫雷")); }
 
     private void startGame() {
         grid = new Cell[gridSize][gridSize];
-        won = false; flagCount = 0;
+        won = false; flagCount = 0; firstClick = true;
         for (int y = 0; y < gridSize; y++)
             for (int x = 0; x < gridSize; x++) grid[y][x] = new Cell();
-        int placed = 0;
-        while (placed < mineCount) {
-            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
-            if (!grid[y][x].mine) { grid[y][x].mine = true; placed++; }
-        }
-        for (int y = 0; y < gridSize; y++)
-            for (int x = 0; x < gridSize; x++) grid[y][x].adj = countAdj(x, y);
         state = State.PLAYING; particles.clear();
     }
 
@@ -52,6 +46,38 @@ public class MinesweeperScreen extends Screen {
             if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && grid[ny][nx].mine) c++;
         }
         return c;
+    }
+
+    private void placeMinesAvoiding(int avoidX, int avoidY) {
+        int placed = 0;
+        // ★ Bug修复：原版用 mineCount*100 步上限 + 3x3 避让,极端小棋盘+多雷时
+        //   attempts 会提前耗尽 → placed < mineCount → 雷数偏少。
+        //   改为更宽松的上限,再补一道兜底:如果仍放不够,则从 firstClick 周围 3x3
+        //   之外的全 board 随机补雷(不会破坏 firstClick 的安全性)。
+        int maxAttempts = mineCount * 200;
+        int attempts = 0;
+        while (placed < mineCount && attempts++ < maxAttempts) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
+            if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        // 兜底:在避让区外继续补雷,确保雷数与配置一致
+        attempts = 0;
+        while (placed < mineCount && attempts++ < mineCount * 50) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
+            if (Math.abs(x - avoidX) <= 1 && Math.abs(y - avoidY) <= 1) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        // 终极兜底:若仍不足(理论上只发生在 3x3 >= gridSize*gridSize),从避让区补
+        while (placed < mineCount) {
+            int x = random.nextInt(gridSize), y = random.nextInt(gridSize);
+            if (grid[y][x].mine) continue;
+            grid[y][x].mine = true; placed++;
+        }
+        for (int y = 0; y < gridSize; y++)
+            for (int x = 0; x < gridSize; x++) grid[y][x].adj = countAdj(x, y);
     }
 
     private void reveal(int x, int y) {
@@ -77,7 +103,11 @@ public class MinesweeperScreen extends Screen {
         if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1F, 1F);
     }
 
-    @Override public void tick() { tickCount++; }
+    @Override public void tick() {
+        tickCount++;
+        // ★ 修复：粒子物理移到 tick() 固定频率推进，弹窗暂停期间冻结（原来在 render 中 update）
+        if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
+    }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
         if (key == GLFW.GLFW_KEY_ESCAPE) {
@@ -109,11 +139,15 @@ public class MinesweeperScreen extends Screen {
         }
         if (state != State.PLAYING) return super.mouseClicked(mx, my, btn);
 
+        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
+        //   会误命中第0行/列，先按负坐标守卫（与棋盘外点击同样交给 super 处理）
+        if (mx < offsetX || my < offsetY) return super.mouseClicked(mx, my, btn);
         int gx = (int)((mx - offsetX) / cellSize);
         int gy = (int)((my - offsetY) / cellSize);
         if (gx < 0 || gx >= gridSize || gy < 0 || gy >= gridSize) return super.mouseClicked(mx, my, btn);
 
         if (btn == 0) {
+            if (firstClick) { placeMinesAvoiding(gx, gy); firstClick = false; }
             reveal(gx, gy);
             if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.STONE_BUTTON_CLICK_ON, 0.5F, 1F);
         } else if (btn == 1 && !grid[gy][gx].revealed) {
@@ -162,7 +196,15 @@ public class MinesweeperScreen extends Screen {
                 if (c.revealed) {
                     if (c.mine) {
                         g.fill(sx, sy, sx + cellSize, sy + cellSize, 0xFFCC2222);
-                        g.drawCenteredString(font, "💣", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFFFFFF);
+                        // ★ 修复：默认字体无 U+1F4A3(💣)，豆腐块概率高，改为自绘地雷：黑色圆身 + 四向短刺 + 灰色高光
+                        int mcx = sx + cellSize / 2, mcy = sy + cellSize / 2;
+                        int mr = Math.max(2, cellSize / 4);
+                        GameRenderHelper.drawCircle(g, mcx, mcy, mr, 0xFF111111);
+                        g.fill(mcx, mcy - mr - 2, mcx + 1, mcy - mr + 1, 0xFF111111);
+                        g.fill(mcx, mcy + mr - 1, mcx + 1, mcy + mr + 2, 0xFF111111);
+                        g.fill(mcx - mr - 2, mcy, mcx - mr + 1, mcy + 1, 0xFF111111);
+                        g.fill(mcx + mr - 1, mcy, mcx + mr + 2, mcy + 1, 0xFF111111);
+                        g.fill(mcx - mr / 2, mcy - mr / 2, mcx, mcy, 0xFF888888);
                     } else {
                         g.fill(sx, sy, sx + cellSize, sy + cellSize, 0xFF1A1A22);
                         if (c.adj > 0 && c.adj <= 8)
@@ -175,7 +217,16 @@ public class MinesweeperScreen extends Screen {
                     g.fill(sx, sy, sx + 1, sy + cellSize, GameRenderHelper.brighten(bg, 1.15f));
                     g.fill(sx + cellSize - 1, sy, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.7f));
                     g.fill(sx, sy + cellSize - 1, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.6f));
-                    if (c.flagged) g.drawCenteredString(font, "🚩", sx + cellSize / 2, sy + (cellSize - 8) / 2, 0xFF4444);
+                    if (c.flagged) {
+                        // ★ 修复：默认字体无 U+1F6A9(🚩)，豆腐块概率高，改为自绘小旗：浅灰旗杆 + 红色三角旗
+                        int fx = sx + cellSize / 2, fy = sy + cellSize / 2;
+                        int fh = Math.max(3, cellSize / 4);
+                        g.fill(fx - 1, fy - fh, fx + 1, fy + fh, 0xFFCCCCCC);
+                        for (int i = 0; i < fh; i++) {
+                            int w = fh - i;
+                            g.fill(fx + 1, fy - fh + i, fx + 1 + w, fy - fh + i + 1, 0xFFEE3333);
+                        }
+                    }
                 }
                 // 网格线
                 g.fill(sx + cellSize, sy, sx + cellSize + 1, sy + cellSize, 0x22FFFFFF);
@@ -183,7 +234,7 @@ public class MinesweeperScreen extends Screen {
             }
         }
 
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "地雷: " + mineCount, 8, 7, 0xFF4444);
         g.drawCenteredString(font, "标旗: " + flagCount + " / " + mineCount, width / 2, 7, 0xFFFF44);

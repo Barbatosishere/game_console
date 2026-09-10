@@ -52,16 +52,25 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     public static final int LAN_NONE = 0, LAN_HOST = 1, LAN_CLIENT = 2;
     private int lanMode = LAN_NONE;
     private java.util.UUID remotePeer = null;
-    /** CLIENT 收到的主机状态（逗号分隔整数） */
-    private volatile String receivedState = null;
+    private final RealtimeLanState.Receiver stateReceiver = new RealtimeLanState.Receiver();
+    /** LAN_CLIENT 收到 STATE 的最后 tick 计数,用于检测 HOST 崩溃/掉线 */
+    private long lastStateReceivedTick = 0;
+    /** CLIENT 超过此 tick 数未收到 STATE 视为 HOST 已掉线(约 3 秒) */
+    private static final long CLIENT_STATE_TIMEOUT_TICKS = 60;
+    /** HOST/CLIENT 只接受已定义的难度，状态报文会携带该值。 */
+    private static final int MAX_DIFFICULTY = 2;
     /** HOST 收到的客户端输入掩码 (bit0=左 bit1=右 bit2=跳) */
     private volatile int receivedClientInput = 0;
+    /** HOST 最后收到客端输入的 tick，用于防止网络中断后沿用旧输入。 */
+    private volatile long lastClientInputTick = 0;
     /** 独立的跳跃请求标志，防止被移动掩码覆盖导致跳跃丢失 */
     private volatile boolean clientJumpRequested = false;
-    /** 活跃实例（供静态网络回调使用） */
-    public static volatile IceFireGameScreen activeInstance = null;
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
+    /** 当前 HOST 状态会话及单调序号；每次重开都会换会话。 */
+    private UUID stateSessionId = UUID.randomUUID();
+    private long stateSequence = 0;
+    // stateSequence remains monotonic across rounds for snapshot-only restart recovery.
 
     /** 单机构造 */
     public IceFireGameScreen() {
@@ -85,11 +94,11 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
      */
     @Override
     public void onRemoteState(java.util.UUID senderUuid, String data) {
-        if (lanMode == LAN_CLIENT) {
-            if (remotePeer == null || !remotePeer.equals(senderUuid)) {
-                LOGGER.warn("[冰火人] 丢弃来源非法的状态包: sender={}，期望对端={}", senderUuid, remotePeer);
-                return;
-            }
+        // GAME_STATE_SYNC 在 HOST 侧同样必须验证服务端盖章的发送者，
+        // 只接受当前已配对对端，拒绝第三方注入状态。
+        if (lanMode == LAN_NONE || remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[冰火人] 丢弃来源非法的状态包: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
         }
         this.onRemoteState(data);
     }
@@ -100,12 +109,13 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
      */
     @Override
     public void onRemoteMove(java.util.UUID senderUuid, String data) {
-        if (lanMode == LAN_HOST) {
-            if (remotePeer == null || !remotePeer.equals(senderUuid)) {
-                LOGGER.warn("[冰火人] 丢弃来源非法的输入包: sender={}，期望对端={}", senderUuid, remotePeer);
-                return;
-            }
+        if (remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[冰火人] 丢弃来源非法的联机报文: sender={}，期望对端={}", senderUuid, remotePeer);
+            return;
         }
+        // HOST 只消费 CLIENT 输入；CLIENT 只消费 HOST 的 RESTART 通知。
+        if (lanMode == LAN_HOST && (data == null || data.startsWith("RESTART"))) return;
+        if (lanMode == LAN_CLIENT && (data == null || !data.startsWith("RESTART"))) return;
         this.onRemoteMove(data);
     }
 
@@ -122,22 +132,37 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         super.onClose();
     }
 
-    /** CLIENT 收到 HOST 广播的完整状态 */
+    /** 大厅路由在客户端主线程调用，先验证快照再更新接收时间。 */
     @Override
-    public void onRemoteState(String data) { receivedState = data; }
+    public void onRemoteState(String data) {
+        if (lanMode != LAN_CLIENT) return;
+        if (applyReceivedState(data)) lastStateReceivedTick = tickCount;
+    }
 
-    /** HOST 收到 CLIENT 发来的输入掩码（bit0=左 bit1=右 bit2=跳，含一次性 "4" 跳跃包） */
     @Override
     public void onRemoteMove(String data) {
+        if (data == null) return;
+        if (lanMode == LAN_CLIENT) {
+            if (stateReceiver.restart(data)) {
+                session = new GameSession(difficulty);
+                session.init();
+                gameState = GameState.PLAYING;
+                heldKeys.clear();
+                showExitConfirm = false;
+                lastStateReceivedTick = tickCount;
+            }
+            return;
+        }
+        if (lanMode != LAN_HOST || session == null || gameState != GameState.PLAYING) return;
+        data = RealtimeLanState.decodeInput(stateSessionId, data);
+        if (data == null) return;
         try {
             int val = Integer.parseInt(data.trim());
-            // 修复：统一跳跃位语义——CLIENT 每 tick 发送的掩码可能带跳跃位（5/6/7），
-            // 原先只识别纯跳跃包 "4" 导致掩码中的跳跃被忽略
-            if ((val & 4) != 0) {
-                clientJumpRequested = true;  // 独立处理跳跃，防止被移动掩码覆盖
-            }
-            receivedClientInput = val & 3;   // 只保留左右移动位
-        } catch (Exception ignored) {}
+            if (val < 0 || val > 7) return;
+            if ((val & 4) != 0) clientJumpRequested = true;
+            receivedClientInput = val & 3;
+            lastClientInputTick = tickCount;
+        } catch (NumberFormatException ignored) {}
     }
 
     // ══════════════════════════════════════
@@ -284,8 +309,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(6,  4, 18,  5, 0xFF88CCFF);
         g.drawString(font, "冰人 WASD", 22, 7, 0x88CCFF);
 
-        // 钻石进度（中央）
-        String prog = "💎 " + session.getDiamonds() + " / " + session.getTotalDiamonds()
+        // 钻石进度（中央）★ 修复：💎 为非 BMP emoji，默认字体有豆腐块风险，改为文本
+        String prog = "钻石 " + session.getDiamonds() + " / " + session.getTotalDiamonds()
                 + "   关卡 " + session.getLevel();
         g.drawCenteredString(font, prog, width / 2, 7, 0xFFFF44);
 
@@ -315,7 +340,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 win ? 0xFF44FF44 : 0xFFFF4444);
 
         if (win) {
-            drawShadowedCenteredText(g, "🎉  游戏通关！  🎉", cx, cy - 50, 0x44FF44, 1);
+            drawShadowedCenteredText(g, "游戏通关！", cx, cy - 50, 0x44FF44, 1);
             g.drawCenteredString(font, "恭喜两位勇士一起完成了所有关卡！", cx, cy - 30, 0xCCFFCC);
         } else {
             drawShadowedCenteredText(g, "游戏结束！", cx, cy - 50, 0xFF4444, 1);
@@ -353,33 +378,65 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void init() {
         super.init();
-        activeInstance = this;
-        // LAN 联机：跳过菜单直接开始
-        if (lanMode != LAN_NONE) startGame();
+        // LAN 联机：跳过菜单直接开始；仅在本局尚未创建 session 时启动，
+        // 否则窗口缩放重调 init() 会把整局重置
+        if (lanMode != LAN_NONE && !lanLeaveSent && session == null) startGame();
     }
 
     @Override
     public void removed() {
+        sendLeaveGameOnce();
+        heldKeys.clear();
+        session = null;
         super.removed();
-        if (activeInstance == this) activeInstance = null;
     }
 
     @Override
     public void tick() {
         tickCount++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态,
+        //   切窗/弹系统窗时收不到 keyReleased 也不影响,焦点回来时按键集合已被清空
+        if (!minecraft.isWindowActive() && !heldKeys.isEmpty()) heldKeys.clear();
 
-        // ★ Bug修复：LAN_CLIENT 即使在 GAME_OVER 状态也要处理来自 HOST 的最新状态，
-        //   以便跟随 HOST 的重开信号（hostGameOver=0 → CLIENT 从 GAME_OVER 恢复 PLAYING）
-        if (lanMode == LAN_CLIENT && session != null
-                && receivedState != null && !receivedState.isEmpty()) {
-            applyReceivedState(receivedState);
-            receivedState = null;
+        // ★ Bug修复：LAN_CLIENT 长时间未收到 HOST 状态 → HOST 崩溃/掉线
+        //   原版 CLIENT 会永远卡在原 gameState 上需按 ESC 才能退。
+        //   首次收到 STATE 时初始化 lastStateReceivedTick(防止刚启动就被超时踢出)
+        if (lanMode == LAN_CLIENT && lastStateReceivedTick == 0
+                && tickCount > CLIENT_STATE_TIMEOUT_TICKS) {
+            // 启动后完整超时窗口仍没收到 STATE，认为 HOST 实际未联机
+            sendLeaveGameOnce();
+            Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            return;
+        }
+        if (lanMode == LAN_CLIENT && lastStateReceivedTick > 0
+                && tickCount - lastStateReceivedTick > CLIENT_STATE_TIMEOUT_TICKS
+                && gameState == GameState.PLAYING) {
+            // 游戏中长时间未收到 STATE,提示 HOST 已掉线并退出
+            sendLeaveGameOnce();
+            Minecraft.getInstance().setScreen(new GameSelectorScreen());
+            return;
         }
 
+        if (lanMode == LAN_HOST && session != null && gameState == GameState.GAME_OVER) {
+            if (tickCount % 20 == 0) sendStateToClient();
+            return;
+        }
         if (session == null || gameState != GameState.PLAYING) return;
-        if (showExitConfirm) {
-            // 弹窗期间暂停本地模拟，但 HOST 仍须向 CLIENT 广播最新状态，避免 CLIENT 卡在过期状态
+        // ★ Bug修复：原版把 isGameOver 检查放在所有分支末尾,意味着如果弹窗期间
+        //   session 已 gameOver(玩家先掉下去再按 ESC),代码在 380 行就 return,
+        //   gameState 永远卡在 PLAYING + showExitConfirm,玩家退出弹窗后看到
+        //   "还在玩但人已经死了"的混乱状态。提前在弹窗早退前做检查:
+        if (session.isGameOver() && lanMode != LAN_CLIENT) {
+            gameState = GameState.GAME_OVER;
+            showExitConfirm = false;
+            heldKeys.clear();
             if (lanMode == LAN_HOST) sendStateToClient();
+            return;
+        }
+        if (showExitConfirm) {
+            // 弹窗期间暂停本地模拟；CLIENT 继续发送零输入，避免 HOST 沿用最后一次移动。
+            if (lanMode == LAN_CLIENT) sendFireInput(0);
+            else if (lanMode == LAN_HOST) sendStateToClient();
             return;
         }
 
@@ -392,7 +449,10 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
             case LAN_HOST -> {
                 // HOST：处理本地冰人输入 + 来自网络的火人输入
                 processIceInput();
-                applyClientFireInput(receivedClientInput);
+                boolean staleClientInput = tickCount - lastClientInputTick > CLIENT_STATE_TIMEOUT_TICKS;
+                if (staleClientInput) clientJumpRequested = false;
+                int clientInput = staleClientInput ? 0 : receivedClientInput;
+                applyClientFireInput(clientInput);
                 session.update();
                 // 序列化状态并发送给客端
                 sendStateToClient();
@@ -402,7 +462,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 sendFireInputToHost();
             }
         }
-        if (session.isGameOver() && lanMode != LAN_CLIENT) gameState = GameState.GAME_OVER;
+        // (isGameOver 检查已前移至 380 行早退之前,这里不再重复)
     }
 
     /** 单机：冰人 WASD，火人方向键 */
@@ -448,7 +508,7 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     /** HOST：将游戏状态发送到客端 */
     private void sendStateToClient() {
         if (session == null) return;
-        sendState(buildStateString());
+        sendStateEnvelope("v2|" + stateSessionId + "|" + (++stateSequence) + "|" + buildStateString());
     }
 
     /**
@@ -470,7 +530,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
           .append((int)(fire.x*10)).append(',').append((int)(fire.y*10)).append(',')
           .append(fire.onGround?1:0).append(',').append(fire.dead?1:0).append(',')
           .append(s.getDiamonds()).append(',').append(s.getTotalDiamonds()).append(',')
-          .append(s.isGameOver()?1:0).append(',').append(s.isVictory()?1:0);
+          .append(s.isGameOver()?1:0).append(',').append(s.isVictory()?1:0).append(',')
+          .append(s.difficulty);
         // 追加已收集钻石坐标（CLIENT 用来清除地图中的钻石 tile）
         sb.append(';');
         java.util.List<int[]> collected = s.map.collectedPositions;
@@ -487,62 +548,50 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         if (heldKeys.contains(GLFW.GLFW_KEY_LEFT))  mask |= 1;
         if (heldKeys.contains(GLFW.GLFW_KEY_RIGHT)) mask |= 2;
         if (heldKeys.contains(GLFW.GLFW_KEY_UP))    mask |= 4;  // 跳跃也在掩码中持续发送
-        sendInput(String.valueOf(mask));
+        sendFireInput(mask);
     }
 
-    /** CLIENT：将收到的状态字符串应用到本地 session（只更新显示，不跑物理） */
-    private void applyReceivedState(String st) {
-        if (st == null || session == null) return;
-        try {
-            // 格式："基础字段...;x1_y1|x2_y2|..."
-            String[] parts = st.split(";", 2);
-            String[] p = parts[0].split(",");
+    private void sendFireInput(int mask) {
+        String input = stateReceiver.input(String.valueOf(mask));
+        if (input != null) sendInputEnvelope(input);
+    }
 
-            int lv = Integer.parseInt(p[0]);
-            // 关卡切换时重新加载地图（双端种子相同，初始钻石位置一致）
-            if (lv != session.level) {
-                session.level = lv;
-                session.map.load(lv, session.difficulty);
+    private boolean applyReceivedState(String data) {
+        int defaultDifficulty = session == null ? difficulty : session.difficulty;
+        var received = stateReceiver.receive(data, payload -> RealtimeLanState.parseIce(payload, defaultDifficulty));
+        if (received == null) return false;
+        var s = received.snapshot();
+        if (session == null || received.newRound() || session.difficulty != s.difficulty()
+                || (session.gameOver && !s.gameOver())) {
+            session = new GameSession(s.difficulty());
+            session.init();
+            heldKeys.clear();
+            showExitConfirm = false;
+        }
+        difficulty = s.difficulty();
+        if (session.level != s.level()) {
+            session.level = s.level();
+            session.map.load(s.level(), s.difficulty());
+        }
+        session.ice.x = s.iceX();
+        session.ice.y = s.iceY();
+        session.ice.onGround = s.iceGround();
+        session.ice.dead = s.iceDead();
+        session.fire.x = s.fireX();
+        session.fire.y = s.fireY();
+        session.fire.onGround = s.fireGround();
+        session.fire.dead = s.fireDead();
+        session.map.collected = s.collected();
+        session.map.total = s.total();
+        session.gameOver = s.gameOver();
+        session.victory = s.victory();
+        gameState = s.gameOver() ? GameState.GAME_OVER : GameState.PLAYING;
+        for (var cell : s.removedDiamonds()) {
+            if (session.map.get(cell.x(), cell.y()) == Tile.DIAMOND) {
+                session.map.tiles[cell.x()][cell.y()] = Tile.AIR;
             }
-            session.ice.x  = Integer.parseInt(p[1]) / 10f;
-            session.ice.y  = Integer.parseInt(p[2]) / 10f;
-            session.ice.onGround = p[3].equals("1");
-            session.ice.dead     = p[4].equals("1");
-            session.fire.x = Integer.parseInt(p[5]) / 10f;
-            session.fire.y = Integer.parseInt(p[6]) / 10f;
-            session.fire.onGround = p[7].equals("1");
-            session.fire.dead     = p[8].equals("1");
-            session.map.collected = Integer.parseInt(p[9]);
-            session.map.total     = Integer.parseInt(p[10]);
-            if (p[11].equals("1")) {
-                session.gameOver = true;
-                session.victory  = p[12].equals("1");
-                gameState = GameState.GAME_OVER;
-            } else if (gameState == GameState.GAME_OVER) {
-                // HOST 已重开（gameOver=0），CLIENT 跟随恢复 PLAYING
-                // 必须重载地图（即使同关），否则之前收集的钻石格子仍保持 AIR 不回生
-                session.level = lv;
-                session.map.load(lv, session.difficulty);
-                session.gameOver = false;
-                session.victory  = false;
-                gameState = GameState.PLAYING;
-            }
-
-            // ★ 关键修复：把 HOST 已收集的钻石格改成 AIR，确保 CLIENT 地图一致
-            if (parts.length > 1 && !parts[1].isEmpty()) {
-                for (String coord : parts[1].split("\\|")) {
-                    String[] xy = coord.split("_");
-                    if (xy.length == 2) {
-                        int cx = Integer.parseInt(xy[0]);
-                        int cy = Integer.parseInt(xy[1]);
-                        // 只有当前仍是 DIAMOND 时才改（避免重复操作）
-                        if (session.map.get(cx, cy) == Tile.DIAMOND) {
-                            session.map.tiles[cx][cy] = Tile.AIR;
-                        }
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
+        }
+        return true;
     }
 
     // ──────────────── 输入处理 ────────────────
@@ -563,6 +612,8 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
 
         switch (gameState) {
             case PLAYING -> {
+                // R 键重开（HUD 底部提示"R 重开"）
+                if (key == GLFW.GLFW_KEY_R && lanMode != LAN_CLIENT) { restart(); return true; }
                 // 冰人跳（单机或HOST）
                 if (lanMode != LAN_CLIENT && key == GLFW.GLFW_KEY_W && session != null)
                     session.iceAction(Action.JUMP);
@@ -610,9 +661,11 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void startGame() {
+        if (lanMode == LAN_HOST) stateSessionId = UUID.randomUUID();
         // 检查外部导入设置是否覆盖了难度
         if (GameSettings.getConfiguredGames().contains("icefire")) {
-            difficulty = GameSettings.getInt("icefire", "difficulty", difficulty);
+            difficulty = Math.max(0, Math.min(MAX_DIFFICULTY,
+                    GameSettings.getInt("icefire", "difficulty", difficulty)));
         }
         session = new GameSession(difficulty);
         session.init();
@@ -620,7 +673,19 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
         heldKeys.clear();
     }
     private void restart() {
-        if (session != null) { session.restart(); gameState = GameState.PLAYING; heldKeys.clear(); }
+        if (session != null) {
+            if (lanMode == LAN_HOST) {
+                stateSessionId = UUID.randomUUID();
+                sendInputEnvelope("RESTART|" + stateSessionId + "|" + (++stateSequence));
+            }
+            session.restart();
+            gameState = GameState.PLAYING;
+            heldKeys.clear();
+            lastStateReceivedTick = tickCount;
+            receivedClientInput = 0;
+            lastClientInputTick = tickCount;
+            clientJumpRequested = false;
+        }
     }
 
     @Override public boolean isPauseScreen() { return false; }
@@ -689,11 +754,15 @@ public class IceFireGameScreen extends Screen implements LanMultiplayerScreen {
                 fire.update(map, ice, particles);
                 ice.update(map, fire, particles);
             }
-            particles.removeIf(p -> !p.alive);
             for (Particle p : particles) p.update();
+            // ★ Bug修复：removeIf 移到 for 之后,新增粒子能在本帧继续推进
+            particles.removeIf(p -> !p.alive);
 
-            // 死亡检测
-            if (ice.checkHazard(map) || fire.checkHazard(map)) {
+            // 死亡检测：危险方块（熔岩/水）
+            // 坠落出地图由 GamePlayer.update 直接置 dead=true（y > GAME_H+20），
+            // 而 checkHazard 对已 dead 的玩家会提前返回 false，因此需显式把 dead 纳入结束条件，
+            // 否则掉出地图底部的角色不会触发关卡失败/死亡结算。
+            if (ice.checkHazard(map) || fire.checkHazard(map) || ice.dead || fire.dead) {
                 gameOver = true; victory = false; return;
             }
 

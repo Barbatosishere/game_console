@@ -10,17 +10,18 @@ group = mod_group_id
 
 repositories {
     mavenLocal()
-    mavenCentral() // 供测试依赖（如 JUnit）下载
+    mavenCentral() // 供测试依赖（如 JUnit）与 JNA 下载
+    // 注：JogAmp 仓库已移除——项目从未使用 JOCL 绑定（OpenCL 走 JNA 直调，见 OpenCLBackend）
 }
 
 base {
     archivesName = mod_id
 }
 
-// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta2.jar
+// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta6.jar
 var loaderName = "NeoForge"
 tasks.named('jar') {
-    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta2"
+    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta6"
     archiveVersion = ''
     archiveClassifier = ''
 }
@@ -36,6 +37,8 @@ tasks.withType(Javadoc).configureEach {
 }
 tasks.withType(ProcessResources).configureEach {
     filteringCharset = 'UTF-8'
+    // ★ 优化：排除任何残留的空目录(如 data/game_console/recipes/)和占位文件
+    exclude '**/recipes/**', '**/.gitignore', '**/.gitkeep'
 }
 
 neoForge {
@@ -135,10 +138,53 @@ dependencies {
     // ─── 单元测试：JUnit 5 ───
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.slf4j:slf4j-api:2.0.9'
+
+    // ─── OpenCL GPU 加速 ───
+    // JNA 通过 compileOnly 引入（编译期可见），运行时由玩家环境的 classloader 解析
+    // —— 不再 jarJar 嵌入。原因：Java 22 模块系统下，自嵌入的 jna jar 会形成
+    //   "com.sun.jna" 自动模块，与其他 mod（如 Iris/Sodium 或 NeoForge 间接带）
+    //   提供的 jna 形成两个同名模块冲突，触发 ResolutionException。
+    // 缺 JNA 时由 OpenCLBackend.canExecute() 检测并 catch(Throwable) 回退到 CPU。
+    compileOnly 'net.java.dev.jna:jna:5.14.0'
 }
 
 test {
     useJUnitPlatform()
+}
+
+// Pure-Java self-play training entry point. Pass arguments with -PtrainArgs="--weights path ...".
+tasks.register('trainGoAI', JavaExec) {
+    group = 'training'
+    description = 'Train the Go MCTS neural evaluator with self-play'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoTrainingMain'
+    args((project.findProperty('trainArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+    maxHeapSize = '4g'
+}
+
+tasks.register('runChessSim', JavaExec) {
+    group = 'training'
+    description = '自对弈模拟：内置中国象棋引擎自我对弈，统计胜率/步数/耗时'
+    mainClass = 'com.wzz.game_console.client.screens.games.chess.ChessSimulationMain'
+    args((project.findProperty('chessSimArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+}
+
+tasks.register('adversarialTrain', JavaExec) {
+    group = 'training'
+    description = '对抗训练：己方 MCTS AI vs 外部 KataGo 引擎'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoAdversarialMain'
+    args((project.findProperty('advArgs') ?: '').toString().trim().split("\\s+").findAll { !it.isEmpty() })
+    classpath = sourceSets.main.runtimeClasspath
+    maxHeapSize = '4g'
+}
+
+tasks.register('gpuProbe', JavaExec) {
+    group = 'training'
+    description = '探测 OpenCL GPU 设备是否可用'
+    mainClass = 'com.wzz.game_console.client.screens.games.gogame.GoGpuProbe'
+    classpath = sourceSets.main.runtimeClasspath
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

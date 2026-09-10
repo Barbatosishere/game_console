@@ -40,7 +40,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
     /** LAN 联机构造：HOST=X先手，CLIENT=O后手 */
     public TicTacToeScreen(boolean isHost, java.util.UUID remote) {
         super(Component.literal("井字棋-联机"));
-        this.game     = new TicTacToeGame(TicTacToeGame.GameMode.SINGLE_PLAYER);
+        this.game     = new TicTacToeGame(TicTacToeGame.GameMode.TWO_PLAYER);
         this.lanMode  = isHost ? LAN_HOST : LAN_CLIENT;
         this.remotePeer = remote;
         this.isMyTurn = isHost; // HOST(X)先手
@@ -77,19 +77,34 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         super.onClose();
     }
 
+    @Override
+    public void removed() {
+        sendLeaveGameOnce();
+        super.removed();
+    }
+
     /** 收到对方走法 "row,col" 或 "RESTART" */
     @Override
     public void onRemoteMove(String data) {
+        if (lanMode == LAN_NONE || data == null) return;
         if ("RESTART".equals(data)) {
+            if (lanMode != LAN_CLIENT) return;
+            lastAIMoveTime = 0;
             game.resetGame();
             state = State.PLAYING;
             isMyTurn = false; // CLIENT是O后手，HOST(X)重开后先走
             return;
         }
+        if (state != State.PLAYING || game.isGameOver() || isMyTurn) return;
         try {
-            String[] p = data.split(",");
-            int row = Integer.parseInt(p[0]), col = Integer.parseInt(p[1]);
-            game.makeMove(row, col); // 此时 currentPlayer 是对方，直接落子
+            String[] p = data.split(",", -1);
+            if (p.length != 2) return;
+            int row = Integer.parseInt(p[0]);
+            int col = Integer.parseInt(p[1]);
+            if (row < 0 || row > 2 || col < 0 || col > 2) return;
+            TicTacToeGame.Player remotePlayer = lanMode == LAN_HOST
+                    ? TicTacToeGame.Player.O : TicTacToeGame.Player.X;
+            if (!game.makeMove(row, col, remotePlayer)) return;
             isMyTurn = true;
         } catch (Exception ignored) {}
     }
@@ -128,10 +143,10 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
             game.resetGame();
             state = State.PLAYING;
             isMyTurn = (lanMode != LAN_CLIENT); // HOST=true，单机=true
-            if (lanMode == LAN_HOST) sendMove("RESTART");
+            if (lanMode == LAN_HOST) sendMoveEnvelope("RESTART");
             return true;
         }
-        return true;
+        return super.keyPressed(key, scan, mods);
     }
 
     @Override public void render(GuiGraphics g, int mx, int my, float pt) {
@@ -197,9 +212,9 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
             }
 
         // 悬停
-        if (!game.isGameOver() && game.isPlayerTurn()) {
-            int hc = (mx - gridStartX) / cellSize;
-            int hr = (my - gridStartY) / cellSize;
+        if (!game.isGameOver() && (lanMode == LAN_NONE ? game.isPlayerTurn() : isMyTurn)) {
+            int hc = Math.floorDiv(mx - gridStartX, cellSize);
+            int hr = Math.floorDiv(my - gridStartY, cellSize);
             if (hc >= 0 && hc < 3 && hr >= 0 && hr < 3 && game.getCell(hr, hc) == TicTacToeGame.Player.NONE) {
                 g.fill(gridStartX + hc * cellSize, gridStartY + hr * cellSize,
                     gridStartX + (hc+1) * cellSize, gridStartY + (hr+1) * cellSize, 0x22FFFFFF);
@@ -244,7 +259,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
                 // 重新开始
                 if (lanMode != LAN_CLIENT) {
                     game.resetGame(); isMyTurn = (lanMode != LAN_CLIENT);
-                    if (lanMode == LAN_HOST) sendMove("RESTART");
+                    if (lanMode == LAN_HOST) sendMoveEnvelope("RESTART");
                 }
                 return true;
             }
@@ -255,16 +270,17 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
             return true;
         }
         if (state == State.PLAYING && !game.isGameOver()) {
-            // 联机时只有轮到自己才能落子
-            if (lanMode != LAN_NONE && !isMyTurn) return true;
-            int hc = ((int)mx - gridStartX) / cellSize;
-            int hr = ((int)my - gridStartY) / cellSize;
+            if (lanMode == LAN_NONE ? !game.isPlayerTurn() : !isMyTurn) return true;
+            int hc = Math.floorDiv((int)mx - gridStartX, cellSize);
+            int hr = Math.floorDiv((int)my - gridStartY, cellSize);
             if (hc >= 0 && hc < 3 && hr >= 0 && hr < 3) {
-                if (game.makeMove(hr, hc)) {
+                boolean moved = lanMode == LAN_NONE ? game.makeMove(hr, hc)
+                        : game.makeMove(hr, hc, lanMode == LAN_HOST ? TicTacToeGame.Player.X : TicTacToeGame.Player.O);
+                if (moved) {
                     if (lanMode != LAN_NONE) {
                         // 发给对方，然后等待
                         isMyTurn = false;
-                        sendMove(hr + "," + hc);
+                        sendMoveEnvelope(hr + "," + hc);
                     } else if (game.getGameMode() == TicTacToeGame.GameMode.SINGLE_PLAYER
                                && !game.isPlayerTurn() && !game.isGameOver()) {
                         lastAIMoveTime = System.currentTimeMillis();

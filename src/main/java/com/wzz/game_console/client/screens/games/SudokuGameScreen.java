@@ -34,6 +34,7 @@ public class SudokuGameScreen extends Screen {
     private boolean gameCompleted = false;
     private boolean rewardGiven = false; // 新增：防止重复给奖励
     private long startTime;
+    private long completedTimeMs; // 通关时的总用时，通关后不再累加
     private int hintsUsed = 0;
     private int maxHints = 3;
 
@@ -121,6 +122,7 @@ public class SudokuGameScreen extends Screen {
         gameCompleted = false;
         rewardGiven = false; // 重置奖励状态
         startTime = System.currentTimeMillis();
+        completedTimeMs = 0;
         hintsUsed = 0;
         clearArrays();
 
@@ -180,18 +182,28 @@ public class SudokuGameScreen extends Screen {
             System.arraycopy(solution[i], 0, puzzle[i], 0, GRID_SIZE);
         }
 
-        // 根据难度移除数字
-        int cellsToRemove = 81 - currentDifficulty.filledCells;
-        Set<String> removedCells = new HashSet<>();
+        // ★ 修复：挖洞不保证唯一解 → 每挖一格都校验解仍唯一（多解则回填）。
+        //   候选格随机顺序遍历一遍，挖到多少是多少（不强求达到目标提示数）
+        List<int[]> candidates = new ArrayList<>();
+        for (int row = 0; row < GRID_SIZE; row++) {
+            for (int col = 0; col < GRID_SIZE; col++) {
+                candidates.add(new int[]{row, col});
+            }
+        }
+        Collections.shuffle(candidates, random);
 
-        while (removedCells.size() < cellsToRemove) {
-            int row = random.nextInt(GRID_SIZE);
-            int col = random.nextInt(GRID_SIZE);
-            String cellKey = row + "," + col;
-
-            if (!removedCells.contains(cellKey)) {
-                puzzle[row][col] = 0;
-                removedCells.add(cellKey);
+        int targetFilled = currentDifficulty.filledCells;
+        int removed = 0;
+        int targetRemoved = GRID_SIZE * GRID_SIZE - targetFilled;
+        for (int[] cell : candidates) {
+            if (removed >= targetRemoved) break;
+            int row = cell[0], col = cell[1];
+            int backup = puzzle[row][col];
+            puzzle[row][col] = 0;
+            if (countSolutions(puzzle, 2) > 1) {
+                puzzle[row][col] = backup; // 出现多解，回填该格
+            } else {
+                removed++;
             }
         }
 
@@ -201,6 +213,30 @@ public class SudokuGameScreen extends Screen {
                 fixed[row][col] = (puzzle[row][col] != 0);
             }
         }
+    }
+
+    /**
+     * 回溯统计解的数量（找到 limit 个即提前停止），用于挖洞时的唯一解校验。
+     * 基于 {@link #solveSudoku(int[][])} 的填数逻辑改造：顺序取数、只计数不产出解。
+     */
+    private int countSolutions(int[][] grid, int limit) {
+        if (limit <= 0) return 0;
+        for (int row = 0; row < GRID_SIZE; row++) {
+            for (int col = 0; col < GRID_SIZE; col++) {
+                if (grid[row][col] == 0) {
+                    int count = 0;
+                    for (int num = 1; num <= 9 && count < limit; num++) {
+                        if (isValidMove(grid, row, col, num)) {
+                            grid[row][col] = num;
+                            count += countSolutions(grid, limit - count);
+                            grid[row][col] = 0;
+                        }
+                    }
+                    return count;
+                }
+            }
+        }
+        return 1; // 无空格：找到一个完整解
     }
 
     private boolean isValidMove(int[][] grid, int row, int col, int num) {
@@ -304,12 +340,12 @@ public class SudokuGameScreen extends Screen {
 
         // 同行同列高亮
         if (row == selectedRow || col == selectedCol) {
-            return 0xFF2C2C2C;
+            return 0xFF8AB4E0;  // 浅蓝（比选中格更浅，对比黑色数字足够）
         }
 
         // 同3x3区域高亮
         if ((row / 3) == (selectedRow / 3) && (col / 3) == (selectedCol / 3)) {
-            return 0xFF2C2C2C;
+            return 0xFFBCD4F0;  // 更浅的蓝灰色，区分同行/同列
         }
 
         // 交替颜色的3x3方块
@@ -325,6 +361,10 @@ public class SudokuGameScreen extends Screen {
     private int getNumberColor(int row, int col) {
         if (errors[row][col]) {
             return 0xFFFFFFFF; // 错误数字用白色
+        }
+        // 选中格子背景为蓝色，用白色数字确保对比度
+        if (row == selectedRow && col == selectedCol) {
+            return 0xFFFFFFFF;
         }
         if (fixed[row][col]) {
             return 0xFF000000; // 固定数字用黑色
@@ -361,11 +401,21 @@ public class SudokuGameScreen extends Screen {
         guiGraphics.drawString(font, title, titleX, gameStartY - 40, 0xFFFFFFFF);
 
         // 游戏信息
-        long playTime = (System.currentTimeMillis() - startTime) / 1000;
+        // ★ Bug修复：游戏结束后顶部小字"时间"也必须冻结，
+        //   原代码用三元表达式虽然正确，但若 gameCompleted 切换瞬时出现一帧
+        //   未冻结的累计时间会让玩家看到秒数跳变。这里再补一次显式分支，
+        //   并给"已通关"标一个绿色✓避免与计时器混淆。
+        long playTime;
+        if (gameCompleted) {
+            playTime = completedTimeMs / 1000;
+        } else {
+            playTime = (System.currentTimeMillis() - startTime) / 1000;
+        }
         String timeText = String.format("时间: %02d:%02d", playTime / 60, playTime % 60);
-        String hintsText = "剩余提示: " + (maxHints - hintsUsed);
+        int timeColor = gameCompleted ? 0xFF66FF66 : 0xFFCCCCCC;
+        guiGraphics.drawString(font, timeText, gameStartX, gameStartY - 20, timeColor);
 
-        guiGraphics.drawString(font, timeText, gameStartX, gameStartY - 20, 0xFFCCCCCC);
+        String hintsText = "剩余提示: " + (maxHints - hintsUsed);
         guiGraphics.drawString(font, hintsText, gameStartX + 150, gameStartY - 20, 0xFFCCCCCC);
 
         // 操作说明
@@ -392,7 +442,7 @@ public class SudokuGameScreen extends Screen {
 
         // 完成文本
         String congratsText = "恭喜完成!";
-        long totalTime = (System.currentTimeMillis() - startTime) / 1000;
+        long totalTime = gameCompleted ? completedTimeMs / 1000 : (System.currentTimeMillis() - startTime) / 1000;
         String timeText = String.format("用时: %02d:%02d", totalTime / 60, totalTime % 60);
         String difficultyText = "难度: " + currentDifficulty.name;
         String hintsText = "使用提示: " + hintsUsed + "/" + maxHints;
@@ -425,14 +475,14 @@ public class SudokuGameScreen extends Screen {
                 return true;
             }
             if (click == 2) {
-                showExitConfirm = false;
+                resumeFromExitConfirm();
                 return true;
             }
             return true;
         }
         if (button == 0 && !gameCompleted) { // 左键点击
-            int gridX = (int) (mouseX - gameStartX) / CELL_SIZE;
-            int gridY = (int) (mouseY - gameStartY) / CELL_SIZE;
+            int gridX = Math.floorDiv((int) mouseX - gameStartX, CELL_SIZE);
+            int gridY = Math.floorDiv((int) mouseY - gameStartY, CELL_SIZE);
 
             if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
                 selectedRow = gridY;
@@ -445,11 +495,25 @@ public class SudokuGameScreen extends Screen {
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移 startTime，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移 startTime，避免"用时"把弹窗停留时长也算进去 */
+    private void resumeFromExitConfirm() {
+        startTime += System.currentTimeMillis() - pauseStartTime;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             // 修复：通关后 ESC 也走确认弹窗，与其他游戏保持一致（原先会绕过弹窗直接退出）
-            showExitConfirm = !showExitConfirm;
+            if (showExitConfirm) {
+                resumeFromExitConfirm();
+            } else {
+                pauseStartTime = System.currentTimeMillis();
+                showExitConfirm = true;
+            }
             return true;
         }
         // 弹窗打开期间拦截所有游戏按键输入（仅 ESC 除外）
@@ -501,6 +565,7 @@ public class SudokuGameScreen extends Screen {
 
         if (isPuzzleComplete()) {
             gameCompleted = true;
+            completedTimeMs = System.currentTimeMillis() - startTime;
             playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
             giveReward(); // 修复：调用统一的奖励方法
         }
@@ -550,6 +615,7 @@ public class SudokuGameScreen extends Screen {
 
             if (isPuzzleComplete()) {
                 gameCompleted = true;
+                completedTimeMs = System.currentTimeMillis() - startTime;
                 playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
                 giveReward(); // 修复：使用提示完成游戏时也给奖励
             }

@@ -34,6 +34,18 @@ public class Match3GameScreen extends Screen {
         Items.LAPIS_LAZULI,
         Items.COAL
     };
+
+    /** ★ 性能：渲染用物品栈缓存（按下标懒初始化），避免 renderGameGrid 每帧 new ItemStack ×64 */
+    private static final ItemStack[] STACK_CACHE = new ItemStack[GAME_ITEMS.length];
+
+    private static ItemStack cachedStack(int itemIndex) {
+        ItemStack stack = STACK_CACHE[itemIndex];
+        if (stack == null) {
+            stack = new ItemStack(GAME_ITEMS[itemIndex]);
+            STACK_CACHE[itemIndex] = stack;
+        }
+        return stack;
+    }
     
     private int[][] gameGrid;
     private boolean[][] selectedGrid;
@@ -63,8 +75,21 @@ public class Match3GameScreen extends Screen {
     private void initializeGame() {
         gameGrid = new int[GRID_SIZE][GRID_SIZE];
         selectedGrid = new boolean[GRID_SIZE][GRID_SIZE];
-        
+        selectedX = -1;
+        selectedY = -1;
+        score = 0;
+        animations.clear();
+
         // 随机填充游戏网格，避免初始匹配
+        randomFillAvoidingMatches();
+        // ★ 防死局：初始化后若整盘不存在任何可消交换，整体重roll（最多50次，仍失败保留最后结果）
+        for (int attempt = 0; attempt < 50 && !hasAnyMove(); attempt++) {
+            randomFillAvoidingMatches();
+        }
+    }
+
+    /** 随机填充整个网格，填充过程避免直接形成三连 */
+    private void randomFillAvoidingMatches() {
         for (int x = 0; x < GRID_SIZE; x++) {
             for (int y = 0; y < GRID_SIZE; y++) {
                 do {
@@ -101,7 +126,7 @@ public class Match3GameScreen extends Screen {
     }
 
     private void calcDynamicLayout() {
-        CELL_SIZE = Math.max(16, Math.min((width - 80) / GRID_SIZE, (height - 100) / GRID_SIZE));
+        CELL_SIZE = Math.max(1, Math.min(Math.max(1, (width - 20) / GRID_SIZE), Math.max(1, (height - 40) / GRID_SIZE)));
         GRID_START_X = (width - GRID_SIZE * CELL_SIZE) / 2;
         GRID_START_Y = (height - GRID_SIZE * CELL_SIZE) / 2;
     }
@@ -155,10 +180,10 @@ public class Match3GameScreen extends Screen {
                 guiGraphics.fill(screenX, screenY, screenX + CELL_SIZE, screenY + CELL_SIZE, backgroundColor);
                 guiGraphics.fill(screenX + 1, screenY + 1, screenX + CELL_SIZE - 1, screenY + CELL_SIZE - 1, 0xFF222222);
                 
-                // 渲染物品
-                Item item = GAME_ITEMS[gameGrid[x][y]];
-                ItemStack itemStack = new ItemStack(item);
-                guiGraphics.renderItem(itemStack, screenX + 8, screenY + 8);
+                // 渲染物品（复用缓存栈，只读不修改）
+                if (gameGrid[x][y] >= 0 && gameGrid[x][y] < GAME_ITEMS.length) {
+                    guiGraphics.renderItem(cachedStack(gameGrid[x][y]), screenX + Math.max(0, (CELL_SIZE - 16) / 2), screenY + Math.max(0, (CELL_SIZE - 16) / 2));
+                }
             }
         }
     }
@@ -188,6 +213,9 @@ public class Match3GameScreen extends Screen {
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (button == 0) { // 左键点击
+            // ★ Bug修复：Java (int) 向零截断，网格原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
+            //   会误命中第0行/列，先按负坐标守卫（与网格外点击同样交给 super 处理）
+            if (mouseX < GRID_START_X || mouseY < GRID_START_Y) return super.mouseClicked(mouseX, mouseY, button);
             int gridX = (int) ((mouseX - GRID_START_X) / CELL_SIZE);
             int gridY = (int) ((mouseY - GRID_START_Y) / CELL_SIZE);
             
@@ -345,6 +373,37 @@ public class Match3GameScreen extends Screen {
                 }
             }
         }
+        // ★ 防死局：填满后若不存在任何可消交换，整体重roll（最多50次，仍失败保留最后结果）
+        for (int attempt = 0; attempt < 50 && !hasAnyMove(); attempt++) {
+            randomFillAvoidingMatches();
+        }
+    }
+
+    /** 枚举所有相邻交换：临时交换→有无消除→换回。判断当前棋盘是否还有可行棋步 */
+    private boolean hasAnyMove() {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            for (int y = 0; y < GRID_SIZE; y++) {
+                if (x + 1 < GRID_SIZE) {
+                    swapCells(x, y, x + 1, y);
+                    boolean match = !findAllMatches().isEmpty();
+                    swapCells(x, y, x + 1, y);
+                    if (match) return true;
+                }
+                if (y + 1 < GRID_SIZE) {
+                    swapCells(x, y, x, y + 1);
+                    boolean match = !findAllMatches().isEmpty();
+                    swapCells(x, y, x, y + 1);
+                    if (match) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void swapCells(int x1, int y1, int x2, int y2) {
+        int temp = gameGrid[x1][y1];
+        gameGrid[x1][y1] = gameGrid[x2][y2];
+        gameGrid[x2][y2] = temp;
     }
     
     private void clearSelection() {

@@ -63,10 +63,17 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     private int[] epTarget = null;
     private int[] lastFrom=null, lastTo=null;
     private String resultMsg = "";
+    /** 对局结果：1=白胜 -1=黑胜 0=和（renderOver 据此渲染胜方样式，避免按 vsAI 误判） */
+    private int resultOutcome = 0;
+    /** 50回合规则半回合计数：兵动/吃子清零，其余 +1 */
+    private int halfmoveClock = 0;
+    /** 局面 key 历史（棋盘内容+行棋方+易位权+ep），用于三次重复和棋判定 */
+    private final List<String> positionKeys = new ArrayList<>();
     private long tickN = 0;
     private int cellSize, bx, by;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
-    private boolean aiThinking = false;
+    private volatile boolean aiThinking = false;
+    private volatile Thread aiThread;
     private boolean inCheck = false;
     private boolean promoPending = false;
     private int promoRow, promoCol;
@@ -119,14 +126,74 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         super.onClose();
     }
 
+    /** AI 后台线程完成时用于判断棋局是否已退出，避免线程结束回调在已离开的对局上落子/播放音效 */
+    private volatile boolean disposed = false;
+    /** AI 局代号：initBoard（重开/重连）时递增，迟到的 AI 结果落地前比对作废 */
+    private volatile int boardGen = 0;
+
+    @Override
+    public void removed() {
+        sendLeaveGameOnce();
+        disposed = true;
+        boardGen++;
+        Thread worker = aiThread;
+        if (worker != null) {
+            worker.interrupt();
+            if (worker != Thread.currentThread()) {
+                try { worker.join(750L); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+        }
+        aiThread = null;
+        aiThinking = false;
+        super.removed();
+    }
+
     @Override public void onRemoteMove(String data) {
-        if ("RESTART".equals(data)) { initBoard(); return; }
+        if ("RESTART".equals(data)) {
+            if (lanMode == LAN_CLIENT) initBoard();
+            return;
+        }
         try { String[] p = data.split(",");
+            if (p.length < 5) { LOGGER.warn("[国际象棋] 联机走法字段不足: {}", data); return; }
             int[] m = new int[]{Integer.parseInt(p[0]),Integer.parseInt(p[1]),Integer.parseInt(p[2]),Integer.parseInt(p[3]),Integer.parseInt(p[4])};
+            if (m[0]<0||m[0]>=8||m[1]<0||m[1]>=8||m[2]<0||m[2]>=8||m[3]<0||m[3]>=8) {
+                LOGGER.warn("[国际象棋] 联机走法坐标越界: {}", data); return;
+            }
+            if (m[4]<SP_NORMAL||m[4]>SP_PROMOTE) {
+                LOGGER.warn("[国际象棋] 联机走法类型非法: {}", data); return;
+            }
+            // ★ 修复：远程走法落地前校验（坐标/类型越界已在上面过滤），防伪造/乱序报文打乱本地棋盘：
+            //   ① 当前须轮到远程方（LAN 约定 HOST 执白、CLIENT 执黑）且对局进行中；
+            //   ② from 处须存在远程方棋子；
+            //   ③ 走法（含特殊走法标记，如易位/吃过路兵/升变）须在现有合法走法生成结果内。
+            //   任一不满足仅记日志丢弃，不落盘
+            boolean remoteWhite = lanMode == LAN_CLIENT;
+            if (state != S.PLAYING || lanMode == LAN_NONE || whiteTurn != remoteWhite) {
+                LOGGER.warn("[国际象棋] 丢弃非远程回合/对局已结束的联机走法: {} (whiteTurn={}, lanMode={})",
+                        data, whiteTurn, lanMode);
+                return;
+            }
+            int fromPiece = board[m[0]][m[1]];
+            if (fromPiece == E || remoteWhite != (fromPiece > 0)) {
+                LOGGER.warn("[国际象棋] 联机走法起点无远程方棋子: {}", data);
+                return;
+            }
+            boolean legal = false;
+            for (int[] mv : legalMoves(board, whiteTurn)) {
+                if (mv[0]==m[0] && mv[1]==m[1] && mv[2]==m[2] && mv[3]==m[3] && mv[4]==m[4]) { legal = true; break; }
+            }
+            if (!legal) {
+                LOGGER.warn("[国际象棋] 联机走法不在合法走法列表内: {}", data);
+                return;
+            }
             if (m[4] == SP_PROMOTE) {
                 // LAN 升变走法：报文携带最终升变子类型（第6字段，缺省兼容旧报文默认升后），
                 // 接收方不弹升变面板、直接按报文完成升变，避免升变子由对手选择导致双端棋盘分叉
                 int promoType = p.length > 5 ? Integer.parseInt(p[5]) : WQ;
+                if (promoType < WN || promoType > WQ) {
+                    LOGGER.warn("[国际象棋] 联机升变类型非法: {}", data); return;
+                }
                 boolean w = board[m[0]][m[1]] > 0;
                 int[][] ep = new int[1][]; boolean[] cf = {wCK,wCQ,bCK,bCQ};
                 m[4] = SP_NORMAL;
@@ -138,6 +205,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
                 inCheck=kingInCheck(board,whiteTurn);
                 if (Minecraft.getInstance().player!=null)
                     Minecraft.getInstance().player.playSound(SoundEvents.WOOD_PLACE,0.5f,1.2f);
+                halfmoveClock=0; // 升变属兵动，50回合计数清零
                 checkEnd(); // 升变完成后再判定终局（修正原时机错误）
                 return;
             }
@@ -147,6 +215,19 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
 
     // ══════════════ 初始化 ══════════════
     private void initBoard() {
+        // 先切换代际，再停止并等待旧 AI；这样旧线程即使已排队回调，也只能被丢弃。
+        boardGen++;
+        Thread oldWorker = aiThread;
+        if (oldWorker != null && oldWorker != Thread.currentThread()) {
+            oldWorker.interrupt();
+            try {
+                oldWorker.join(750L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        aiThread = null;
+        aiThinking = false;
         board = new int[8][8];
         board[0] = new int[]{BR,BN,BB,BQ,BK,BB,BN,BR};
         for (int c=0;c<8;c++) board[1][c]=BP;
@@ -156,6 +237,9 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         wCK=wCQ=bCK=bCQ=true; epTarget=null; lastFrom=lastTo=null;
         resultMsg=""; particles.clear(); aiThinking=false; inCheck=false;
         promoPending=false; pendingLanPromote=null; state=S.PLAYING;
+        resultOutcome=0; halfmoveClock=0; positionKeys.clear(); // 50回合/重复局面计数随新局清零
+        positionKeys.add(positionKey()); // ★ 修复：预置初始局面 key，否则三次重复检测少记一次初始局面（两次回跳即误判和棋）
+        boardGen++; // AI 局代号：重开/重连后旧 AI 线程的迟到结果一律作废
     }
 
     // ══════════════ TICK ══════════════
@@ -165,45 +249,70 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         // ★ 关键修复：AI执黑（forWhite=false），仅黑方回合才触发
         if (state==S.PLAYING && vsAI && !whiteTurn && !aiThinking && !promoPending) {
             aiThinking = true;
-            new Thread(() -> {
-                int[] best = findBestMove(false); // false = 为黑方找最优
-                Minecraft.getInstance().execute(() -> {
-                    if (best != null) applyMove(best, false);
-                    aiThinking = false;
-                    checkEnd();
-                });
-            }, "chess-ai").start();
+            final int gen = boardGen;
+            // AI 只读取本次计算开始时的局面，绝不与主线程共享可变 board。
+            final int[][] snapshot = copy(board);
+            final boolean[] snapshotCastling = {wCK, wCQ, bCK, bCQ};
+            final int[] snapshotEp = epTarget == null ? null : epTarget.clone();
+            Thread worker = new Thread(() -> {
+                try {
+                    int[] best = findBestMove(snapshot, snapshotCastling, snapshotEp, false);
+                    Minecraft.getInstance().execute(() -> {
+                        if (disposed || gen != boardGen) return;
+                        if (best != null) applyMove(best, false);
+                        aiThinking = false;
+                        checkEnd();
+                    });
+                } catch (Throwable t) {
+                    LOGGER.warn("[国际象棋] AI 计算失败", t);
+                    Minecraft.getInstance().execute(() -> {
+                        if (gen == boardGen) aiThinking = false;
+                    });
+                } finally {
+                    if (gen == boardGen && disposed) aiThinking = false;
+                    if (Thread.currentThread() == aiThread) aiThread = null;
+                }
+            }, "chess-ai");
+            aiThread = worker;
+            worker.setDaemon(true);
+            worker.start();
         }
     }
 
     // ══════════════ 走法生成 ══════════════
     /** 完整合法走法（过滤走后王被将的情况） */
     private List<int[]> legalMoves(int[][] b, boolean fw) {
+        return legalMoves(b, fw, epTarget, null);
+    }
+    private List<int[]> legalMoves(int[][] b, boolean fw, int[] ep, boolean[] cf) {
         List<int[]> result = new ArrayList<>();
-        for (int[] mv : pseudoMoves(b, fw, epTarget)) {
+        for (int[] mv : pseudoMoves(b, fw, ep, cf)) {
             int[][] nb = copy(b); applyOn(nb, mv, null, null);
             if (!kingInCheck(nb, fw)) result.add(mv);
         }
         return result;
     }
-    /** 伪合法走法（不检查走后将军）。ep 为该局面的吃过路兵目标格（AI搜索时传节点自身的目标，不能读字段） */
-    private List<int[]> pseudoMoves(int[][] b, boolean fw, int[] ep) {
+    /**
+     * 伪合法走法（不检查走后将军）。ep 为该局面的吃过路兵目标格（AI搜索时传节点自身的目标，不能读字段）。
+     * cf 为该节点易位权 {wCK,wCQ,bCK,bCQ}：AI 搜索传节点自身副本；传 null 则回退读全局字段。
+     */
+    private List<int[]> pseudoMoves(int[][] b, boolean fw, int[] ep, boolean[] cf) {
         List<int[]> m = new ArrayList<>();
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) {
             int p = b[r][c];
             if (p==E || (fw ? p<0 : p>0)) continue;
-            addMoves(b, r, c, fw, m, ep);
+            addMoves(b, r, c, fw, m, ep, cf);
         }
         return m;
     }
-    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
+    private void addMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep, boolean[] cf) {
         switch (Math.abs(b[r][c])) {
             case 1 -> pawnMoves(b,r,c,w,o,ep);
             case 2 -> knightMoves(b,r,c,w,o);
             case 3 -> slideMoves(b,r,c,w,o,DIR_BISHOP);
             case 4 -> slideMoves(b,r,c,w,o,DIR_ROOK);
             case 5 -> { slideMoves(b,r,c,w,o,DIR_BISHOP); slideMoves(b,r,c,w,o,DIR_ROOK); }
-            case 6 -> { kingMoves(b,r,c,w,o); castleMoves(b,r,c,w,o); }
+            case 6 -> { kingMoves(b,r,c,w,o); castleMoves(b,r,c,w,o,cf); }
         }
     }
     private void pawnMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[] ep) {
@@ -214,20 +323,24 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         for (int dc : new int[]{-1,1}) { int nc=c+dc;
             if (!ok(nr,nc)) continue;
-            if (w?b[nr][nc]<0:b[nr][nc]>0) o.add(mv(r,c,nr,nc,nr==pr?SP_PROMOTE:SP_NORMAL));
+            if (w?b[nr][nc]<0:b[nr][nc]>0) {
+                if (Math.abs(b[nr][nc]) != 6) o.add(mv(r,c,nr,nc,nr==pr?SP_PROMOTE:SP_NORMAL));
+            }
             if (ep!=null && ep[0]==nr && ep[1]==nc) o.add(mv(r,c,nr,nc,SP_EN_PASSANT));
         }
     }
     private void knightMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
         for (int[] d : DIR_KNIGHT) {
             int nr=r+d[0],nc=c+d[1];
-            if (ok(nr,nc) && !friendly(b[nr][nc],w)) o.add(mv(r,c,nr,nc,SP_NORMAL));
+            if (ok(nr,nc) && !friendly(b[nr][nc],w)
+                    && Math.abs(b[nr][nc]) != 6) o.add(mv(r,c,nr,nc,SP_NORMAL));
         }
     }
     private void slideMoves(int[][] b, int r, int c, boolean w, List<int[]> o, int[][] dirs) {
         for (int[] d : dirs) { int nr=r+d[0],nc=c+d[1];
             while (ok(nr,nc)) {
                 if (friendly(b[nr][nc],w)) break;
+                if (Math.abs(b[nr][nc]) == 6) break;
                 o.add(mv(r,c,nr,nc,SP_NORMAL));
                 if (b[nr][nc]!=E) break;
                 nr+=d[0]; nc+=d[1];
@@ -238,16 +351,21 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         for (int dr=-1;dr<=1;dr++) for (int dc=-1;dc<=1;dc++) {
             if (dr==0&&dc==0) continue;
             int nr=r+dr,nc=c+dc;
-            if (ok(nr,nc) && !friendly(b[nr][nc],w)) o.add(mv(r,c,nr,nc,SP_NORMAL));
+            if (ok(nr,nc) && !friendly(b[nr][nc],w)
+                    && Math.abs(b[nr][nc]) != 6) o.add(mv(r,c,nr,nc,SP_NORMAL));
         }
     }
-    private void castleMoves(int[][] b, int r, int c, boolean w, List<int[]> o) {
+    private void castleMoves(int[][] b, int r, int c, boolean w, List<int[]> o, boolean[] cf) {
         if ((w&&r!=7)||(!w&&r!=0)||c!=4||kingInCheck(b,w)) return;
+        // ★ Bug修复：易位权改从节点级参数读取（null 回退全局字段）。搜索中原先直接读
+        //   全局字段，会无视 applyOn 在棋盘副本上累计的易位权变更，产生非法易位走法
+        boolean wck = cf != null ? cf[0] : wCK, wcq = cf != null ? cf[1] : wCQ;
+        boolean bck = cf != null ? cf[2] : bCK, bcq = cf != null ? cf[3] : bCQ;
         int kr=w?WR:BR, cr=w?7:0;
-        if ((w?wCK:bCK) && b[cr][7]==kr && b[cr][5]==E && b[cr][6]==E
+        if ((w?wck:bck) && b[cr][7]==kr && b[cr][5]==E && b[cr][6]==E
                 && !isAttacked(b,cr,5,!w) && !isAttacked(b,cr,6,!w))
             o.add(mv(r,c,cr,6,SP_CASTLE_K));
-        if ((w?wCQ:bCQ) && b[cr][0]==kr && b[cr][1]==E && b[cr][2]==E && b[cr][3]==E
+        if ((w?wcq:bcq) && b[cr][0]==kr && b[cr][1]==E && b[cr][2]==E && b[cr][3]==E
                 && !isAttacked(b,cr,3,!w) && !isAttacked(b,cr,2,!w))
             o.add(mv(r,c,cr,2,SP_CASTLE_Q));
     }
@@ -269,10 +387,15 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (Math.abs(p)==6) { if(w){cf[0]=false;cf[1]=false;}else{cf[2]=false;cf[3]=false;} }
             if (fr==7&&fc==7) cf[0]=false; if (fr==7&&fc==0) cf[1]=false;
             if (fr==0&&fc==7) cf[2]=false; if (fr==0&&fc==0) cf[3]=false;
+            // 落点为角格 → 对方车被吃（或己方车经王车易位移动），相应易位权同步清除
+            if (tr==7&&tc==7) cf[0]=false; if (tr==7&&tc==0) cf[1]=false;
+            if (tr==0&&tc==7) cf[2]=false; if (tr==0&&tc==0) cf[3]=false;
         }
     }
     private void applyMove(int[] m, boolean sound) {
         boolean w = board[m[0]][m[1]]>0;
+        // 50回合规则计数：兵动/吃子清零，其余 +1（须在 applyOn 改变棋盘前判定）
+        if (Math.abs(board[m[0]][m[1]])==1 || board[m[2]][m[3]]!=E || m[4]==SP_EN_PASSANT) halfmoveClock=0; else halfmoveClock++;
         int[][] ep = new int[1][]; boolean[] cf = {wCK,wCQ,bCK,bCQ};
         if (board[m[2]][m[3]]!=E || m[4]==SP_EN_PASSANT)
             GameRenderHelper.spawnParticles(particles, bx+m[3]*cellSize+cellSize/2, by+m[2]*cellSize+cellSize/2, 8, 0xFF6644);
@@ -299,18 +422,77 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,0.5f,1.5f);
         // LAN：本地选完升变子后才发送走法报文，并把最终子力类型编码进报文（双端对称）
         if (pendingLanPromote != null) {
-            sendMove(pendingLanPromote + "," + t);
+            sendMoveEnvelope(pendingLanPromote + "," + t);
             pendingLanPromote = null;
         }
         checkEnd();
     }
     private void checkEnd() {
         if (state!=S.PLAYING) return;
+        // 每次走子完成后入档当前局面 key（含 checkEnd 的所有调用路径：玩家/AI/联机/升变完成）
+        positionKeys.add(positionKey());
+        if (halfmoveClock >= 100) {
+            state=S.OVER; resultOutcome=0; resultMsg="50回合规则和棋";
+            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
+            return;
+        }
+        if (isInsufficientMaterial()) {
+            state = S.OVER;
+            resultOutcome = 0;
+            resultMsg = "子力不足和棋";
+            return;
+        }
+        String lastKey = positionKeys.get(positionKeys.size()-1);
+        int rep = 0;
+        for (String k : positionKeys) if (k.equals(lastKey)) rep++;
+        if (rep >= 3) {
+            state=S.OVER; resultOutcome=0; resultMsg="三次重复和棋";
+            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
+            return;
+        }
         if (legalMoves(board,whiteTurn).isEmpty()) {
             state=S.OVER;
+            resultOutcome = kingInCheck(board,whiteTurn) ? (whiteTurn?-1:1) : 0; // whiteTurn=被将死一方
             resultMsg = kingInCheck(board,whiteTurn) ? (whiteTurn?"黑方胜利！将死":"白方胜利！将死") : "僵局！平局";
             if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
         }
+    }
+
+    /** Automatic dead-position cases covered by the standard insufficient-material rule. */
+    private boolean isInsufficientMaterial() {
+        int nonKings = 0;
+        int bishops = 0;
+        int knights = 0;
+        int bishopSquareColor = -1;
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                int piece = board[r][c];
+                int type = Math.abs(piece);
+                if (type == 0 || type == WK) continue;
+                nonKings++;
+                if (type == WN) knights++;
+                else if (type == WB) {
+                    bishops++;
+                    int color = (r + c) & 1;
+                    if (bishopSquareColor < 0) bishopSquareColor = color;
+                    else if (bishopSquareColor != color) return false;
+                } else return false;
+            }
+        }
+        return nonKings == 0
+                || (nonKings == 1 && (bishops == 1 || knights == 1))
+                // Two bishops on the same square color are also dead material.
+                || (nonKings == 2 && bishops == 2 && knights == 0);
+    }
+
+    /** 构造局面 key：棋盘内容 + 行棋方 + 四个易位权 + ep 目标格（三次重复和棋判定用） */
+    private String positionKey() {
+        StringBuilder sb = new StringBuilder(96);
+        sb.append(whiteTurn?'w':'b')
+          .append('|').append(wCK?'1':'0').append(wCQ?'1':'0').append(bCK?'1':'0').append(bCQ?'1':'0')
+          .append('|').append(epTarget==null?"-":epTarget[0]+","+epTarget[1]);
+        for (int r=0;r<8;r++) for (int c=0;c<8;c++) sb.append('|').append(board[r][c]);
+        return sb.toString();
     }
 
     // ══════════════ 辅助检测 ══════════════
@@ -347,18 +529,18 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
 
     // ══════════════ AI（深度2 + 500ms超时） ══════════════
     /** ★ forWhite=false → 为黑方找最优（分数越小越好） */
-    private int[] findBestMove(boolean forWhite) {
+    private int[] findBestMove(int[][] searchBoard, boolean[] searchCastling, int[] searchEp, boolean forWhite) {
         aiT0 = System.currentTimeMillis();
-        List<int[]> moves = legalMoves(board, forWhite);
+        List<int[]> moves = legalMoves(searchBoard, forWhite, searchEp, searchCastling);
         if (moves.isEmpty()) return null;
         // MVV-LVA：吃高价值子优先
-        moves.sort((a,b) -> Integer.compare(PIECE_VALUE[Math.abs(board[b[2]][b[3]])], PIECE_VALUE[Math.abs(board[a[2]][a[3]])]));
+        moves.sort((a,b) -> Integer.compare(PIECE_VALUE[Math.abs(searchBoard[b[2]][b[3]])], PIECE_VALUE[Math.abs(searchBoard[a[2]][a[3]])]));
         int[] best = moves.get(0);
         int bestScore = forWhite ? Integer.MIN_VALUE : Integer.MAX_VALUE;
-        boolean[] cf = {wCK,wCQ,bCK,bCQ};
+        boolean[] cf = searchCastling.clone();
         for (int[] mv : moves) {
             if (System.currentTimeMillis()-aiT0 > AI_MS) break; // 超时直接返回
-            int[][] nb = copy(board); boolean[] ncf = cf.clone(); int[][] ep = {epTarget};
+            int[][] nb = copy(searchBoard); boolean[] ncf = cf.clone(); int[][] ep = {searchEp};
             applyOn(nb,mv,ncf,ep);
             int score = alphaBeta(nb, AI_DEPTH-1, Integer.MIN_VALUE, Integer.MAX_VALUE, !forWhite, ncf, ep[0]);
             if (forWhite && score>bestScore) { bestScore=score; best=mv; }
@@ -372,21 +554,32 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
      */
     private int alphaBeta(int[][] b, int depth, int alpha, int beta, boolean max, boolean[] cf, int[] ep) {
         if (System.currentTimeMillis()-aiT0 > AI_MS) return evalBoard(b);
-        List<int[]> moves = pseudoMoves(b, max, ep); // ← 伪合法，快；ep用搜索节点自身的目标
+        List<int[]> moves = pseudoMoves(b, max, ep, cf); // ← 伪合法，快；ep/cf 用搜索节点自身的副本
         if (moves.isEmpty()) return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
         if (depth == 0) return evalBoard(b);
         // 简单排序：吃子优先
         moves.sort((a,bb) -> Integer.compare(PIECE_VALUE[Math.abs(b[bb[2]][bb[3]])], PIECE_VALUE[Math.abs(b[a[2]][a[3]])]));
         int best = max ? Integer.MIN_VALUE : Integer.MAX_VALUE;
+        boolean hasLegal = false;  // 是否至少评估过一个合法走法
+        boolean timedOut = false;  // 是否因超时中断（此时不能断言将杀/僵局）
         for (int[] mv : moves) {
-            if (System.currentTimeMillis()-aiT0 > AI_MS) break;
+            if (System.currentTimeMillis()-aiT0 > AI_MS) { timedOut = true; break; }
             int[][] nb = copy(b); boolean[] ncf = cf!=null?cf.clone():new boolean[]{true,true,true,true}; int[][] epR = {ep};
             applyOn(nb,mv,ncf,epR);
             if (kingInCheck(nb,max)) continue; // 走后王被将 → 不合法
+            hasLegal = true;
             int score = alphaBeta(nb, depth-1, alpha, beta, !max, ncf, epR[0]);
             if (max) { best=Math.max(best,score); alpha=Math.max(alpha,best); }
             else     { best=Math.min(best,score); beta =Math.min(beta, best); }
             if (beta<=alpha) break;
+        }
+        if (!hasLegal) {
+            // ★ Bug修复：伪合法走法全部非法时，原先退回静态子力分，把将杀/僵局
+            //   误当成普通局面。超时中断（一步合法走法都没算到）仍退回静态分，
+            //   避免把超时误判成必败/必胜
+            if (timedOut) return evalBoard(b);
+            // 被将军 → 将杀分（符号与深度修正和上方 moves.isEmpty() 分支完全一致）；否则僵局 0 分
+            return kingInCheck(b,max) ? (max?-99999+depth:99999-depth) : 0;
         }
         if (best==Integer.MIN_VALUE||best==Integer.MAX_VALUE) return evalBoard(b);
         return best;
@@ -405,6 +598,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     // ══════════════ 输入 ══════════════
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state==S.MENU) {
             if (lanMode!=LAN_NONE) return true;
@@ -415,12 +609,16 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         if (state==S.OVER) {
             int cx2=width/2, cy2=height/2;
-            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) { initBoard(); return true; }
+            // 与 R 键重开逻辑保持一致：LAN 下 CLIENT 无权重开，HOST 重开并广播 RESTART，非联机直接重开
+            if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+22&&my<=cy2+40) {
+                if (lanMode!=LAN_CLIENT) { initBoard(); if (lanMode==LAN_HOST) sendMoveEnvelope("RESTART"); }
+                return true;
+            }
             if (mx>=cx2-70&&mx<=cx2+70&&my>=cy2+44&&my<=cy2+62) { sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             return super.mouseClicked(mx,my,btn);
         }
         if (promoPending) { handlePromoClick((int)mx,(int)my); return true; }
-        int col=((int)mx-bx)/cellSize, row=((int)my-by)/cellSize;
+        int col=Math.floorDiv((int)mx-bx,cellSize), row=Math.floorDiv((int)my-by,cellSize);
         if (col<0||col>=8||row<0||row>=8) return super.mouseClicked(mx,my,btn);
         // 禁止非己方操作
         if (vsAI && (!whiteTurn||aiThinking)) return true;
@@ -440,7 +638,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
                         // 升变走法延迟到本地选完升变子后再发送（见 completePromo），报文携带最终子力类型
                         pendingLanPromote = lanData;
                     } else {
-                        sendMove(lanData);
+                        sendMoveEnvelope(lanData);
                     }
                 }
                 if (!promoPending) checkEnd();
@@ -479,10 +677,10 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         if (showExitConfirm) return true;
         if (k==GLFW.GLFW_KEY_R) {
-            if (lanMode!=LAN_CLIENT) { initBoard(); if (lanMode==LAN_HOST) sendMove("RESTART"); }
+            if (lanMode!=LAN_CLIENT) { initBoard(); if (lanMode==LAN_HOST) sendMoveEnvelope("RESTART"); }
             return true;
         }
-        return true;
+        return super.keyPressed(k, sc, mod);
     }
 
     // ══════════════ 渲染 ══════════════
@@ -548,6 +746,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         if (abs==5) g.fill(cx2-1,sy+3,cx2+2,sy+5,w?0xFFDDAA00:0xFF886600);
     }
     private void renderPromoPanel(GuiGraphics g, int mx, int my) {
+        g.flush(); // 先提交已 batch 的棋盘/棋子，避免升变面板实心背景与之 z-fighting
         boolean w=(promoRow==0); int cx2=width/2, cy2=height/2;
         int pw=cellSize*4+20, px2=cx2-pw/2, py2=cy2-30;
         g.fill(px2-2,py2-2,px2+pw+2,py2+cellSize+44,0xFF000000);
@@ -562,9 +761,37 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
     }
     private void renderOver(GuiGraphics g, int mx, int my) {
+        // 先 flush 之前的棋盘/棋子批次，避免 z-fighting 与文字穿透
+        g.flush();
         GameRenderHelper.drawGameOverOverlay(g,width,height);
-        int cx2=width/2, cy2=height/2; boolean win=resultMsg.contains("白方")&&vsAI;
-        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,win,resultMsg.replace("§c","").replace("§a","").replace("§e",""),vsAI?(win?"恭喜战胜AI！":"再接再厉！"):"精彩对局！");
+        int cx2=width/2, cy2=height/2;
+        boolean draw = resultOutcome == 0;
+        boolean win = resultOutcome == 1; // 白方胜（vsAI 时玩家执白，即"玩家胜"）
+        // 本地双人/联机也按 checkEnd 记录的实际胜方渲染，不再被 vsAI 误判为失败样式
+        int outcome = draw ? 0 : (win ? 1 : -1);
+        if (!draw && lanMode != LAN_NONE) {
+            boolean iAmWhite = lanMode == LAN_HOST;
+            outcome = ((iAmWhite && resultOutcome == 1) || (!iAmWhite && resultOutcome == -1)) ? 1 : -1;
+        }
+        String title;
+        String subtitle;
+        if (draw) {
+            title = "和棋";
+            subtitle = "势均力敌！";
+        } else if (lanMode != LAN_NONE) {
+            // LAN 下按本地座位显示胜负，HOST 执白、CLIENT 执黑。
+            boolean iAmWhite = lanMode == LAN_HOST;
+            boolean iWon = (iAmWhite && resultOutcome == 1) || (!iAmWhite && resultOutcome == -1);
+            title = iWon ? "你赢了！" : "你输了！";
+            subtitle = iWon ? "恭喜取得胜利！" : "再接再厉！";
+        } else if (vsAI) {
+            title = win ? "你赢了！" : "AI 获胜！";
+            subtitle = win ? "恭喜战胜AI！" : "再接再厉！";
+        } else {
+            title = resultMsg.replace("§c", "").replace("§a", "").replace("§e", "");
+            subtitle = "精彩对局！";
+        }
+        GameRenderHelper.drawGameOverPanel(g,font,cx2,cy2,outcome,title,subtitle);
         GameRenderHelper.drawPrimaryButton(g,font,"R - 再来一局",cx2-70,cy2+22,140,18,mx,my);
         GameRenderHelper.drawSecondaryButton(g,font,"ESC - 返回",cx2-70,cy2+44,140,18,mx,my);
     }

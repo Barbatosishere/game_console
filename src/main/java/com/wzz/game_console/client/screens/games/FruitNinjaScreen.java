@@ -31,6 +31,15 @@ public class FruitNinjaScreen extends Screen {
     private final Random random = new Random();
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final List<GameRenderHelper.FloatingText> floats = new ArrayList<>();
+    /** 生命值 HUD 帧表:索引 = 心数(0~20),启动时预计算避免每帧 repeat 分配 */
+    private static final String[] HEARTS_FRAMES = new String[21];
+    static {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < HEARTS_FRAMES.length; i++) {
+            HEARTS_FRAMES[i] = sb.toString();
+            sb.append("❤");
+        }
+    }
 
     public FruitNinjaScreen() { super(Component.literal("水果忍者")); }
 
@@ -43,8 +52,11 @@ public class FruitNinjaScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        floats.removeIf(f -> { f.update(); return !f.isAlive(); });
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：浮字推进原在状态守卫之前执行，暂停/菜单期间仍会飘走耗尽，移到守卫之后
+        floats.removeIf(f -> { f.update(); return !f.isAlive(); });
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
 
         spawnTimer++;
         if (spawnTimer >= Math.max(8, 25 - score / 5)) {
@@ -156,15 +168,32 @@ public class FruitNinjaScreen extends Screen {
         for (float[] f : fruits) {
             if (f[5] == 0) {
                 if ((int)f[4] == -1) {
-                    // 炸弹：黑色圆 + 红色引线
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2, 0xFF111111);
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2 - 2, 0xFF2A2A2A);
-                    // 引线
-                    g.fill((int)f[0], (int)f[1] - FRUIT_SIZE/2 - 4, (int)f[0]+2, (int)f[1] - FRUIT_SIZE/2, 0xFFFF4400);
+                    // 炸弹：黑色方形 + 红色十字标记（与圆形水果明显区分）
+                    int bx = (int)f[0], by = (int)f[1];
+                    int half = FRUIT_SIZE / 2;
+                    // 黑色方形主体（区别于圆形水果，轮廓更锐利）
+                    g.fill(bx - half, by - half, bx + half, by + half, 0xFF111111);
+                    g.fill(bx - half + 3, by - half + 3, bx + half - 3, by + half - 3, 0xFF2A2A2A);
+                    // 红色十字危险标记
+                    g.fill(bx - 2, by - half + 4, bx + 2, by + half - 4, 0xFFFF2200);
+                    g.fill(bx - half + 4, by - 2, bx + half - 4, by + 2, 0xFFFF2200);
+                    // 引线（顶部，更明显）
+                    // ★ Bug修复：fill(x1,y1,x2,y2,color) 后两参数是绝对坐标，此前误传成宽高字面量，
+                    //   炸弹坐标较大时矩形会从屏幕左上角一路拉伸过来，改为 x1+宽/y1+高 换算出正确的 x2/y2
+                    g.fill(bx - 1, by - half - 8, bx + 2, by - half, 0xFFFF6600);
+                    g.fill(bx - 4, by - half - 10, bx + 5, by - half - 7, 0xFFFF6600);
                     // 警告圈（红色闪烁轮廓）
                     int bombPulse = (int)(System.currentTimeMillis() / 300) % 2 == 0 ? 0xFFFF2200 : 0xFF880000;
-                    GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2 + 2, bombPulse);
-                    g.drawCenteredString(font, "💣", (int)f[0], (int)f[1] - 4, 0xFFFFFFFF);
+                    GameRenderHelper.drawCircle(g, bx, by, half + 3, bombPulse);
+                    // ★ Bug修复：默认 Minecraft 字体不包含 emoji "💣"，豆腐块概率高。
+                    //   改用 ASCII 字符 "B"（黑底白字 + 红色描边），跨字体/语言包稳定可读。
+                    int bw = font.width("B");
+                    // 红色描边（4 方向各偏移 1px）
+                    g.drawString(font, "B", bx - bw / 2 - 1, by - 4,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2 + 1, by - 4,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 5,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 3,     0xFFFF0000);
+                    g.drawString(font, "B", bx - bw / 2,     by - 4,     0xFFFFFFFF);
                 } else {
                     int color = FRUIT_COLORS[(int)f[4]];
                     GameRenderHelper.drawCircle(g, (int)f[0], (int)f[1], FRUIT_SIZE/2, color);
@@ -173,13 +202,18 @@ public class FruitNinjaScreen extends Screen {
                 }
             }
         }
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         for (GameRenderHelper.FloatingText ft : floats) ft.render(g, font);
 
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "🍉 分数: " + score, 8, 7, 0xFF4444);
-        String livesStr = "❤".repeat(Math.max(0, lives));
+        // ★ 修复：🍉 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
+        g.drawString(font, "分数: " + score, 8, 7, 0xFF4444);
+        // ★ Bug修复：lives 无上限时 "❤".repeat(lives) 字符串爆炸,font.width
+        //   返回极大值,width - width - 8 变成巨大负数,字符串渲染到屏幕外。
+        //   ★ 性能：改为启动时预计算 0~20 帧表,render 每帧只做一次数组索引,
+        //     不再每帧 repeat 分配新字符串
+        String livesStr = HEARTS_FRAMES[Math.max(0, Math.min(lives, HEARTS_FRAMES.length - 1))];
         g.drawString(font, livesStr, width - font.width(livesStr) - 8, 7, 0xFF4444);
         if (comboCount >= 3) g.drawCenteredString(font, "✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
         GameRenderHelper.drawBottomBar(g, font, width, height, "按住鼠标滑动切水果  ESC 菜单  R 重开");
@@ -195,6 +229,7 @@ public class FruitNinjaScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (state == State.MENU && mx >= cx-60 && mx <= cx+60 && my >= cy+45 && my <= cy+67) { startGame(); return true; }

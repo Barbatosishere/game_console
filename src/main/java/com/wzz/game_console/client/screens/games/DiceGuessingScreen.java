@@ -10,6 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.Random;
 
@@ -67,6 +68,9 @@ public class DiceGuessingScreen extends Screen {
 
     @Override
     public void init() {
+        // ★ Bug修复：缩放 init() 重复添加 exitButton/resetButton
+        this.clearWidgets();
+        super.init();
         int centerX = this.width / 2;
         int centerY = this.height / 2;
 
@@ -457,7 +461,7 @@ public class DiceGuessingScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == 256) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { if (showExitConfirm) { showExitConfirm = false; } else { showExitConfirm = true; } return true; }
         if (showExitConfirm) return true;
         return super.keyPressed(keyCode, scanCode, modifiers);
     }

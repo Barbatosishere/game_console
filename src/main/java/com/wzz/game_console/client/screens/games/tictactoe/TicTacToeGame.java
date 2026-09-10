@@ -6,7 +6,7 @@ public class TicTacToeGame {
     }
     
     public enum GameMode {
-        SINGLE_PLAYER
+        SINGLE_PLAYER, TWO_PLAYER
     }
     
     private Player[][] board;
@@ -36,6 +36,16 @@ public class TicTacToeGame {
     }
     
     public boolean makeMove(int row, int col) {
+        if (gameMode == GameMode.SINGLE_PLAYER && !isPlayerTurn) return false;
+        return applyMove(row, col);
+    }
+
+    boolean makeMove(int row, int col, Player player) {
+        if (gameMode != GameMode.TWO_PLAYER || player == Player.NONE || player != currentPlayer) return false;
+        return applyMove(row, col);
+    }
+
+    private boolean applyMove(int row, int col) {
         if (row < 0 || row >= 3 || col < 0 || col >= 3) return false; // 联机数据防护
         if (gameOver || board[row][col] != Player.NONE) {
             return false;
@@ -70,11 +80,10 @@ public class TicTacToeGame {
         // 简单的AI逻辑：优先获胜，其次阻止玩家获胜，最后随机下棋
         int[] move = getBestMove();
         if (move != null) {
-            // 若 getBestMove 返回的合法点被 makeMove 拒绝（未来扩展），扫描棋盘兜底
-            if (!makeMove(move[0], move[1])) {
+            if (!applyMove(move[0], move[1])) {
                 scanFallback:
                 for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
-                    if (makeMove(i, j)) break scanFallback;
+                    if (applyMove(i, j)) break scanFallback;
             }
         }
     }
@@ -95,7 +104,19 @@ public class TicTacToeGame {
         if (board[1][1] == Player.NONE) {
             return new int[]{1, 1};
         }
-        
+
+        // 3.5 双角叉防御：对手占据对角双角且己方只有中心时必须走边。
+        // 原固定角落顺序会取第三个角，对手落最后一个对角形成行/列双威胁，必败
+        if ((board[0][0] == opponent && board[2][2] == opponent)
+                || (board[0][2] == opponent && board[2][0] == opponent)) {
+            int[][] edges = {{0, 1}, {1, 0}, {1, 2}, {2, 1}};
+            for (int[] edge : edges) {
+                if (board[edge[0]][edge[1]] == Player.NONE) {
+                    return edge;
+                }
+            }
+        }
+
         // 4. 选择角落
         int[][] corners = {{0, 0}, {0, 2}, {2, 0}, {2, 2}};
         for (int[] corner : corners) {

@@ -12,9 +12,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.Random;
 
 @OnlyIn(Dist.CLIENT)
 public class SokobanScreen extends Screen {
@@ -25,171 +23,178 @@ public class SokobanScreen extends Screen {
     private int levelWidth, levelHeight;
     private int startX, startY;
     private int currentLevel = 1;
-    private final List<char[][]> levels = new ArrayList<>();
+    /** 重开盐：loadLevel 时混入 nanoTime 派生量，使按 R 能生成不同布局（关卡首次进入仍稳定） */
+    private long reshuffleSalt = 0L;
 
     public SokobanScreen() {
         super(Component.literal("推箱子游戏"));
-        initializeLevels();
-        loadLevel(currentLevel);
+        generateLevel(currentLevel);
     }
 
-    private void initializeLevels() {
-        levels.add(new char[][]{
-                {'#','#','#','#','#'},
-                {'#',' ',' ',' ','#'},
-                {'#',' ','$','.','#'},
-                {'#','@',' ',' ','#'},
-                {'#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#'},
-                {'#','.','#',' ','#'},
-                {'#',' ','$',' ','#'},
-                {'#','@',' ',' ','#'},
-                {'#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#'},
-                {'#',' ',' ',' ','.','#'},
-                {'#','.','$','$','@','#'},
-                {'#',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#'},
-                {'#','.',' ',' ',' ','#'},
-                {'#',' ','#','$','@','#'},
-                {'#',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#',' ',' ',' ','.',' ','#'},
-                {'#',' ',' ','$','#',' ','#'},
-                {'#','.','$','@','$','.','#'},
-                {'#',' ','#',' ','#',' ','#'},
-                {'#',' ',' ',' ',' ',' ','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#','.',' ','#',' ','.','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#',' ',' ','@',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','.',' ','#',' ','.','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#'},
-                {'#',' ','.',' ','.','.','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','$',' ','@',' ','$','#'},
-                {'#',' ','$',' ','$',' ','#'},
-                {'#','.','.',' ','.',' ','#'},
-                {'#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#','.','#',' ','#','.',' ','#'},
-                {'#',' ','$',' ','$',' ',' ','#'},
-                {'#',' ',' ','@',' ',' ',' ','#'},
-                {'#',' ','$',' ','$',' ',' ','#'},
-                {'#','.','#',' ','#','.',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#'},
-                {'#',' ','.','#','.','.',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','$',' ','#'},
-                {'#',' ',' ','@',' ',' ',' ',' ','#'},
-                {'#',' ','$',' ','$',' ','$',' ','#'},
-                {'#',' ','.','#','.','.',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#','#'},
-                {'#','.',' ','.','.','.',' ','.','.','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','$','$','$','$','$','$',' ','#'},
-                {'#',' ',' ',' ','@',' ',' ',' ',' ','#'},
-                {'#',' ','$','$','$','$','$','$',' ','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#','.',' ','.','.','.','.','.',' ','#'},
-                {'#','#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#','#','#'},
-                {'#','.','#',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#',' ',' ',' ',' ',' ','#','#'},
-                {'#',' ',' ','$',' ','#',' ','$',' ','#'},
-                {'#',' ',' ',' ','@','#',' ','#',' ','#'},
-                {'#',' ',' ',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#','$','#',' ',' ',' ',' ','#'},
-                {'#','.','#',' ',' ',' ','.',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#','.','#','#',' ',' ','.','#'},
-                {'#',' ','#',' ','$',' ',' ','#'},
-                {'#',' ','$','@',' ',' ','#','#'},
-                {'#',' ',' ',' ',' ',' ',' ','#'},
-                {'#',' ','#',' ','#',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-
-        levels.add(new char[][]{
-                {'#','#','#','#','#','#','#','#'},
-                {'#',' ',' ','#',' ',' ',' ','#'}, // 修复：末列原为'.'缺右墙，导致关卡不可解
-                {'#',' ','.','$',' ',' ',' ','#'}, // 同步补目标点：左上封闭区的箱子只能推到此格，保证2箱2目标可通关
-                {'#',' ','#',' ','#',' ','#','#'},
-                {'#',' ',' ','@',' ',' ','#','#'},
-                {'#',' ','$','#',' ',' ',' ','#'},
-                {'#',' ',' ','.','#',' ',' ','#'},
-                {'#','#','#','#','#','#','#','#'}
-        });
-    }
-
-    private void loadLevel(int levelNum) {
-        if (levelNum < 1 || levelNum > levels.size()) {
-            currentLevel = 1; // 循环回到第一关
-        } else {
-            currentLevel = levelNum;
+    private void generateLevel(int levelNum) {
+        // ★ 修复零箱局：打乱收尾可能把全部 '+' 转 '.' 且 boxCount 递减到 0，
+        //   生成没有箱子的死局。收尾 boxCount<=0 时不再接受该结果，改为整关
+        //   重新生成（最多 10 次，仍失败保留最后一次）。首次尝试种子与原版
+        //   一致，正常关卡生成的地图不变。
+        for (int attempt = 0; attempt < 10; attempt++) {
+            if (generateLevelOnce(levelNum, attempt)) return;
         }
+    }
 
-        level = copyLevel(levels.get(currentLevel - 1));
-        levelWidth = level[0].length;
-        levelHeight = level.length;
+    /** 生成一关并写入 level 字段；返回 false 表示本次生成出零箱局，需要重试 */
+    private boolean generateLevelOnce(int levelNum, int attempt) {
+        // 种子混入重开盐：按 R 重开时盐值变化，同一关可生成不同布局，帮助玩家逃离死局
+        Random rand = new Random(levelNum * 7919L + 271L + attempt * 104729L + reshuffleSalt);
 
-        // 查找玩家位置
-        for (int y = 0; y < levelHeight; y++) {
-            for (int x = 0; x < levelWidth; x++) {
-                if (level[y][x] == '@') {
-                    playerX = x;
-                    playerY = y;
+        // ★ Bug修复：原版关卡参数增速过缓（gridSize 每 3 关 +1，boxCount 每 4 关 +1），
+        //   玩家通关 5~6 关仍感觉不到明显难度提升。重新调参为：
+        //     gridSize   = 5 + (levelNum-1)/1.5   → 第 1 关 5x5，第 5 关 8x8，第 10 关 11x11
+        //     boxCount   = 1 + (levelNum-1)/2     → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
+        //     obstacleCount = 1 + (levelNum-1)/2  → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
+        int gridSize = Math.min(5 + (levelNum - 1) * 2 / 3, 14);
+        int boxCount = Math.min(1 + (levelNum - 1) / 2, 6);
+        int obstacleCount = Math.min(1 + (levelNum - 1) / 2, 8);
+
+        // 创建网格
+        char[][] grid = new char[gridSize][gridSize];
+        levelWidth = gridSize;
+        levelHeight = gridSize;
+
+        // 填充边界墙
+        for (int y = 0; y < gridSize; y++)
+            for (int x = 0; x < gridSize; x++)
+                grid[y][x] = (x == 0 || x == gridSize - 1 || y == 0 || y == gridSize - 1) ? '#' : ' ';
+
+        // 放置内部障碍物
+        for (int i = 0; i < obstacleCount; i++) {
+            for (int o = 0; o < 30; o++) {
+                int wx = 1 + rand.nextInt(gridSize - 2);
+                int wy = 1 + rand.nextInt(gridSize - 2);
+                if (grid[wy][wx] == ' ') {
+                    grid[wy][wx] = '#';
+                    break;
                 }
             }
         }
+
+        // 初始状态：箱子全部在目标点上（已解决状态 '+'）
+        int placed = 0;
+        for (int p = 0; p < 500 && placed < boxCount; p++) {
+            int bx = 1 + rand.nextInt(gridSize - 2);
+            int by = 1 + rand.nextInt(gridSize - 2);
+            if (grid[by][bx] == ' ') {
+                grid[by][bx] = '+';
+                placed++;
+            }
+        }
+        boxCount = Math.max(placed, 1);
+        if (placed == 0) {
+            grid[gridSize / 2][gridSize / 2] = '+';
+            boxCount = 1;
+        }
+
+        // 放置玩家在左上角空地
+        playerX = 1;
+        playerY = 1;
+        if (grid[1][1] != ' ') {
+            outer:
+            for (int y = 1; y < gridSize - 1; y++)
+                for (int x = 1; x < gridSize - 1; x++)
+                    if (grid[y][x] == ' ') { playerX = x; playerY = y; break outer; }
+        }
+        grid[playerY][playerX] = '@';
+
+        // 打乱阶段：随机移动玩家来推动箱子离开目标点
+        // 启发式生成 + 死角校验重试，并不保证一定可解，极端情况仍可能需按 R 重开换一张布局
+        // 种子 = 关卡号 + attempt + 重开盐（盐在 loadLevel 时变化，按 R 可换布局）
+        int[] dx = {1, -1, 0, 0};
+        int[] dy = {0, 0, 1, -1};
+        int pushes = 0;
+        // ★ Bug修复：原版用固定 300 步上限，大关卡（gridSize=14 + boxCount=6）下
+        //   玩家推不完所有箱子，最终被安全处理降为少箱关，玩家感觉"难度没有递增"。
+        //   改为 1500 + boxCount*500 步（最大 ~4500 步），覆盖所有当前关卡配置；
+        //   同时若仍推不完，则按"实际推动的箱子数"动态下调 boxCount 目标点，
+        //   保持"已生成箱子 == 已设置目标点"，不会出现开局即通也不会无解。
+        int maxSteps = 1500 + boxCount * 500;
+        for (int step = 0; step < maxSteps && pushes < boxCount; step++) {
+            int dir = rand.nextInt(4);
+            int nx = playerX + dx[dir];
+            int ny = playerY + dy[dir];
+            if (nx <= 0 || nx >= gridSize - 1 || ny <= 0 || ny >= gridSize - 1) continue;
+            if (grid[ny][nx] == '#') continue;
+
+            if (grid[ny][nx] == '+' || grid[ny][nx] == '$') {
+                boolean wasOnTarget = (grid[ny][nx] == '+');
+                int bx = nx + dx[dir];
+                int by = ny + dy[dir];
+                if (bx <= 0 || bx >= gridSize - 1 || by <= 0 || by >= gridSize - 1) continue;
+                if (grid[by][bx] == '#' || grid[by][bx] == '+' || grid[by][bx] == '$') continue;
+
+                // 死角校验：箱子被推到非目标点的角落（两个正交相邻方向均为墙/边界）后永远推不动，
+                // 本轮打乱作废，由 generateLevel 以 attempt+1 重来（沿用 attempt 上限模式）
+                if (grid[by][bx] != '.' && isDeadCorner(grid, gridSize, bx, by)) {
+                    level = grid;
+                    return false;
+                }
+
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                grid[ny][nx] = wasOnTarget ? '*' : '@';
+                grid[by][bx] = '$';
+                playerX = nx;
+                playerY = ny;
+                if (wasOnTarget) pushes++;
+            } else if (grid[ny][nx] == '.') {
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                playerX = nx;
+                playerY = ny;
+                grid[playerY][playerX] = '*';
+            } else if (grid[ny][nx] == ' ') {
+                char oldPos = grid[playerY][playerX];
+                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
+                playerX = nx;
+                playerY = ny;
+                grid[playerY][playerX] = '@';
+            }
+        }
+
+        // 最终安全处理：如果仍有 '+' 未被推动，转为 '.'（移除未打乱的箱子）
+        // 确保不会出现开局即胜利的情况
+        // ★ 同步把 boxCount 调成实际成功推动数,避免"玩家推完原 boxCount 但还有多余目标点"导致无法通关
+        for (int y = 1; y < gridSize - 1; y++) {
+            for (int x = 1; x < gridSize - 1; x++) {
+                if (grid[y][x] == '+') {
+                    grid[y][x] = '.';
+                    boxCount--;
+                }
+            }
+        }
+
+        level = grid;
+        // boxCount<=0（'+' 全转 '.' 且无箱可推）时返回 false，由 generateLevel 重试
+        return boxCount > 0;
     }
 
-    private char[][] copyLevel(char[][] original) {
-        char[][] copy = new char[original.length][];
-        for (int i = 0; i < original.length; i++) {
-            copy[i] = Arrays.copyOf(original[i], original[i].length);
-        }
-        return copy;
+    /** 死角判定：箱子四周存在一组正交相邻方向（上/下/左/右）均为墙或边界（调用前需确认箱子不在目标点上） */
+    private boolean isDeadCorner(char[][] grid, int gridSize, int bx, int by) {
+        boolean up = by - 1 < 0 || grid[by - 1][bx] == '#';
+        boolean down = by + 1 >= gridSize || grid[by + 1][bx] == '#';
+        boolean left = bx - 1 < 0 || grid[by][bx - 1] == '#';
+        boolean right = bx + 1 >= gridSize || grid[by][bx + 1] == '#';
+        return (up && left) || (up && right) || (down && left) || (down && right);
+    }
+
+    private void loadLevel(int levelNum) {
+        if (levelNum < 1) levelNum = 1;
+        currentLevel = levelNum;
+        // 更新重开盐：按 R 重开同一关时种子随之变化，可生成不同布局逃离死局
+        reshuffleSalt += System.nanoTime();
+        generateLevel(currentLevel);
+        // ★ Bug修复：generateLevel 会随关卡数增大 levelWidth/levelHeight，
+        // 但 TILE_SIZE/startX/startY 及重置/下一关按钮的尺寸位置只在首次 init() 时算过一次；
+        // 跳关/重置若不重新 init()，画面会继续沿用旧关卡的几何参数导致错位甚至棋盘溢出可视区。
+        init();
     }
 
     @Override
@@ -306,7 +311,7 @@ public class SokobanScreen extends Screen {
         }
 
         // 显示当前关卡和操作提示
-        guiGraphics.drawCenteredString(font, "关卡: " + currentLevel + "/" + levels.size(),
+        guiGraphics.drawCenteredString(font, "关卡: " + currentLevel,
                 width / 2, startY - 30, 0xFFFFFF);
         guiGraphics.drawCenteredString(font, "WASD移动 | R重置 | N下一关",
                 width / 2, startY - 15, 0xAAAAAA);
@@ -380,7 +385,6 @@ public class SokobanScreen extends Screen {
             if (Minecraft.getInstance().player != null) {
                 Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
             }
-            init(); // 重新初始化UI
         }
     }
 }

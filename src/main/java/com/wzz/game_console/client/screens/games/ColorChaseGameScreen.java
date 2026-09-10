@@ -15,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
 
 public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger(ColorChaseGameScreen.class);
@@ -52,9 +53,10 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     private int     p2X = GRID_SIZE * 3 / 4,   p2Y = GRID_SIZE / 2;
     private boolean p2Dead  = false;
     private int     p2Score = 0;
-    private long    p2LastSafe;
+    private long    p2LastSafe = 0;
 
     // ─────── 共用状态 ───────
+    private static final int MAX_LEVEL = 999;
     private int     targetColor = 0;
     private int     level       = 1;
     private boolean gameRunning = true;
@@ -62,13 +64,13 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     private String  winnerText  = "";
 
     // ─────── 时间 ───────
-    private long lastColorChangeTime;
+    private long lastColorChangeTime = 0;
     private long colorChangeInterval    = 3000;
     private static final long INPUT_COOLDOWN        = 80;
     private static final long DEATH_GRACE_PERIOD    = 2000;
     private static final long GAME_START_PROTECTION = 1200;
     private long p1LastInput = 0, p2LastInput = 0;
-    private long gameStartTime;
+    private long gameStartTime = 0;
 
     // ─────── 长按 ───────
     private final Set<Integer> heldKeys = new HashSet<>();
@@ -83,10 +85,18 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     private boolean lanLeaveSent = false;
     // HOST 控制 P1（WASD），CLIENT 控制 P2（方向键）
     // HOST 每 tick 发送完整状态给 CLIENT
+    private UUID stateSessionId = UUID.randomUUID();
+    private long stateSequence = 0;
+    private final RealtimeLanState.Receiver stateReceiver = new RealtimeLanState.Receiver();
 
     /** 本地模式（单机/本地双人）构造器 */
     public ColorChaseGameScreen() {
         super(net.minecraft.network.chat.Component.literal("颜色追逐"));
+    }
+
+    public ColorChaseGameScreen(boolean twoPlayer) {
+        this();
+        initGame(twoPlayer);
     }
 
     /** LAN 联机构造：HOST 控制P1，CLIENT 控制P2 */
@@ -107,11 +117,11 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
      */
     @Override
     public void onRemoteState(java.util.UUID senderUuid, String data) {
-        if (lanMode == LAN_CLIENT) {
-            if (remotePeer == null || !remotePeer.equals(senderUuid)) {
-                LOGGER.warn("[颜色追逐] 丢弃来源非法的状态包: sender={}，期望对端={}", senderUuid, remotePeer);
-                return;
-            }
+        // GAME_STATE_SYNC 在 HOST 侧同样必须验证服务端盖章的发送者，
+        // 只接受当前已配对对端，拒绝第三方注入状态。
+        if (lanMode != LAN_CLIENT || remotePeer == null || !remotePeer.equals(senderUuid)) {
+            LOGGER.warn("[颜色追逐] 丢弃来源或角色非法的状态包: sender={}，角色={}，期望对端={}", senderUuid, lanMode, remotePeer);
+            return;
         }
         this.onRemoteState(data);
     }
@@ -148,39 +158,47 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
      */
     @Override
     public void onRemoteState(String data) {
-        try {
-            String[] parts = data.split(";", 2);
-            String[] f = parts[0].split(",");
-            p1X = Integer.parseInt(f[0]); p1Y = Integer.parseInt(f[1]); p1Dead = f[2].equals("1");
-            p2X = Integer.parseInt(f[3]); p2Y = Integer.parseInt(f[4]); p2Dead = f[5].equals("1");
-            targetColor = Integer.parseInt(f[6]);
-            p1Score = Integer.parseInt(f[7]); p2Score = Integer.parseInt(f[8]);
-            level = Integer.parseInt(f[9]);
-            gameOver = f[10].equals("1");
-            gameRunning = !gameOver;
-            if (gameOver && f.length > 11) winnerText = f[11];
-            // 同步格子色
-            if (parts.length > 1 && !parts[1].isEmpty()) {
-                String[] cells = parts[1].split(",");
-                int idx = 0;
-                for (int x = 0; x < GRID_SIZE && idx < cells.length; x++)
-                    for (int y = 0; y < GRID_SIZE && idx < cells.length; y++)
-                        grid[x][y] = Integer.parseInt(cells[idx++]);
-            }
-        } catch (Exception ignored) {}
+        if (lanMode != LAN_CLIENT) return;
+        var received = stateReceiver.receive(data, RealtimeLanState::parseColor);
+        if (received == null) return;
+        var s = received.snapshot();
+        if (received.newRound()) {
+            heldKeys.clear();
+            showExitConfirm = false;
+        }
+        gameMode = GameMode.TWO_PLAYER;
+        p1X = s.p1X(); p1Y = s.p1Y(); p1Dead = s.p1Dead();
+        p2X = s.p2X(); p2Y = s.p2Y(); p2Dead = s.p2Dead();
+        targetColor = s.target();
+        p1Score = s.score1(); p2Score = s.score2();
+        level = s.level();
+        gameOver = s.gameOver();
+        gameRunning = !gameOver;
+        winnerText = s.winner();
+        for (int x = 0; x < GRID_SIZE; x++) {
+            System.arraycopy(s.grid()[x], 0, grid[x], 0, GRID_SIZE);
+        }
     }
 
     /** HOST 收到 CLIENT 的输入，CLIENT 收到 HOST 的 RESTART 信号 */
     @Override
     public void onRemoteMove(String data) {
-        // CLIENT 侧：HOST 通知重开
-        if ("RESTART".equals(data)) {
-            initGame(true);
+        if (data == null) return;
+        if (lanMode == LAN_CLIENT) {
+            if (stateReceiver.restart(data)) {
+                initGame(true);
+                showExitConfirm = false;
+            }
             return;
         }
         if (lanMode != LAN_HOST || p2Dead || !gameRunning) return;
+        data = RealtimeLanState.decodeInput(stateSessionId, data);
+        if (data == null) return;
         try {
             String[] p = data.split(",");
+            // ★ Bug修复：原版对 1 字段报文("1"或"")会抛 AIOOBE 静默吞,
+            //   玩家看不到任何反馈。加 length 校验：必须 4 字段才解析方向
+            if (p.length < 4) return;
             long now = System.currentTimeMillis();
             if (now - p2LastInput < INPUT_COOLDOWN) return;
             boolean moved = false;
@@ -198,6 +216,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     /** 构建完整状态字符串（HOST→CLIENT） */
     private String buildColorChaseState() {
         StringBuilder sb = new StringBuilder();
+        sb.append("v2|").append(stateSessionId).append('|').append(++stateSequence).append('|');
         sb.append(p1X).append(',').append(p1Y).append(',').append(p1Dead?1:0).append(',')
           .append(p2X).append(',').append(p2Y).append(',').append(p2Dead?1:0).append(',')
           .append(targetColor).append(',')
@@ -234,10 +253,23 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
         gameStartY = (this.height - GAME_HEIGHT) / 2;
     }
 
+    @Override
+    public void removed() {
+        // ★ Bug修复：玩家按住 W/A/S/D 退出 ColorChase 切到 GameSelector,
+        //   新 screen 的 keyReleased 因 screen 切换被吞,旧 key 仍被判定为按住。
+        //   在 removed() 清空 heldKeys 防泄漏到其他屏
+        sendLeaveGameOnce();
+        heldKeys.clear();
+        super.removed();
+    }
+
     // ══════════════════════════════════════
     //  初始化
     // ══════════════════════════════════════
     private void initGame(boolean twoPlayer) {
+        if (lanMode == LAN_HOST) {
+            stateSessionId = UUID.randomUUID();
+        }
         gameMode    = twoPlayer ? GameMode.TWO_PLAYER : GameMode.SINGLE;
         gameRunning = true;
         gameOver    = false;
@@ -281,6 +313,8 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     @Override
     public void tick() {
         tickCount++;
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        if (!minecraft.isWindowActive() && !heldKeys.isEmpty()) heldKeys.clear();
         if (lanMode == LAN_CLIENT) {
             // CLIENT：仅发送P2按键输入，游戏逻辑全部由HOST驱动；
             // 直接 return，本地 processHeldKeys/updateGame 等逻辑在联机CLIENT端不会执行
@@ -289,14 +323,17 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
                 int d = heldKeys.contains(GLFW.GLFW_KEY_DOWN)  ? 1 : 0;
                 int l = heldKeys.contains(GLFW.GLFW_KEY_LEFT)  ? 1 : 0;
                 int r = heldKeys.contains(GLFW.GLFW_KEY_RIGHT) ? 1 : 0;
-                sendInput(u+","+d+","+l+","+r);
+                String input = stateReceiver.input(u+","+d+","+l+","+r);
+                if (input != null) sendInputEnvelope(input);
             }
             return;
         }
         if (gameMode != GameMode.MENU && gameRunning && !gameOver && !showExitConfirm) { // 弹窗期间暂停游戏
             processHeldKeys();
             updateGame();
-            if (lanMode == LAN_HOST) sendState(buildColorChaseState()); // 广播状态给CLIENT
+            if (lanMode == LAN_HOST) sendStateEnvelope(buildColorChaseState());
+        } else if (lanMode == LAN_HOST && gameMode != GameMode.MENU && tickCount % 20 == 0) {
+            sendStateEnvelope(buildColorChaseState());
         }
     }
 
@@ -374,13 +411,16 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             playColorChangeSound();
 
             int gained = level * 10;
-            if (!p1Dead) p1Score += gained;
-            if (gameMode == GameMode.TWO_PLAYER && !p2Dead) p2Score += gained;
+            // ★ Bug修复：原版分数/level 无限增长,3 小时极限对局后 p1Score
+            //   累加到 Integer.MAX_VALUE 后溢出翻负,UI 立即显示负数。
+            //   加饱和上限(单人 999999,双人各半)+level 上限 999
+            if (!p1Dead) p1Score = Math.min(p1Score + gained, 999_999);
+            if (gameMode == GameMode.TWO_PLAYER && !p2Dead) p2Score = Math.min(p2Score + gained, 999_999);
 
             // 升级
             int combined = (gameMode == GameMode.TWO_PLAYER) ? p1Score + p2Score : p1Score;
             if (combined > 0 && combined % (gameMode == GameMode.TWO_PLAYER ? 80 : 50) == 0) {
-                level++;
+                if (level < 999) level++;
                 colorChangeInterval = Math.max(500, colorChangeInterval - 200);
             }
         }
@@ -756,37 +796,60 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
     // ══════════════════════════════════════
     //  键盘事件
     // ══════════════════════════════════════
+    /** 弹窗打开时间戳：关闭时据此平移 p1LastSafe/p2LastSafe，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移死亡宽限计时基准与变色计时基准，防止弹窗停留后一恢复就被误判死亡/立即强制变色+白送分 */
+    private void resumeFromExitConfirm() {
+        long pausedMs = System.currentTimeMillis() - pauseStartTime;
+        p1LastSafe += pausedMs;
+        p2LastSafe += pausedMs;
+        // ★ Bug修复：lastColorChangeTime 未随暂停时长平移，弹窗停留超过变色间隔后
+        //   恢复瞬间 now-lastColorChangeTime 已超限，会立即变色并白送一轮分数
+        lastColorChangeTime += pausedMs;
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        // 修复：弹窗打开时不注册按键（此前add在拦截检查之前，导致弹窗期间仍能移动）
-        if (key != GLFW.GLFW_KEY_ESCAPE && showExitConfirm) return true;
+        // ★ Bug修复：弹窗期按 R(82) 无法关闭弹窗只能按 ESC,违反常见约定
+        //   (R 在 Minecraft 大多数屏都用作"重开/取消弹窗")。弹窗期仅拦截
+        //   非 ESC/非 R 的输入,让玩家可用 R 关闭弹窗
+        if (key != GLFW.GLFW_KEY_ESCAPE && key != GLFW.GLFW_KEY_R && showExitConfirm) return true;
 
         if (key == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
             if (gameMode == GameMode.MENU || lanMode != LAN_NONE) {
                 sendLeaveGameOnce(); // 联机退出时通知对端，避免对方无限等待
                 Minecraft.getInstance().setScreen(new GameSelectorScreen());
             } else if (gameOver) {
                 gameMode = GameMode.MENU; gameRunning = false;
             } else {
+                pauseStartTime = System.currentTimeMillis();
                 showExitConfirm = true;
                 heldKeys.clear(); // 清空已按住的键，防止弹窗前按住的WASD继续移动
             }
             return true;
         }
 
-        heldKeys.add(key);
-
-        if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
-
-        if (gameOver && key == GLFW.GLFW_KEY_R) {
-            if (lanMode == LAN_CLIENT) return true; // CLIENT 不能单方面重开
-            initGame(gameMode == GameMode.TWO_PLAYER);
-            // HOST 重开后，下一帧的 sendState 会自动同步新状态给 CLIENT
-            // 但 CLIENT 的 gameOver 还是 true，需要发一个明确的重开信号
-            if (lanMode == LAN_HOST) sendInput("RESTART");
+        // R 键优先处理:弹窗期关闭弹窗,游戏期重开。R 不入 heldKeys
+        if (key == GLFW.GLFW_KEY_R) {
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
+            if (lanMode == LAN_CLIENT) return true;
+            if (gameMode != GameMode.MENU) {
+                initGame(gameMode == GameMode.TWO_PLAYER);
+                if (lanMode == LAN_HOST)
+                    sendInputEnvelope("RESTART|" + stateSessionId + "|" + (++stateSequence));
+            }
             return true;
         }
+
+        heldKeys.add(key);
+        // ★ Bug修复：gameOver 状态下不应累积按键,否则 HOST 复活瞬间
+        //   processHeldKeys 会立即消费旧按键导致角色瞬移一格
+        if (gameOver || !gameRunning) return true;
+
+        if (gameMode == GameMode.MENU) return super.keyPressed(key, scan, mods);
 
         return super.keyPressed(key, scan, mods);
     }
@@ -799,7 +862,7 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
         if (gameMode == GameMode.MENU) {
             int cx = this.width/2, cy = this.height/2;
             if (mx>=cx-155&&mx<=cx-15&&my>=cy-54&&my<=cy-28) { initGame(false); return true; }
@@ -809,7 +872,12 @@ public class ColorChaseGameScreen extends Screen implements LanMultiplayerScreen
             int ww=320, wh=190;
             int wx=(this.width-ww)/2, wy=(this.height-wh)/2;
             int btnY = wy+wh-54;
-            if (mx>=wx+20&&mx<=wx+ww-20&&my>=btnY&&my<=btnY+20) { initGame(gameMode == GameMode.TWO_PLAYER); return true; }
+            if (mx>=wx+20&&mx<=wx+ww-20&&my>=btnY&&my<=btnY+20) {
+                boolean twoPlayer = gameMode == GameMode.TWO_PLAYER;
+                initGame(twoPlayer);
+                if (lanMode == LAN_HOST) sendInputEnvelope("RESTART|" + stateSessionId + "|" + (++stateSequence));
+                return true;
+            }
             if (mx>=wx+20&&mx<=wx+ww-20&&my>=btnY+24&&my<=btnY+44) { sendLeaveGameOnce(); gameMode = GameMode.MENU; gameRunning = false; return true; }
         }
         return super.mouseClicked(mx, my, btn);

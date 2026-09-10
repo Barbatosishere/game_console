@@ -20,8 +20,7 @@ import org.slf4j.LoggerFactory;
 public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger(GomokuScreen.class);
     boolean showExitConfirm = false;
-    private static final int BOARD_SIZE = 15;
-    /** 四方向偏移（横、竖、两对角线），避免每次评估重复创建 */
+        /** 四方向偏移（横、竖、两对角线），避免每次评估重复创建 */
     private static final int[][] DIRS = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
     private State state = State.MENU;
     private int[][] board = new int[15][15];
@@ -34,19 +33,38 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private final List<Particle> particles = new ArrayList<>();
     private int lastMoveX = -1;
     private int lastMoveY = -1;
-    private boolean hellMode = false;
+    private GomokuAI.Difficulty difficulty = GomokuAI.Difficulty.NORMAL;
+    private int boardSize = 15;
+    private GomokuAI ai;
+    private final boolean localTwoPlayer;
     private int lanMode = 0;
     private UUID remotePeer = null;
     private boolean isMyTurn = true;
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
+    /** AI 后台思考结果（null=无解），由主线程 tick 消费 */
+    private volatile int[] aiPending = null;
+    /** AI 后台思考是否已完成 */
+    private volatile boolean aiDone = false;
+    /** 是否已有 AI 线程在思考（仅主线程访问） */
+    private boolean aiComputing = false;
+    /** 对局代次，重开/退出后丢弃残留的 AI 结果 */
+    private int aiGeneration = 0;
+    private volatile Thread aiWorker;
 
     public GomokuScreen() {
         super(Component.literal("五子棋"));
+        this.localTwoPlayer = false;
+    }
+
+    public GomokuScreen(boolean aiMode) {
+        super(Component.literal("五子棋"));
+        this.localTwoPlayer = !aiMode;
     }
 
     public GomokuScreen(boolean isHost, UUID remote) {
         super(Component.literal("五子棋-联机"));
+        this.localTwoPlayer = false;
         this.lanMode = isHost ? 1 : 2;
         this.remotePeer = remote;
         this.isMyTurn = isHost;
@@ -84,18 +102,65 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void onClose() {
         this.sendLeaveGameOnce();
+        stopAiWorker();
         super.onClose();
     }
 
+    @Override
+    public void removed() {
+        sendLeaveGameOnce();
+        stopAiWorker();
+        super.removed();
+    }
+
+    private void stopAiWorker() {
+        Thread worker = aiWorker;
+        synchronized (this) {
+            aiGeneration++;
+            aiComputing = false;
+            aiDone = false;
+            aiPending = null;
+            aiWorker = null;
+        }
+        if (worker != null && worker != Thread.currentThread()) {
+            worker.interrupt();
+            try { worker.join(1000L); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+    }
+
     public void onRemoteMove(String data) {
-        if ("RESTART".equals(data)) {
+        if (this.lanMode == 0 || data == null) return;
+        if (data.startsWith("RESTART")) {
+            // 只有 HOST 可以发起重开，客户端不接受对端客户端的重开请求。
+            if (this.lanMode != 2) return;
+            // ★ 修复 LAN 棋盘尺寸不同步死锁：HOST 报文携带棋盘尺寸 "RESTART:<boardSize>"，
+            //   接收端先同步 boardSize 再重开，否则两端各画各的棋盘、走法互相越界。
+            //   兼容无后缀旧报文 "RESTART"：按默认 15 处理；解析 try-catch 防坏包
+            try {
+                if (data.contains(":")) {
+                    int size = Integer.parseInt(data.substring(data.indexOf(':') + 1).trim());
+                    this.boardSize = Math.max(9, Math.min(19, size)); // 钳制到合法范围 9-19
+                } else {
+                    this.boardSize = 15;
+                }
+            } catch (NumberFormatException e) {
+                LOGGER.warn("[五子棋] RESTART 报文棋盘尺寸非法: {}", data);
+                this.boardSize = 15;
+            }
             this.startGame();
         } else {
+            if (this.state != State.PLAYING || this.winner != 0 || this.isMyTurn) return;
             try {
                 String[] p = data.split(",");
+                if (p.length < 2) return; // 报文不足两个字段,丢弃
                 int x = Integer.parseInt(p[0]);
                 int y = Integer.parseInt(p[1]);
-                if (this.board == null || this.board[x][y] != 0) {
+                // ★ Bug修复：远程报文越界防御——x/y 可能为负、>= boardSize、
+                //   或 boardSize 切换后旧报文指向不存在的下标。原始 AIOOBE 被
+                //   外层 try 静默吞,玩家看到"对手不动"。这里加双重范围校验。
+                if (this.board == null || x < 0 || x >= this.boardSize
+                        || y < 0 || y >= this.boardSize || this.board[x][y] != 0) {
                     return;
                 }
 
@@ -121,8 +186,37 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
     }
 
+    private int cycleBoardSize() {
+        // ★ 用户需求：9~19 全档可选。原版只有 9/13/15/19 四档,缺 11/17。
+        // 循环顺序：9 → 11 → 13 → 15 → 17 → 19 → 9 ...
+        if (this.boardSize == 9)  return 11;
+        if (this.boardSize == 11) return 13;
+        if (this.boardSize == 13) return 15;
+        if (this.boardSize == 15) return 17;
+        if (this.boardSize == 17) return 19;
+        return 9;
+    }
+
+    private int[] getStarPoints() {
+        // 各档星位（按 1-based 算的奇数坐标；与原版 9/13/19 一致，新增 11/17 用近似中心点）
+        if (this.boardSize == 9)  return new int[]{2, 6};
+        if (this.boardSize == 11) return new int[]{2, 5, 8};
+        if (this.boardSize == 13) return new int[]{3, 7, 11};
+        if (this.boardSize == 15) return new int[]{3, 7, 11};
+        if (this.boardSize == 17) return new int[]{3, 8, 13};
+        if (this.boardSize == 19) return new int[]{3, 9, 15};
+        return new int[]{3, 7, 11};
+    }
+
     private void startGame() {
-        this.board = new int[15][15];
+        stopAiWorker();
+        synchronized (this) {
+            this.aiGeneration++;
+            this.aiPending = null;
+            this.aiDone = false;
+            this.aiComputing = false;
+        }
+        this.board = new int[this.boardSize][this.boardSize];
         this.playerTurn = true;
         this.winner = 0;
         this.state = State.PLAYING;
@@ -130,172 +224,86 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         this.lastMoveX = -1;
         this.lastMoveY = -1;
         this.isMyTurn = this.lanMode != 2;
+        this.ai = this.lanMode == 0 && !this.localTwoPlayer ? new GomokuAI(this.difficulty) : null;
     }
 
     public void tick() {
         this.tickCount++;
-        if (this.lanMode == 0) {
+        if (this.lanMode == 0 && !this.localTwoPlayer && !showExitConfirm) {
             if (this.state == State.PLAYING && !this.playerTurn && this.winner == 0) {
-                this.aiMove();
-                if (this.checkWin(2)) {
-                    this.winner = 2;
-                    this.state = State.GAME_OVER;
-                } else if (this.isBoardFull()) {
-                    this.winner = 0;
-                    this.state = State.GAME_OVER;
-                } else {
-                    this.playerTurn = true;
-                }
+                this.tickAiTurn();
             }
         }
     }
 
-    private void aiMove() {
-        int[] best = this.hellMode ? this.findBestMoveHellMode() : this.findBestMoveNormal();
-        if (best != null) {
+    private void tickAiTurn() {
+        if (!this.aiComputing) {
+            // 启动后台线程计算落子，避免阻塞渲染线程
+            this.aiComputing = true;
+            this.aiDone = false;
+            if (this.ai == null) {
+                this.ai = new GomokuAI(this.difficulty);
+            }
+            final GomokuAI ai = this.ai;
+            final int[][] snapshot = new int[this.board.length][];
+            for (int i = 0; i < this.board.length; i++) {
+                snapshot[i] = this.board[i].clone();
+            }
+            final int gen;
+            synchronized (this) {
+                gen = this.aiGeneration;
+            }
+            Thread t = new Thread(() -> {
+                int[] move = null;
+                try {
+                    move = ai.getMove(snapshot);
+                } catch (Throwable t1) {
+                    LOGGER.warn("[五子棋] AI 计算失败", t1);
+                } finally {
+                    synchronized (this) {
+                        if (gen == this.aiGeneration) {
+                            this.aiPending = move;
+                            this.aiDone = true;
+                        }
+                        if (Thread.currentThread() == this.aiWorker) this.aiWorker = null;
+                    }
+                }
+            }, "GomokuAI");
+            this.aiWorker = t;
+            t.setDaemon(true);
+            t.start();
+            return;
+        }
+
+        if (this.aiDone) {
+            // 后台计算完成，在主线程落地走法
+            this.aiDone = false;
+            this.aiComputing = false;
+            int[] best = this.aiPending;
+            this.aiPending = null;
+            boolean validMove = best != null && best.length >= 2
+                    && best[0] >= 0 && best[0] < this.boardSize
+                    && best[1] >= 0 && best[1] < this.boardSize
+                    && this.board[best[0]][best[1]] == 0;
+            if (!validMove) return;
             this.board[best[0]][best[1]] = 2;
             this.lastMoveX = best[0];
             this.lastMoveY = best[1];
-        }
-    }
-
-    private int[] findBestMoveNormal() {
-        int[] bestMove = null;
-        int bestScore = Integer.MIN_VALUE;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    int scoreAI = this.evaluatePosition(i, j, 2);
-                    int scorePlayer = this.evaluatePosition(i, j, 1);
-                    int total = scoreAI * 2 + scorePlayer;
-                    if (total > bestScore) {
-                        bestScore = total;
-                        bestMove = new int[]{i, j};
-                    }
-                }
-            }
-        }
-
-        if (bestMove == null) {
-            bestMove = new int[]{7, 7};
-        }
-
-        return bestMove;
-    }
-
-    private int[] findBestMoveHellMode() {
-        int bestScore = Integer.MIN_VALUE;
-        int[] bestMove = null;
-        int depth = 4;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    this.board[i][j] = 2;
-                    int score = this.minimax(depth - 1, false, Integer.MIN_VALUE, Integer.MAX_VALUE, i, j, 2);
-                    this.board[i][j] = 0;
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestMove = new int[]{i, j};
-                    }
-                }
-            }
-        }
-
-        return bestMove != null ? bestMove : new int[]{7, 7};
-    }
-
-    private int minimax(int depth, boolean isMaximizing, int alpha, int beta, int lastX, int lastY, int lastPlayer) {
-        // 仅检查上一步落子是否获胜，避免每个节点全盘扫描
-        if (this.checkWinAt(lastX, lastY, lastPlayer)) {
-            return lastPlayer == 2 ? 100000 + depth : -100000 - depth;
-        }
-        if (depth == 0) {
-            return this.evaluateBoard();
-        }
-        List<int[]> candidates = this.generateCandidateMoves();
-        if (candidates.isEmpty()) return this.evaluateBoard();
-        int bestScore = isMaximizing ? Integer.MIN_VALUE : Integer.MAX_VALUE;
-
-        for (int[] move : candidates) {
-            int i = move[0];
-            int j = move[1];
-            int player = isMaximizing ? 2 : 1;
-            this.board[i][j] = player;
-            int score = this.minimax(depth - 1, !isMaximizing, alpha, beta, i, j, player);
-            this.board[i][j] = 0;
-            if (isMaximizing) {
-                bestScore = Math.max(bestScore, score);
-                alpha = Math.max(alpha, score);
+            if (this.checkWin(2)) {
+                this.winner = 2;
+                this.state = State.GAME_OVER;
+            } else if (this.isBoardFull()) {
+                this.winner = 0;
+                this.state = State.GAME_OVER;
             } else {
-                bestScore = Math.min(bestScore, score);
-                beta = Math.min(beta, score);
-            }
-
-            if (beta <= alpha) {
-                break;
+                this.playerTurn = true;
             }
         }
-
-        return bestScore;
-    }
-
-    private List<int[]> generateCandidateMoves() {
-        List<int[]> allMoves = new ArrayList<>();
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 0 && this.hasNeighbor(i, j)) {
-                    allMoves.add(new int[]{i, j});
-                }
-            }
-        }
-
-        allMoves.sort((a, b) -> {
-            int scoreA = evaluatePositionPattern(a[0], a[1], 2);
-            int scoreB = evaluatePositionPattern(b[0], b[1], 2);
-            return Integer.compare(scoreB, scoreA);
-        });
-        return allMoves.subList(0, Math.min(10, allMoves.size()));
-    }
-
-    private int evaluateBoard() {
-        int score = 0;
-
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                if (this.board[i][j] == 2) {
-                    score += this.evaluatePositionHell(i, j, 2);
-                } else if (this.board[i][j] == 1) {
-                    score -= this.evaluatePositionHell(i, j, 1);
-                }
-            }
-        }
-
-        return score;
-    }
-
-    private boolean checkGameOver() {
-        return this.checkWinner() != 0 || this.isBoardFull();
-    }
-
-    private int checkWinner() {
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
-                int cell = this.board[i][j];
-                if (cell != 0 && this.checkWinAt(i, j, cell)) {
-                    return cell;
-                }
-            }
-        }
-
-        return 0;
     }
 
     private boolean isBoardFull() {
-        for (int i = 0; i < 15; i++) {
-            for (int j = 0; j < 15; j++) {
+        for (int i = 0; i < this.boardSize; i++) {
+            for (int j = 0; j < this.boardSize; j++) {
                 if (this.board[i][j] == 0) {
                     return false;
                 }
@@ -305,245 +313,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         return true;
     }
 
-    private int evaluatePosition(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int blocks = 0;
-            int emptyEnds = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            score += this.getPatternScore(count, blocks, emptyEnds);
-        }
-
-        return score;
-    }
-
-    private int evaluatePositionPattern(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int block = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    block++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] != 0) {
-                        block++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    block++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] != 0) {
-                        block++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            score += this.getPatternScore2(count, block);
-        }
-
-        return score;
-    }
-
-    private int evaluatePositionHell(int x, int y, int player) {
-        int score = 0;
-
-        for (int[] d : DIRS) {
-            int count = 1;
-            int blocks = 0;
-            int emptyEnds = 0;
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x + d[0] * i;
-                int ny = y + d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            for (int i = 1; i < 5; i++) {
-                int nx = x - d[0] * i;
-                int ny = y - d[1] * i;
-                if (!this.inBoard(nx, ny)) {
-                    blocks++;
-                    break;
-                }
-
-                if (this.board[nx][ny] != player) {
-                    if (this.board[nx][ny] == 0) {
-                        emptyEnds++;
-                    } else {
-                        blocks++;
-                    }
-                    break;
-                }
-
-                count++;
-            }
-
-            if (count >= 5) {
-                score += 100000;
-            } else if (count == 4 && blocks == 0) {
-                score += 10000;
-            } else if (count == 4 && blocks == 1) {
-                score += 1000;
-            } else if (count == 3 && blocks == 0 && emptyEnds == 2) {
-                score += 500;
-            } else if (count == 3 && blocks == 0 && emptyEnds == 1) {
-                score += 200;
-            } else if (count == 2 && blocks == 0 && emptyEnds == 2) {
-                score += 50;
-            }
-        }
-
-        return score;
-    }
-
-    private int getPatternScore(int count, int blocks, int emptyEnds) {
-        if (count >= 5) {
-            return 100000;
-        }
-
-        if (count == 4) {
-            if (blocks == 0) {
-                return 10000;
-            }
-
-            if (blocks == 1) {
-                return 1000;
-            }
-        }
-
-        if (count == 3) {
-            if (blocks == 0 && emptyEnds == 2) {
-                return 500;
-            }
-
-            if (blocks == 1 && emptyEnds == 1) {
-                return 100;
-            }
-        }
-
-        if (count == 2) {
-            if (blocks == 0 && emptyEnds == 2) {
-                return 50;
-            }
-
-            if (blocks == 1 && emptyEnds == 1) {
-                return 10;
-            }
-        }
-
-        return count == 1 && blocks < 2 ? 5 : 0;
-    }
-
-    private int getPatternScore2(int count, int blocks) {
-        if (count >= 5) {
-            return 100000;
-        } else if (count == 4) {
-            return blocks == 0 ? 10000 : 3000;
-        } else if (count == 3) {
-            return blocks == 0 ? 1000 : 300;
-        } else if (count == 2) {
-            return blocks == 0 ? 200 : 50;
-        } else {
-            return count == 1 ? 10 : 0;
-        }
-    }
-
     private boolean inBoard(int x, int y) {
-        return x >= 0 && x < 15 && y >= 0 && y < 15;
-    }
-
-    private boolean hasNeighbor(int x, int y) {
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dy = -2; dy <= 2; dy++) {
-                if (dx != 0 || dy != 0) {
-                    int nx = x + dx;
-                    int ny = y + dy;
-                    if (this.inBoard(nx, ny) && this.board[nx][ny] != 0) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        return false;
+        return x >= 0 && x < this.boardSize && y >= 0 && y < this.boardSize;
     }
 
     private boolean checkWin(int player) {
@@ -585,6 +356,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public boolean keyPressed(int key, int scan, int mods) {
+        if (showExitConfirm && key != 256) return true;
         if (key != 256) {
             if (key == 82) {
                 if (this.lanMode == 2) {
@@ -593,17 +365,22 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
                 this.startGame();
                 if (this.lanMode == 1) {
-                    this.sendMove("RESTART");
+                    this.sendMoveEnvelope("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                 }
 
                 return true;
+            } else if (key == 83) {
+                if (this.state == State.MENU) {
+                    this.boardSize = this.cycleBoardSize();
+                }
+                return true;
             } else if (key == 72) {
                 if (this.state == State.MENU) {
-                    this.hellMode = !this.hellMode;
+                    this.difficulty = this.difficulty.next();
                 }
                 return true;
             } else {
-                return true;
+                return super.keyPressed(key, scan, mods);
             }
         } else {
             if (showExitConfirm) { showExitConfirm = false; return true; }
@@ -619,6 +396,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; this.sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = this.width / 2;
         int cy = this.height / 2;
@@ -629,7 +407,12 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
 
             if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 73 && my <= cy + 95) {
-                this.hellMode = !this.hellMode;
+                this.boardSize = this.cycleBoardSize();
+                return true;
+            }
+
+            if (mx >= cx - 60 && mx <= cx + 60 && my >= cy + 95 && my <= cy + 117) {
+                this.difficulty = this.difficulty.next();
                 return true;
             }
         }
@@ -640,7 +423,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 if (this.lanMode != 2) {
                     this.startGame();
                     if (this.lanMode == 1) {
-                        this.sendMove("RESTART");
+                        this.sendMoveEnvelope("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                     }
                 }
                 return true;
@@ -659,15 +442,15 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         if (this.state == State.PLAYING && this.winner == 0) {
-            boolean canMove = this.lanMode == 0 ? this.playerTurn : this.isMyTurn;
+            boolean canMove = this.lanMode == 0 ? (this.localTwoPlayer || this.playerTurn) : this.isMyTurn;
             if (!canMove) {
                 return true;
             }
 
-            int hx = ((int)mx - this.boardStartX) / this.cellSize;
-            int hy = ((int)my - this.boardStartY) / this.cellSize;
-            if (hx >= 0 && hx < 15 && hy >= 0 && hy < 15 && this.board[hx][hy] == 0) {
-                int myPiece = this.lanMode == 2 ? 2 : 1;
+            int hx = Math.floorDiv((int)mx - this.boardStartX, this.cellSize);
+            int hy = Math.floorDiv((int)my - this.boardStartY, this.cellSize);
+            if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
+                int myPiece = this.lanMode == 0 ? (this.playerTurn ? 1 : 2) : (this.lanMode == 2 ? 2 : 1);
                 this.board[hx][hy] = myPiece;
                 this.lastMoveX = hx;
                 this.lastMoveY = hy;
@@ -687,20 +470,20 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                     this.state = State.GAME_OVER;
                     if (this.lanMode != 0) {
                         this.isMyTurn = false;
-                        this.sendMove(hx + "," + hy);
+                        this.sendMoveEnvelope(hx + "," + hy);
                     }
                 } else if (this.isBoardFull()) {
                     this.winner = 0;
                     this.state = State.GAME_OVER;
                     if (this.lanMode != 0) {
                         this.isMyTurn = false;
-                        this.sendMove(hx + "," + hy);
+                        this.sendMoveEnvelope(hx + "," + hy);
                     }
                 } else if (this.lanMode == 0) {
-                    this.playerTurn = false;
+                    this.playerTurn = !this.playerTurn;
                 } else {
                     this.isMyTurn = false;
-                    this.sendMove(hx + "," + hy);
+                    this.sendMoveEnvelope(hx + "," + hy);
                 }
 
                 return true;
@@ -711,9 +494,9 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public void render(GuiGraphics g, int mx, int my, float pt) {
-        this.cellSize = GameRenderHelper.calcCellSize(this.width, this.height, 17, 17, 40);
-        this.boardStartX = (this.width - 15 * this.cellSize) / 2;
-        this.boardStartY = (this.height - 15 * this.cellSize) / 2;
+        this.cellSize = GameRenderHelper.calcCellSize(this.width, this.height, this.boardSize + 2, this.boardSize + 2, 40);
+        this.boardStartX = (this.width - this.boardSize * this.cellSize) / 2;
+        this.boardStartY = (this.height - this.boardSize * this.cellSize) / 2;
         GameRenderHelper.fillDarkBackground(g, this.width, this.height);
         switch (this.state) {
             case MENU:
@@ -745,23 +528,25 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         GameRenderHelper.drawPrimaryButton(g, this.font, "开始游戏", cx - 60, cy + 45, 120, 22, mx, my);
-        String hellLabel = this.hellMode ? "地狱模式: 开 [H]" : "地狱模式: 关 [H]";
-        GameRenderHelper.drawSecondaryButton(g, this.font, hellLabel, cx - 60, cy + 73, 120, 18, mx, my);
+        String sizeLabel = "棋盘大小: " + this.boardSize + "x" + this.boardSize + " [S]";
+        GameRenderHelper.drawSecondaryButton(g, this.font, sizeLabel, cx - 60, cy + 73, 120, 18, mx, my);
+        String diffLabel = "难度: " + this.difficulty.label + " [H]";
+        GameRenderHelper.drawSecondaryButton(g, this.font, diffLabel, cx - 60, cy + 95, 120, 18, mx, my);
     }
 
     private void renderPlaying(GuiGraphics g, int mx, int my) {
-        int bw = 15 * this.cellSize;
+        int bw = this.boardSize * this.cellSize;
         g.fill(this.boardStartX - 4, this.boardStartY - 4, this.boardStartX + bw + 4, this.boardStartY + bw + 4, -12965360);
         g.fill(this.boardStartX - 2, this.boardStartY - 2, this.boardStartX + bw + 2, this.boardStartY + bw + 2, -2968436);
 
-        for (int i = 0; i < 15; i++) {
+        for (int i = 0; i < this.boardSize; i++) {
             int x = this.boardStartX + i * this.cellSize + this.cellSize / 2;
             int y = this.boardStartY + i * this.cellSize + this.cellSize / 2;
             g.fill(x, this.boardStartY + this.cellSize / 2, x + 1, this.boardStartY + bw - this.cellSize / 2, -16777216);
             g.fill(this.boardStartX + this.cellSize / 2, y, this.boardStartX + bw - this.cellSize / 2, y + 1, -16777216);
         }
 
-        int[] stars = new int[]{3, 7, 11};
+        int[] stars = this.getStarPoints();
 
         for (int sx : stars) {
             for (int sy : stars) {
@@ -773,8 +558,8 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         int stoneR = this.cellSize / 2 - 2;
 
-        for (int x = 0; x < 15; x++) {
-            for (int y = 0; y < 15; y++) {
+        for (int x = 0; x < this.boardSize; x++) {
+            for (int y = 0; y < this.boardSize; y++) {
                 if (this.board[x][y] != 0) {
                     int scx = this.boardStartX + x * this.cellSize + this.cellSize / 2;
                     int scy = this.boardStartY + y * this.cellSize + this.cellSize / 2;
@@ -791,21 +576,26 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
         }
 
-        if (this.playerTurn && this.winner == 0) {
-            int hx = (mx - this.boardStartX) / this.cellSize;
-            int hy = (my - this.boardStartY) / this.cellSize;
-            if (hx >= 0 && hx < 15 && hy >= 0 && hy < 15 && this.board[hx][hy] == 0) {
+        boolean canPreview = this.lanMode == 0 ? (this.localTwoPlayer || this.playerTurn) : this.isMyTurn;
+        if (canPreview && this.winner == 0) {
+            int hx = Math.floorDiv(mx - this.boardStartX, this.cellSize);
+            int hy = Math.floorDiv(my - this.boardStartY, this.cellSize);
+            if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int scx = this.boardStartX + hx * this.cellSize + this.cellSize / 2;
                 int scy = this.boardStartY + hy * this.cellSize + this.cellSize / 2;
-                GameRenderHelper.drawCircle(g, scx, scy, stoneR, 1712394513);
+                boolean white = this.lanMode == 2 || (this.localTwoPlayer && !this.playerTurn);
+                int previewColor = white ? 0x66EEEEEE : 0x66111111;
+                GameRenderHelper.drawCircle(g, scx, scy, stoneR, previewColor);
             }
         }
 
         GameRenderHelper.tickAndRenderParticles(g, this.particles);
         GameRenderHelper.drawTopHUD(g, this.width, this.height);
-        String modeTag = this.hellMode ? " [地狱]" : " [普通]";
+        String modeTag = this.localTwoPlayer ? " [本地双人]" : " [" + this.difficulty.label + "]";
         String turnText;
-        if (this.lanMode == 0) {
+        if (this.localTwoPlayer) {
+            turnText = this.playerTurn ? "黑棋回合" : "白棋回合";
+        } else if (this.lanMode == 0) {
             turnText = this.playerTurn ? "⚫ 你的回合 - 黑棋" : "⚪ AI思考中...";
         } else {
             boolean mine = this.isMyTurn;
@@ -816,7 +606,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
         g.drawString(this.font, turnText + modeTag, 8, 7, 16777215);
         GameRenderHelper.drawBottomBar(
-                g, this.font, this.width, this.height, "ESC 菜单  R 重开  H 切换难度  鼠标点击落子"
+                g, this.font, this.width, this.height, "ESC 菜单  R 重开  H 切换难度  S 棋盘大小  鼠标点击落子"
         );
     }
 
@@ -832,12 +622,16 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             win = false;
             mainMsg = "🤝 平局！";
             subMsg = "棋盘已满，不分胜负";
+        } else if (this.localTwoPlayer) {
+            win = true;
+            mainMsg = this.winner == 1 ? "黑棋获胜！" : "白棋获胜！";
+            subMsg = "五子连线";
         } else if (this.lanMode == 0) {
             win = this.winner == 1;
             mainMsg = win ? "🎉 你赢了！" : "AI 获胜！";
             subMsg = win
                     ? "恭喜你连成五子！"
-                    : (this.hellMode ? "地狱AI不好惹，再接再厉！" : "再接再厉！");
+                    : ("难度[" + this.difficulty.label + "]的AI获胜，再接再厉！");
         } else {
             int myPiece = this.lanMode == 1 ? 1 : 2;
             win = this.winner == myPiece;

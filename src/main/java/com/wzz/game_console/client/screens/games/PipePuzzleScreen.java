@@ -65,8 +65,8 @@ public class PipePuzzleScreen extends Screen {
 
     private void recalcLayout() {
         gridSize = difficulty.size;
-        int maxT = Math.min((width-160)/gridSize, (height-100)/gridSize);
-        tileSize = Math.max(28, Math.min(52, maxT));
+        int maxT = Math.min(Math.max(1, (width - 20) / gridSize), Math.max(1, (height - 60) / gridSize));
+        tileSize = Math.max(1, Math.min(52, maxT));
         startX = (width  - gridSize * tileSize) / 2;
         startY = (height - gridSize * tileSize) / 2 + 10;
     }
@@ -77,8 +77,10 @@ public class PipePuzzleScreen extends Screen {
         gameWon = false; moves = 0; winTick = -1;
         flowPath = new ArrayList<>(); flowProg = 0f;
         PipeType[] rots = {PipeType.STRAIGHT, PipeType.CORNER, PipeType.T_SHAPE};
-        // 生成棋盘直到存在至少一条可行通路，避免随机无解软锁
+        // 生成棋盘：保证初始状态未连通，但存在可解路径
+        int attempts = 0;
         do {
+            if (attempts++ > 200) break;
             grid = new PipeTile[gridSize][gridSize];
             for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
                 grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
@@ -88,8 +90,30 @@ public class PipePuzzleScreen extends Screen {
                 PipeTile t=grid[y][x];
                 if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
             }
-        } while (findFlowPath().isEmpty());
+            // ★ Bug修复：在 do-while 里只检查"已连通"和"可解性"还不够，
+            //   由于小尺寸（如 4x4）随机排列中两端点可能同时连上导致开局即通，
+            //   即使路径未到终点，玩家旋转一次就会接通；这里额外要求 START 周围
+            //   至少 1 个相邻管口的"无效初始方向"——即 START.RIGHT / START.DOWN
+            //   没有被同向相邻管的开口接住，避免开局第一格/末格已经与管线合流。
+        } while (!findFlowPath().isEmpty() || !isSolvable() || startAlreadyHalfConnected());
         updateFlow();
+    }
+
+    /** START 与最近邻管的初始开口错开，强制玩家至少旋转一次才能联通 */
+    private boolean startAlreadyHalfConnected() {
+        if (gridSize < 2) return false;
+        // 起点 (0,0) 开口方向固定为 RIGHT+DOWN，只要任一邻格碰巧朝向 START 对应方向
+        // 就意味着旋转次数 < 即可连通；视为"开局即通"重排一次。
+        PipeTile right = grid[0][1];
+        if (right.type.isRotatable() && right.getOpenings().contains(Direction.LEFT)) {
+            // 起点 RIGHT 直接接上 (0,1) 的 LEFT，管线可一路向右
+            return true;
+        }
+        PipeTile down = grid[1][0];
+        if (down.type.isRotatable() && down.getOpenings().contains(Direction.UP)) {
+            return true;
+        }
+        return false;
     }
 
     private void rotatePipe(int x, int y) {
@@ -135,6 +159,49 @@ public class PipePuzzleScreen extends Screen {
         path.remove(path.size()-1); return false;
     }
 
+    /** 检查是否存在某种旋转方案使起点到终点有通路（忽略当前旋转，只看管道类型是否支持） */
+    private boolean isSolvable() {
+        boolean[][] visited = new boolean[gridSize][gridSize];
+        return solvableDFS(0, 0, null, visited);
+    }
+
+    private boolean solvableDFS(int x, int y, Direction from, boolean[][] visited) {
+        if (x == gridSize - 1 && y == gridSize - 1) return true;
+        if (x < 0 || x >= gridSize || y < 0 || y >= gridSize || visited[y][x]) return false;
+        visited[y][x] = true;
+        PipeTile tile = grid[y][x];
+        for (Direction d : Direction.values()) {
+            int nx = x + d.dx, ny = y + d.dy;
+            if (nx >= 0 && nx < gridSize && ny >= 0 && ny < gridSize && !visited[ny][nx]) {
+                Direction opposite = d.getOpposite();
+                // 当前管道需在同一旋转下同时接纳"来向"与"去向"
+                if (canHandle(tile, from, d) && canOpenInDirection(grid[ny][nx], opposite)) {
+                    if (solvableDFS(nx, ny, opposite, visited)) return true;
+                }
+            }
+        }
+        visited[y][x] = false;
+        return false;
+    }
+
+    /** 管道是否存在一个旋转同时支持"来向"与"去向"（from 为 null 表示起点，无来向约束） */
+    private boolean canHandle(PipeTile tile, Direction from, Direction out) {
+        for (int rot = 0; rot < tile.type.rotations.length; rot++) {
+            List<Direction> openings = tile.type.getOpenings(rot);
+            boolean hasFrom = from == null || openings.contains(from);
+            if (hasFrom && openings.contains(out)) return true;
+        }
+        return false;
+    }
+
+    /** 管道类型是否允许在某个方向上开口（尝试所有旋转） */
+    private boolean canOpenInDirection(PipeTile tile, Direction d) {
+        for (int rot = 0; rot < tile.type.rotations.length; rot++) {
+            if (tile.type.getOpenings(rot).contains(d)) return true;
+        }
+        return false;
+    }
+
     @Override public void tick() {
         tickCount++;
         if (showExitConfirm) return; // 弹窗期间暂停流量动画
@@ -142,6 +209,7 @@ public class PipePuzzleScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state == State.MENU) {
             int cx=width/2, cy=height/2;
@@ -158,7 +226,7 @@ public class PipePuzzleScreen extends Screen {
             int cx=width/2, cardY=height/2-55;
             if (mx>=cx-60&&mx<=cx+60&&my>=cardY+70&&my<=cardY+92) { initPuzzle(); return true; }
         }
-        if (mx>=startX && mx<=startX+gridSize*tileSize && my>=startY && my<=startY+gridSize*tileSize) {
+        if (mx>=startX && mx<startX+gridSize*tileSize && my>=startY && my<startY+gridSize*tileSize) {
             int gx=(int)((mx-startX)/tileSize), gy=(int)((my-startY)/tileSize);
             if (gx>=0&&gx<gridSize&&gy>=0&&gy<gridSize) { rotatePipe(gx,gy); return true; }
         }
@@ -167,7 +235,7 @@ public class PipePuzzleScreen extends Screen {
 
     @Override public void mouseMoved(double mx, double my) {
         hovX=-1; hovY=-1;
-        if (mx>=startX&&mx<=startX+gridSize*tileSize&&my>=startY&&my<=startY+gridSize*tileSize) {
+        if (mx>=startX&&mx<startX+gridSize*tileSize&&my>=startY&&my<startY+gridSize*tileSize) {
             hovX=(int)((mx-startX)/tileSize); hovY=(int)((my-startY)/tileSize);
         }
     }

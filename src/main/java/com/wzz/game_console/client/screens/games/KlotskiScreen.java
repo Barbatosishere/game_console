@@ -39,7 +39,9 @@ public class KlotskiScreen extends Screen {
     private static final int C_SEL_BDR = 0xFF00CCFF; // 选中边框
 
     // ── 状态 ──────────────────────────────────────────
-    private Piece[][] board = new Piece[BH][BW];
+    // ★ Bug修复：不能带初始化器，否则 init() 的 board==null 首次判断恒 false，首次打开棋盘为空。
+    //   board 只在 loadLevel 中分配，init()（setScreen 首次打开必经）据此加载第一关
+    private Piece[][] board;
     private List<Piece> pieces = new ArrayList<>();
     private Piece selected = null;
     private int tileSize, bx, by;
@@ -90,7 +92,11 @@ public class KlotskiScreen extends Screen {
         tileSize = Math.max(36, Math.min(64, max));
         bx = (width  - BW * tileSize) / 2;
         by = (height - BH * tileSize) / 2;
-        if (!won && pieces.isEmpty()) loadLevel(currentLevel);
+        // ★ Bug修复：原版 !won && pieces.isEmpty() 条件过宽,玩家赢了之后
+        //   pieces 被清空 + won=true,缩放窗口后 !won=false 不进,但代码意图是
+        //   防止"已进行中重置";若逻辑分支(赢后 pieces 残留)不同则可能重置进度。
+        //   改用 board == null 作为首次进入判断,board 是 loadLevel 唯一来源
+        if (board == null) loadLevel(currentLevel);
     }
 
     // ══════════════════════════════════════════════════
@@ -188,6 +194,9 @@ public class KlotskiScreen extends Screen {
             }
             return true;
         }
+        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
+        //   会误命中第0行/列，先按负坐标/超出棋盘统一处理
+        if (mx < bx || my < by) { selected = null; return true; }
         int gx = (int)((mx - bx) / tileSize), gy = (int)((my - by) / tileSize);
         if (gx < 0 || gx >= BW || gy < 0 || gy >= BH) { selected = null; return true; }
         Piece clicked = board[gy][gx];

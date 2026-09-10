@@ -13,6 +13,7 @@ license = "${mod_license}"
 # A URL to refer people to when problems occur with this mod
 #issueTrackerURL="https://change.me.to.your.issue.tracker.example.invalid/" #optional
 # A list of mods - how many allowed here is determined by the individual mod loader
+# 注意:一个 [[mods]] 块 = 一个 mod 定义,同 modId 重复声明会被 FML 判 duplicate 而拒载
 [[mods]] #mandatory
 # The modid of the mod
 modId = "${mod_id}" #mandatory
@@ -30,6 +31,12 @@ displayName = "${mod_name}" #mandatory
 #credits="" #optional
 # A text field displayed in the mod UI
 authors = "${mod_authors}" #optional
+
+# 注意：本 mod 必须双端加载，不要声明 side/dist 限制。
+# 1) [[mods]] 块中的 side 键在 FML 中不是合法键，会被静默忽略（正确机制是 @Mod(dist=...)）；
+# 2) 更关键的是联机转发 MultiplayerGamePacket.handleServer 必须在专用服务器上注册生效，
+#    若按 CLIENT 排除，LAN 联机转发将完全失效。客户端专属类（Screen 等）均位于
+#    client.* 包并由 @OnlyIn(Dist.CLIENT) + 反射加载隔离，专用服务器上安全。
 
 # The description text for the mod (multi line!) (#mandatory)
 description = '''${mod_description}'''

@@ -1,0 +1,527 @@
+package com.wzz.game_console.client.screens.games.gogame;
+
+import com.sun.jna.Memory;
+import com.sun.jna.Native;
+import com.sun.jna.NativeLibrary;
+import com.sun.jna.Pointer;
+import com.sun.jna.ptr.IntByReference;
+
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * OpenCL GPU 加速后端。CPU 负责构建输入，GPU 负责矩阵运算。
+ */
+public class OpenCLBackend implements AutoCloseable {
+    private static final int CL_MEM_READ_WRITE = 1;
+    private static final int CL_DEVICE_EXTENSIONS = 0x1030;
+    private static final int CL_DEVICE_DOUBLE_FP_CONFIG = 0x1032;
+    private volatile boolean available = false;
+    private volatile boolean closed;
+    /** Serializes native use with close; close waits until the active batch has left. */
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private String deviceName = "CPU";
+    private NativeLibrary cl;
+    private Pointer context, queue, device, program;
+    private final java.util.Map<String, Pointer> kernels = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public OpenCLBackend() {
+        // ★ catch Throwable：JNA 缺失/UnsatisfiedLinkError 是 Error 不是 Exception，
+        //   原版 catch (Exception) 拦不住，GPU 探测失败会直接炸掉调用方
+        try { init(); available = true; }
+        catch (Throwable t) { System.err.println("[OpenCL] 初始化失败: " + t); close(); }
+    }
+    public boolean isAvailable() { return available; }
+    public String getDeviceName() { return deviceName; }
+
+    private void init() throws Exception {
+        cl = NativeLibrary.getInstance("OpenCL");
+        IntByReference n = new IntByReference();
+        checkCl("clGetPlatformIDs(count)", calli("clGetPlatformIDs", 0, null, n));
+        if (n.getValue() == 0) throw new Exception("无 OpenCL 平台");
+        Pointer[] platforms = new Pointer[n.getValue()];
+        checkCl("clGetPlatformIDs(list)", calli("clGetPlatformIDs", n.getValue(), platforms, null));
+        for (Pointer p : platforms) {
+            if (p == null) continue;
+            device = findDevice(p, 4L);
+            if (device != null) break;
+        }
+        if (device == null) throw new Exception("无 GPU");
+        deviceName = getDeviceName(device);
+        Pointer[] devs = {device};
+        IntByReference ec = new IntByReference();
+        context = create("clCreateContext", ec, null, 1, devs, null, null, ec);
+        try { queue = create("clCreateCommandQueueWithProperties", ec, context, device, null, ec); }
+        catch (Throwable e) { queue = create("clCreateCommandQueue", ec, context, device, 0L, ec); }
+
+        String source = fp64Pragma(device) + KERNEL_SOURCE;
+        byte[] src = source.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        try (Memory mem = new Memory(src.length + 1)) {
+            mem.write(0, src, 0, src.length); mem.setByte(src.length, (byte)0);
+            Pointer[] strings = {mem};
+            long[] lens = {src.length};
+            program = create("clCreateProgramWithSource", ec, context, 1, strings, lens, ec);
+        }
+        int be = calli("clBuildProgram", program, 0, null, null, null, null);
+        if (be != 0) { String log = getBuildLog(program); throw new Exception("编译失败: " + log); }
+
+        for (String name : "sub_fwd,block_fwd,top_fwd,policy_fwd,value_fwd".split(",")) {
+            Pointer k = create("clCreateKernel(" + name + ")", "clCreateKernel", ec, program, name, ec);
+            kernels.put(name, k);
+        }
+        // 关键内核缺失（如老驱动编译失败被吞）时必须回退 CPU，
+        // 否则 batchPass0Forward 会拿到 null 结果被当作"成功"
+        if (kernels.size() < 5) throw new Exception("计算内核不足: 仅加载 " + kernels.keySet());
+        System.out.println("[OpenCL] " + deviceName + " 内核: " + kernels.size());
+    }
+
+    // ── 完整 GPU Pass 0 前向：子块→字块→顶级，一次批量完成 ──
+    /**
+     * 在整个 batch 上 GPU 执行 子块/字块/顶级 三层前向（ReLU 中间结果），
+     * 并填充成 NeuralEvaluator.trainMiniBatch GPU 路径所需的全部中间量。
+     * 若 GPU 不可用或失败返回 false，调用方回退 CPU 路径。
+     *
+     * @param bSubIn [B][9][9][36] 子块输入
+     * @param bSubZ  [B][9][9][16] 子块 ReLU 输出（供反向的 ReLU 掩码使用）
+     * @param bBlkIn [B][9][144]   字块输入
+     * @param bBlkZ  [B][9][64]    字块 ReLU 输出
+     * @param bTopIn [B][600]      顶级输入
+     * @param bShared [B][256]     顶级 ReLU 输出
+     * @param bShZ   [B][256]      顶级 ReLU 输出（bShared 的副本，供反向掩码）
+     */
+    public boolean batchPass0Forward(double[][][][] planes, double[][] aux, int B,
+                                      double[][][] subW, double[][] subB,
+                                      double[][][] blkW, double[][] blkB,
+                                      double[][] topW, double[] topB,
+                                      double[][] polW, double[] polB,
+                                      double[][] valW1, double[] valB1, double[] valW2, double valB2,
+                                      double[][][][] bSubIn, double[][][][] bSubZ,
+                                      double[][][] bBlkIn, double[][][] bBlkZ,
+                                      double[][] bTopIn, double[][] bShared, double[][] bShZ,
+                                      double[][] bPolicyOut, double[] bValueOut) {
+        if (!lifecycleLock.tryLock()) return false;
+        boolean failed = false;
+        try {
+            if (closed || !available || Thread.currentThread().isInterrupted()) return false;
+            // ── 关键：子块权重需从 [9][36][16] 复制为 GPU 内核期望的 [81][36][16]
+            //    （每大块内 9 个子块共享该块的权重，内核按子块全局索引 s=0..80 取权）
+            double[][][] subWGpu = new double[81][36][16];
+            double[][] subBGpu = new double[81][16];
+            for (int si = 0; si < 81; si++) {
+                int b = si / 9;
+                subWGpu[si] = subW[b];
+                subBGpu[si] = subB[b];
+            }
+            // ── 子块前向 ──
+            double[][][] subIn = extractSubInputs(planes, B);
+            double[][][] subOut = gpuSubFwd(subIn, subWGpu, subBGpu, B);
+            double[][][] blkIn = buildBlkIn(subOut, B);
+            double[][][] blkOut = gpuBlockFwd(blkIn, blkW, blkB, B);
+            double[][] topIn = buildTopIn(blkOut, aux, B);
+            double[][] sharedOut = gpuTopFwd(topIn, topW, topB, B);
+            double[][] policyOut = gpuPolicyFwd(sharedOut, polW, polB, B);
+            double[] valueOut = gpuValueFwd(sharedOut, valW1, valB1, valW2, valB2, B);
+            if (policyOut == null || valueOut == null) throw new Exception("GPU 内核未返回完整结果");
+
+            for (int n = 0; n < B; n++) {
+                for (int b = 0; b < 9; b++) {
+                    for (int s = 0; s < 9; s++) {
+                        System.arraycopy(subIn[b * 9 + s][n], 0, bSubIn[n][b][s], 0, 36);
+                        System.arraycopy(subOut[b * 9 + s][n], 0, bSubZ[n][b][s], 0, 16);
+                    }
+                    System.arraycopy(blkIn[b][n], 0, bBlkIn[n][b], 0, 144);
+                    System.arraycopy(blkOut[b][n], 0, bBlkZ[n][b], 0, 64);
+                }
+                System.arraycopy(topIn[n], 0, bTopIn[n], 0, 600);
+                System.arraycopy(sharedOut[n], 0, bShared[n], 0, 256);
+                System.arraycopy(sharedOut[n], 0, bShZ[n], 0, 256);
+                System.arraycopy(policyOut[n], 0, bPolicyOut[n], 0, 362);
+            }
+            System.arraycopy(valueOut, 0, bValueOut, 0, B);
+            return true;
+        } catch (Throwable t) {
+            failed = true;
+            available = false;
+            System.err.println("[OpenCL] batchPass0Forward，已禁用 GPU: " + t);
+            return false;
+        } finally {
+            lifecycleLock.unlock();
+            if (failed) close();
+        }
+    }
+
+    // ── GPU 前向方法 ──
+    private double[][][] gpuSubFwd(double[][][] in, double[][][] w, double[][] b, int B) throws Exception {
+        return run3D("sub_fwd", in, w, b, 81, 36, 16, B);
+    }
+    private double[][][] gpuBlockFwd(double[][][] in, double[][][] w, double[][] b, int B) throws Exception {
+        return run3D("block_fwd", in, w, b, 9, 144, 64, B);
+    }
+    private double[][] gpuTopFwd(double[][] in, double[][] w, double[] b, int B) throws Exception {
+        return run2D("top_fwd", in, w, b, 600, 256, B);
+    }
+    private double[][] gpuPolicyFwd(double[][] in, double[][] w, double[] b, int B) throws Exception {
+        // policy_fwd 内核只使用 get_global_id(0)（每行算全部 362 个输出），
+        // 必须 1D launch，避免 2D launch 的 y 维度产生 368 个冗余重复计算
+        Pointer k = kernels.get("policy_fwd"); if (k == null) return null;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
+        try {
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)B * 362 * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch1D(k, B);
+            double[][] out = new double[B][362]; readBack2D(dOut, out, B, 362);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
+        }
+    }
+    private double[] gpuValueFwd(double[][] in, double[][] w1, double[] b1, double[] w2, double b2, int B) throws Exception {
+        Pointer k = kernels.get("value_fwd"); if (k == null) return null;
+        Pointer dInG = null, dW1G = null, dB1G = null, dW2G = null, dOut = null;
+        Memory dIn = null, dW1 = null, dB1 = null, dW2 = null;
+        try {
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW1 = flatten2D(w1); dW1G = alloc(dW1.size()); writeG(dW1G, dW1);
+            dB1 = flatten1D(b1); dB1G = alloc(dB1.size()); writeG(dB1G, dB1);
+            dW2 = flatten1D(w2); dW2G = alloc(dW2.size()); writeG(dW2G, dW2);
+            dOut = alloc((long)B * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dW1G); setPtr(k, 2, dB1G);
+            setPtr(k, 3, dW2G); setPtr(k, 4, dOut); setInt(k, 5, B); setF64(k, 6, b2);
+            // 内核只用 get_global_id(0)，1D launch 避免 y 维度 16 倍冗余
+            launch1D(k, B);
+            double[] out = new double[B]; readBack(dOut, out);
+            return out;
+        } finally {
+            free(dInG, dW1G, dB1G, dW2G, dOut);
+            if (dIn != null) dIn.close(); if (dW1 != null) dW1.close();
+            if (dB1 != null) dB1.close(); if (dW2 != null) dW2.close();
+        }
+    }
+
+    // ── 数据提取 ──
+    private double[][][] extractSubInputs(double[][][][] planes, int B) {
+        double[][][] out = new double[81][B][36];
+        for (int n = 0; n < B; n++) {
+            double[][][] p = planes[n];
+            for (int b = 0; b < 9; b++) {
+                // 与 NeuralEvaluator.BLOCK_STARTS 一致：x=(b/3)*6, y=(b%3)*6
+                int bx = (b / 3) * 6, by = (b % 3) * 6;
+                for (int s = 0; s < 9; s++) {
+                    // 与 NeuralEvaluator.SUB_OFFSETS 一致：x=(s/3)*2, y=(s%3)*2
+                    int sx = bx + (s / 3) * 2, sy = by + (s % 3) * 2, si = b * 9 + s, idx = 0;
+                    for (int pp = 0; pp < 4; pp++)
+                        for (int dx = 0; dx < 3; dx++)
+                            for (int dy = 0; dy < 3; dy++)
+                                out[si][n][idx++] = p[pp][sx + dx][sy + dy];
+                }
+            }
+        }
+        return out;
+    }
+    private double[][][] buildBlkIn(double[][][] subOut, int B) {
+        double[][][] out = new double[9][B][144];
+        for (int b = 0; b < 9; b++)
+            for (int n = 0; n < B; n++)
+                for (int i = 0; i < 144; i++)
+                    out[b][n][i] = subOut[b * 9 + i / 16][n][i % 16];
+        return out;
+    }
+    private double[][] buildTopIn(double[][][] blkOut, double[][] aux, int B) {
+        double[][] out = new double[B][600];
+        for (int n = 0; n < B; n++) {
+            int idx = 0;
+            for (int b = 0; b < 9; b++) { System.arraycopy(blkOut[b][n], 0, out[n], idx, 64); idx += 64; }
+            System.arraycopy(aux[n], 0, out[n], 576, 24);
+        }
+        return out;
+    }
+
+    // ── GPU 前向辅助 ──
+    private double[][][] run3D(String kName, double[][][] in, double[][][] w, double[][] b, int S, int K, int N, int B) throws Exception {
+        Pointer k = kernels.get(kName); if (k == null) return null;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
+        try {
+            dIn = flatten3D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten3D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten2D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)S * B * N * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch3D(k, S, B, N);
+            double[][][] out = new double[S][B][N]; readBack3D(dOut, out, S, B, N);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
+        }
+    }
+    private double[][] run2D(String kName, double[][] in, double[][] w, double[] b, int K, int N, int B) throws Exception {
+        Pointer k = kernels.get(kName); if (k == null) return null;
+        Pointer dInG = null, dWG = null, dBG = null, dOut = null;
+        Memory dIn = null, dW = null, dB = null;
+        try {
+            dIn = flatten2D(in); dInG = alloc(dIn.size()); writeG(dInG, dIn);
+            dW = flatten2D(w); dWG = alloc(dW.size()); writeG(dWG, dW);
+            dB = flatten1D(b); dBG = alloc(dB.size()); writeG(dBG, dB);
+            dOut = alloc((long)B * N * 8);
+            setPtr(k, 0, dInG); setPtr(k, 1, dWG); setPtr(k, 2, dBG); setPtr(k, 3, dOut); setInt(k, 4, B);
+            launch(k, B, N);
+            double[][] out = new double[B][N]; readBack2D(dOut, out, B, N);
+            return out;
+        } finally {
+            free(dInG, dWG, dBG, dOut);
+            if (dIn != null) dIn.close(); if (dW != null) dW.close(); if (dB != null) dB.close();
+        }
+    }
+
+    // ── GPU 内存/执行 ──
+    private Pointer alloc(long bytes) throws Exception {
+        IntByReference error = new IntByReference();
+        return create("clCreateBuffer", error, context, CL_MEM_READ_WRITE, bytes, null, error);
+    }
+    private void free(Pointer... ps) { for (Pointer p : ps) if (p != null) safe("clReleaseMemObject", p); }
+    private void writeG(Pointer dst, Memory src) throws Exception {
+        checkCl("clEnqueueWriteBuffer", calli("clEnqueueWriteBuffer", queue, dst, 1, 0L, src.size(), src, 0, null, null));
+    }
+    private void readBack(Pointer src, double[] out) throws Exception {
+        try (Memory m = new Memory((long)out.length * 8)) {
+            checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
+            checkCl("clFinish(read)", calli("clFinish", queue)); double[] flat = m.getDoubleArray(0, out.length);
+            System.arraycopy(flat, 0, out, 0, out.length);
+        }
+    }
+    private void readBack1D(Pointer src, double[] out, int n) throws Exception {
+        try (Memory m = new Memory((long)n * 8)) {
+            checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
+            checkCl("clFinish(read)", calli("clFinish", queue));
+            m.read(0, out, 0, n);
+        }
+    }
+    private void readBack2D(Pointer src, double[][] out, int B, int N) throws Exception {
+        try (Memory m = new Memory((long)B * N * 8)) {
+            checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
+            checkCl("clFinish(read)", calli("clFinish", queue)); double[] flat = m.getDoubleArray(0, B * N);
+            for (int n = 0; n < B; n++) System.arraycopy(flat, n * N, out[n], 0, N);
+        }
+    }
+    private void readBack3D(Pointer src, double[][][] out, int S, int B, int N) throws Exception {
+        try (Memory m = new Memory((long)S * B * N * 8)) {
+            checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
+            checkCl("clFinish(read)", calli("clFinish", queue)); double[] flat = m.getDoubleArray(0, S * B * N);
+            for (int s = 0; s < S; s++)
+                for (int n = 0; n < B; n++)
+                    System.arraycopy(flat, (s * B + n) * N, out[s][n], 0, N);
+        }
+    }
+    private void setPtr(Pointer k, int idx, Pointer p) throws Exception {
+        try (Memory ref = new Memory(Native.POINTER_SIZE)) {
+            ref.setPointer(0, p);
+            checkCl("clSetKernelArg(pointer)", calli("clSetKernelArg", k, idx,
+                    (long) Native.POINTER_SIZE, ref));
+        }
+    }
+    private void setInt(Pointer k, int idx, int v) throws Exception {
+        try (Memory m = new Memory(4)) {
+            m.setInt(0, v);
+            checkCl("clSetKernelArg(int)", calli("clSetKernelArg", k, idx, 4L, m));
+        }
+    }
+    private void setF64(Pointer k, int idx, double v) throws Exception {
+        try (Memory m = new Memory(8)) {
+            m.setDouble(0, v);
+            checkCl("clSetKernelArg(double)", calli("clSetKernelArg", k, idx, 8L, m));
+        }
+    }
+    private void launch(Pointer k, int x, int y) throws Exception {
+        try (Memory g = new Memory((long) Native.SIZE_T_SIZE * 2)) {
+            writeSizeT(g, 0, ceil(x, 16) * 16);
+            writeSizeT(g, Native.SIZE_T_SIZE, ceil(y, 16) * 16);
+            checkCl("clEnqueueNDRangeKernel(2D)", calli("clEnqueueNDRangeKernel", queue, k, 2, null, g, null, 0, null, null));
+            checkCl("clFinish(kernel)", calli("clFinish", queue));
+        }
+    }
+    private void launch1D(Pointer k, int n) throws Exception {
+        long gs = ceil(n, 256) * 256;
+        try (Memory g = new Memory(Native.SIZE_T_SIZE)) {
+            writeSizeT(g, 0, gs);
+            checkCl("clEnqueueNDRangeKernel(1D)", calli("clEnqueueNDRangeKernel", queue, k, 1, null, g, null, 0, null, null));
+            checkCl("clFinish(kernel)", calli("clFinish", queue));
+        }
+    }
+    private void launch3D(Pointer k, int x, int y, int z) throws Exception {
+        // 三个维度都向上取整到 16 的倍数（sub_fwd/block_fwd 内核已加 s>=S 边界检查，
+        // 驱动向上填充全局尺寸时多余工作项会被拦截，不会越界写）。
+        try (Memory g = new Memory((long) Native.SIZE_T_SIZE * 3)) {
+            writeSizeT(g, 0, ceil(x, 16) * 16);
+            writeSizeT(g, Native.SIZE_T_SIZE, ceil(y, 16) * 16);
+            writeSizeT(g, (long) Native.SIZE_T_SIZE * 2, ceil(z, 16) * 16);
+            checkCl("clEnqueueNDRangeKernel(3D)", calli("clEnqueueNDRangeKernel", queue, k, 3, null, g, null, 0, null, null));
+            checkCl("clFinish(kernel)", calli("clFinish", queue));
+        }
+    }
+    private static long ceil(long a, long b) { return (a + b - 1) / b; }
+    private static void writeSizeT(Memory memory, long offset, long value) {
+        if (Native.SIZE_T_SIZE == Long.BYTES) memory.setLong(offset, value);
+        else memory.setInt(offset, (int) value);
+    }
+
+    // ── 展平 ──
+    private static Memory flatten3D(double[][][] m) {
+        int d1 = m.length, d2 = m[0].length, d3 = m[0][0].length;
+        Memory mem = new Memory((long)d1 * d2 * d3 * 8);
+        double[] f = new double[d1 * d2 * d3];
+        for (int i = 0; i < d1; i++) for (int j = 0; j < d2; j++) System.arraycopy(m[i][j], 0, f, (i * d2 + j) * d3, d3);
+        mem.write(0, f, 0, f.length); return mem;
+    }
+    private static Memory flatten2D(double[][] m) {
+        int r = m.length, c = m[0].length; Memory mem = new Memory((long)r * c * 8);
+        double[] f = new double[r * c]; for (int i = 0; i < r; i++) System.arraycopy(m[i], 0, f, i * c, c);
+        mem.write(0, f, 0, f.length); return mem;
+    }
+    private static Memory flatten1D(double[] v) {
+        Memory mem = new Memory((long)v.length * 8); mem.write(0, v, 0, v.length); return mem;
+    }
+
+    // ── OpenCL 底层 ──
+    private Pointer findDevice(Pointer platform, long type) throws Exception {
+        IntByReference n = new IntByReference();
+        if (calli("clGetDeviceIDs", platform, type, 0, null, n) != 0 || n.getValue() == 0) return null;
+        Pointer[] devs = new Pointer[n.getValue()];
+        checkCl("clGetDeviceIDs(list)", calli("clGetDeviceIDs", platform, type, n.getValue(), devs, null));
+        for (Pointer candidate : devs) {
+            if (candidate != null && supportsFp64(candidate)) return candidate;
+        }
+        return null;
+    }
+    private boolean supportsFp64(Pointer dev) throws Exception {
+        try (Memory config = new Memory(Long.BYTES)) {
+            return calli("clGetDeviceInfo", dev, CL_DEVICE_DOUBLE_FP_CONFIG,
+                    Long.BYTES, config, null) == 0 && config.getLong(0) != 0L;
+        }
+    }
+    private String fp64Pragma(Pointer dev) throws Exception {
+        String extensions = getDeviceString(dev, CL_DEVICE_EXTENSIONS);
+        if (extensions.contains("cl_khr_fp64")) {
+            return "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+        if (extensions.contains("cl_amd_fp64")) {
+            return "#pragma OPENCL EXTENSION cl_amd_fp64 : enable\n";
+        }
+        return "";
+    }
+    private String getDeviceName(Pointer dev) throws Exception {
+        return getDeviceString(dev, 0x102B);
+    }
+    private String getDeviceString(Pointer dev, int property) throws Exception {
+        try (Memory sizeOut = new Memory(Native.SIZE_T_SIZE)) {
+            checkCl("clGetDeviceInfo(size)", calli("clGetDeviceInfo", dev, property, 0, null, sizeOut));
+            long size = readSizeT(sizeOut);
+            if (size <= 0 || size > Integer.MAX_VALUE) return "";
+            try (Memory m = new Memory(size)) {
+                checkCl("clGetDeviceInfo(value)", calli("clGetDeviceInfo", dev, property, size, m, null));
+                return m.getString(0, "UTF-8");
+            }
+        }
+    }
+    private String getBuildLog(Pointer prog) throws Exception {
+        try (Memory sizeOut = new Memory(Native.SIZE_T_SIZE)) {
+            checkCl("clGetProgramBuildInfo(size)", calli("clGetProgramBuildInfo", prog, device, 0x1183, 0, null, sizeOut));
+            long size = readSizeT(sizeOut);
+            if (size <= 0 || size > Integer.MAX_VALUE) return "";
+            try (Memory m = new Memory(size)) {
+                checkCl("clGetProgramBuildInfo(value)", calli("clGetProgramBuildInfo", prog, device, 0x1183, size, m, null));
+                return m.getString(0, "UTF-8");
+            }
+        }
+    }
+    private static long readSizeT(Memory memory) {
+        return Native.SIZE_T_SIZE == Long.BYTES
+                ? memory.getLong(0) : Integer.toUnsignedLong(memory.getInt(0));
+    }
+    private static void checkCl(String operation, int status) throws Exception {
+        if (status != 0) throw new Exception(operation + " 失败，OpenCL 错误码 " + status);
+    }
+    private Pointer create(String function, IntByReference error, Object... args) throws Exception {
+        return create(function, function, error, args);
+    }
+    private Pointer create(String operation, String function, IntByReference error, Object... args) throws Exception {
+        error.setValue(Integer.MIN_VALUE);
+        Pointer pointer = callp(function, args);
+        checkCl(operation, error.getValue());
+        if (pointer == null) throw new Exception(operation + " 返回空句柄");
+        return pointer;
+    }
+    private int calli(String fn, Object... args) throws Exception { return cl.getFunction(fn).invokeInt(args); }
+    private Pointer callp(String fn, Object... args) throws Exception { return cl.getFunction(fn).invokePointer(args); }
+    private void safe(String fn, Pointer p) {
+        if (p == null || cl == null) return;
+        try {
+            calli(fn, p);
+        } catch (Throwable ignored) {
+            // 释放阶段必须是 best-effort，不能让缺失/损坏的本地库越过 close 边界。
+        }
+    }
+
+    @Override
+    public void close() {
+        // The same mutex guards every native batch.  Do not release any handle
+        // until the in-flight batch (including clFinish/readback) has returned.
+        lifecycleLock.lock();
+        try {
+            if (closed) return;
+            closed = true;
+            available = false;
+        for (Pointer k : kernels.values()) safe("clReleaseKernel", k);
+        kernels.clear();
+        safe("clReleaseProgram", program);
+        safe("clReleaseCommandQueue", queue);
+        safe("clReleaseContext", context);
+        program = null;
+        queue = null;
+        context = null;
+        device = null;
+            cl = null;
+        } finally {
+            lifecycleLock.unlock();
+        }
+    }
+
+    private static final String KERNEL_SOURCE = "" +
+    "__kernel void sub_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
+    "  int s=get_global_id(0), r=get_global_id(1), c=get_global_id(2);\n" +
+    "  if(s>=81||r>=B||c>=16)return; double sum=b[s*16+c];\n" +
+    "  for(int k=0;k<36;k++) sum+=in[(s*B+r)*36+k]*w[s*36*16+k*16+c];\n" +
+    "  out[(s*B+r)*16+c] = sum>0?sum:0;\n" +
+    "}\n" +
+    "__kernel void block_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
+    "  int s=get_global_id(0), r=get_global_id(1), c=get_global_id(2);\n" +
+    "  if(s>=9||r>=B||c>=64)return; double sum=b[s*64+c];\n" +
+    "  for(int k=0;k<144;k++) sum+=in[(s*B+r)*144+k]*w[s*144*64+k*64+c];\n" +
+    "  out[(s*B+r)*64+c] = sum>0?sum:0;\n" +
+    "}\n" +
+    "__kernel void top_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
+    "  int r=get_global_id(0), c=get_global_id(1);\n" +
+    "  if(r>=B||c>=256)return; double sum=b[c];\n" +
+    "  for(int k=0;k<600;k++) sum+=in[r*600+k]*w[k*256+c];\n" +
+    "  out[r*256+c] = sum>0?sum:0;\n" +
+    "}\n" +
+    "__kernel void policy_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
+    "  int r=get_global_id(0); if(r>=B)return;\n" +
+    "  double l[362]; double mx=-1e30;\n" +
+    "  for(int j=0;j<362;j++){ double s=b[j]; for(int k=0;k<256;k++) s+=in[r*256+k]*w[k*362+j]; l[j]=s; if(s>mx)mx=s; }\n" +
+    "  double se=0; for(int j=0;j<362;j++){ double e=exp(l[j]-mx); l[j]=e; se+=e; }\n" +
+    "  double ise=1.0/max(se,1e-30); for(int j=0;j<362;j++) out[r*362+j]=l[j]*ise;\n" +
+    "}\n" +
+    "__kernel void value_fwd(__global double* in, __global double* w1, __global double* b1, __global double* w2, __global double* out, int B, double b2) {\n" +
+    "  int r=get_global_id(0); if(r>=B)return;\n" +
+    "  double h[128]; for(int j=0;j<128;j++){ double s=b1[j]; for(int k=0;k<256;k++) s+=in[r*256+k]*w1[k*128+j]; h[j]=s>0?s:0; }\n" +
+    "  double s=b2; for(int k=0;k<128;k++) s+=w2[k]*h[k]; out[r]=tanh(s);\n" +
+    "}\n" +
+    "__kernel void sgd(__global double* w, __global double* g, double lr, double l2, int n) {\n" +
+    "  int i=get_global_id(0); if(i>=n)return; w[i]-=lr*(g[i]+l2*w[i]);\n" +
+    "}\n";
+}

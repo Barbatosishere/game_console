@@ -41,8 +41,8 @@ public class BreakoutScreen extends Screen {
     }
 
     private void calcLayout() {
-        gameW = Math.min(width - 40, 500);
-        gameH = Math.min(height - 60, 400);
+        gameW = Math.max(BRICK_COLS, Math.min(Math.max(BRICK_COLS, width - 40), 500));
+        gameH = Math.max(60, Math.min(Math.max(60, height - 60), 400));
         gameLeft = (width - gameW) / 2;
         gameTop = (height - gameH) / 2;
         brickW = gameW / BRICK_COLS;
@@ -54,6 +54,8 @@ public class BreakoutScreen extends Screen {
     @Override public void tick() {
         tickCount++;
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
+        GameRenderHelper.tickParticles(particles);
         ballX += ballDX; ballY += ballDY;
         // 墙壁反弹
         if (ballX <= gameLeft || ballX + ballS >= gameLeft + gameW) ballDX = -ballDX;
@@ -145,17 +147,20 @@ public class BreakoutScreen extends Screen {
         for (int r = 0; r < BRICK_ROWS; r++)
             for (int c = 0; c < BRICK_COLS; c++)
                 if (bricks[r][c])
-                    GameRenderHelper.drawBlock3D(g, gameLeft + c * brickW + 1, gameTop + 20 + r * (brickH + 2), brickW - 2, BRICK_COLORS[r]);
+                    // ★ 修复：砖块碰撞盒是 brickW×brickH，改用矩形重载按真实宽高绘制（原把 brickW-2 当边长画成正方形）
+                    GameRenderHelper.drawBlock3D(g, gameLeft + c * brickW + 1, gameTop + 20 + r * (brickH + 2), brickW - 2, brickH, BRICK_COLORS[r]);
         // 挡板
-        GameRenderHelper.drawBlock3D(g, (int)paddleX, gameTop + gameH - paddleH - 5, paddleW, 0xFF44AAFF);
+        // ★ 修复：挡板碰撞盒是 paddleW×paddleH，改用矩形重载（原把 paddleW 当边长画成正方形）
+        GameRenderHelper.drawBlock3D(g, (int)paddleX, gameTop + gameH - paddleH - 5, paddleW, paddleH, 0xFF44AAFF);
         // 球
         g.fill((int)ballX, (int)ballY, (int)ballX + ballS, (int)ballY + ballS, 0xFFFFFFFF);
         g.fill((int)ballX, (int)ballY, (int)ballX + ballS, (int)ballY + 1, 0xFFFFFFCC);
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
-        g.drawString(font, "🧱 分数: " + score, 8, 7, 0xFF6644);
-        g.drawCenteredString(font, "❤ x " + lives, width / 2, 7, 0xFF4444);
+        // ★ 修复：🧱/❤ 为非 BMP/装饰 emoji，默认字体有豆腐块风险，改为纯文本
+        g.drawString(font, "分数: " + score, 8, 7, 0xFF6644);
+        g.drawCenteredString(font, "生命 x " + lives, width / 2, 7, 0xFF4444);
         GameRenderHelper.drawBottomBar(g, font, width, height, "鼠标移动  ESC 菜单  R 重开");
     }
 
@@ -170,6 +175,7 @@ public class BreakoutScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = width/2, cy = height/2;
         if (state == State.MENU && mx >= cx-60 && mx <= cx+60 && my >= cy+45 && my <= cy+67) { startGame(); return true; }

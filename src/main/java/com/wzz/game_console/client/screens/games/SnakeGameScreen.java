@@ -23,6 +23,9 @@ public class SnakeGameScreen extends Screen {
     private final List<int[]> snake = new ArrayList<>();
     private int[] food;
     private int dx = 1, dy = 0;
+    // 上一次 tick 实际执行移动的方向：按键防反向应与它比较，
+    // 而不是与可能已被本次按键改过的 dx/dy 比较，避免一 tick 内连按两键 180° 掉头秒死
+    private int lastDx = 1, lastDy = 0;
     private int tickCounter = 0, score = 0;
     private long tickCount = 0;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
@@ -37,6 +40,7 @@ public class SnakeGameScreen extends Screen {
         snake.clear();
         snake.add(new int[]{GRID_W / 2, GRID_H / 2});
         dx = 1; dy = 0; score = 0;
+        lastDx = 1; lastDy = 0;
         spawnFood();
         state = State.PLAYING;
         particles.clear(); floats.clear();
@@ -73,6 +77,9 @@ public class SnakeGameScreen extends Screen {
             if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.GENERIC_EXPLODE.value(), 0.5F, 1.0F);
             return;
         }
+        // 记录本 tick 实际执行移动的方向，作为下次按键防反向的基准
+        lastDx = dx;
+        lastDy = dy;
         snake.add(0, new int[]{nx, ny});
         if (eatingFood) {
             score++;
@@ -94,13 +101,14 @@ public class SnakeGameScreen extends Screen {
             else { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
         }
         if (showExitConfirm) return true;
-        if (state == State.GAME_OVER && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
+        if (state != State.MENU && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
         if (state == State.PLAYING) {
             switch (key) {
-                case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { if (dy != 1) { dx=0; dy=-1; } }
-                case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN  -> { if (dy != -1) { dx=0; dy=1; } }
-                case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (dx != 1) { dx=-1; dy=0; } }
-                case GLFW.GLFW_KEY_D, GLFW.GLFW_KEY_RIGHT -> { if (dx != -1) { dx=1; dy=0; } }
+                // 与 lastDx/lastDy（上一次实际移动方向）比较，同 tick 内连按两键也不会 180° 掉头
+                case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { if (lastDy != 1) { dx=0; dy=-1; } }
+                case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN  -> { if (lastDy != -1) { dx=0; dy=1; } }
+                case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (lastDx != -1) { dx=-1; dy=0; } }
+                case GLFW.GLFW_KEY_D, GLFW.GLFW_KEY_RIGHT -> { if (lastDx != 1) { dx=1; dy=0; } }
             }
         }
         return true;

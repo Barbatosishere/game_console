@@ -2,16 +2,20 @@ package com.wzz.game_console.client.screens.games.landlord;
 
 public class CardPattern {
     public enum Type {
-        SINGLE,           // 单牌
-        PAIR,             // 对子
-        TRIPLE,           // 三张
-        TRIPLE_WITH_ONE,  // 三带一
-        TRIPLE_WITH_PAIR, // 三带二
-        STRAIGHT,         // 顺子
-        PAIR_STRAIGHT,    // 连对
-        TRIPLE_STRAIGHT,  // 飞机
-        BOMB,             // 炸弹
-        JOKER_BOMB        // 王炸
+        SINGLE,               // 单牌
+        PAIR,                 // 对子
+        TRIPLE,               // 三张
+        TRIPLE_WITH_ONE,      // 三带一
+        TRIPLE_WITH_PAIR,     // 三带二
+        STRAIGHT,             // 顺子
+        PAIR_STRAIGHT,        // 连对
+        TRIPLE_STRAIGHT,      // 飞机
+        FOUR_WITH_TWO_SINGLES, // 四带两单
+        FOUR_WITH_TWO_PAIRS,   // 四带两对
+        BOMB,                 // 炸弹
+        JOKER_BOMB,           // 王炸
+        TRIPLE_STRAIGHT_WITH_SINGLE, // 飞机带单
+        TRIPLE_STRAIGHT_WITH_PAIR    // 飞机带对
     }
 
     private Type type;
@@ -25,6 +29,7 @@ public class CardPattern {
     }
 
     public boolean canBeat(CardPattern other) {
+        if (other == null || type == null) return false;
         // 王炸最大
         if (type == Type.JOKER_BOMB) {
             return other.type != Type.JOKER_BOMB;
@@ -44,7 +49,7 @@ public class CardPattern {
             return false;
         }
         
-        // 同类型比较
+        // 同类型且长度相同才可比较；飞机带单/带对是独立牌型
         if (type == other.type && length == other.length) {
             return value > other.value;
         }

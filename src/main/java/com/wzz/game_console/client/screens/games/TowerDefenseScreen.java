@@ -45,6 +45,8 @@ public class TowerDefenseScreen extends Screen {
     private static final int MAX_WAVE = 10; // 最大波次，超过即胜利
     private boolean gameStarted = false;
     private boolean gameOver = false;
+    /** 通关后区分胜利/失败,渲染时显示对应文案与按钮 */
+    private boolean victory = false;
     
     // 游戏对象列表
     private final List<Tower> towers = new ArrayList<>();
@@ -73,8 +75,10 @@ public class TowerDefenseScreen extends Screen {
     
     @Override
     public void init() {
+        // ★ Bug修复：同 WhackAMoleScreen,缩放 init() 重复叠加 6 个按钮
+        this.clearWidgets();
         super.init();
-        
+
         // 塔选择按钮
         this.addRenderableWidget(Button.builder(Component.literal("弓箭塔 (10金币)"), button -> {
             if (coins >= 10) {
@@ -293,6 +297,8 @@ public class TowerDefenseScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        // 结算画面（胜利/失败）下禁止再建塔扣币
+        if (gameOver || !gameStarted) return super.mouseClicked(mouseX, mouseY, button);
         if (selectedTowerType != null && button == 0) {
             GridPos pos = screenToGrid((int)mouseX, (int)mouseY);
             if (canPlaceTower(pos.x, pos.y) && coins >= selectedTowerType.cost) {
@@ -456,10 +462,15 @@ public class TowerDefenseScreen extends Screen {
     private void checkGameOver() {
         if (health <= 0) {
             gameOver = true;
+            victory = false;
             gameStarted = false;
-        } else if (wave > MAX_WAVE && enemies.isEmpty() && enemiesSpawned >= (wave - 1) * 10) {
-            // 超过最大波次且所有敌人已消灭 → 胜利
+        } else if (wave > MAX_WAVE && enemies.isEmpty()) {
+            // ★ Bug修复：原版要求 enemiesSpawned >= (wave - 1) * 10,即第 11 波需
+            //   累计生成 100 个敌人才算胜利,但 MAX_WAVE=10 期间至多 ~110 个,
+            //   公式过于严苛,玩家很可能永远赢不了。简化为"波次 > MAX_WAVE 且
+            //   当前场上无敌人"即胜利,更符合玩家直觉。补一个 victory 字段。
             gameOver = true;
+            victory = true;
             gameStarted = false;
         }
     }
@@ -470,6 +481,7 @@ public class TowerDefenseScreen extends Screen {
         wave = 1;
         gameStarted = false;
         gameOver = false;
+        victory = false;
         enemiesSpawned = 0;
         enemySpawnTimer = 0;
         

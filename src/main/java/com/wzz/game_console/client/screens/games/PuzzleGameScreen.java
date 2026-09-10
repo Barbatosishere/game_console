@@ -32,7 +32,7 @@ public class PuzzleGameScreen extends Screen {
     private int emptyX, emptyY;
     private boolean gameWon;
     private int moves;
-    private long startTime;
+    private final PuzzleElapsedTimer elapsedTimer = new PuzzleElapsedTimer();
     private ResourceLocation puzzleImage;
     private int startX, startY;
     private final Random random = new Random();
@@ -109,7 +109,7 @@ public class PuzzleGameScreen extends Screen {
         
         gameWon = false;
         moves = 0;
-        startTime = System.currentTimeMillis();
+        elapsedTimer.restart(System.currentTimeMillis());
         
         // 计算绘制起始位置，使拼图居中
         startX = (this.width - (PUZZLE_COLS * PIECE_SIZE)) / 2;
@@ -163,10 +163,11 @@ public class PuzzleGameScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button != 0) return super.mouseClicked(mouseX, mouseY, button);
         if (showExitConfirm) {
             int click = GameRenderHelper.getExitConfirmClick((int)mouseX, (int)mouseY, width, height);
             if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
-            if (click == 2) { showExitConfirm = false; return true; }
+            if (click == 2) { resumeFromExitConfirm(); return true; }
             return true;
         }
         boolean b = super.mouseClicked(mouseX, mouseY, button);
@@ -216,6 +217,7 @@ public class PuzzleGameScreen extends Screen {
         }
         if (!gameWon) {
             gameWon = true;
+            elapsedTimer.complete(System.currentTimeMillis());
             if (Minecraft.getInstance().player != null) {
                 Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
             }
@@ -293,7 +295,7 @@ public class PuzzleGameScreen extends Screen {
         }
         
         // 显示游戏信息
-        long elapsedSeconds = (System.currentTimeMillis() - startTime) / 1000;
+        long elapsedSeconds = elapsedTimer.elapsedSeconds(System.currentTimeMillis());
         graphics.drawString(font, "移动次数: " + moves, 10, 10, 0xFFFFFF, false);
         graphics.drawString(font, "时间: " + elapsedSeconds + "秒", 10, 25, 0xFFFFFF, false);
         
@@ -307,11 +309,21 @@ public class PuzzleGameScreen extends Screen {
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(graphics, font, width, height, mouseX, mouseY);
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移 startTime，补偿暂停期间流逝的墙钟时间 */
+    private long pauseStartTime = 0;
+
+    /** 关闭弹窗恢复游戏：平移计时基准，避免"用时"把弹窗停留时长也算进去 */
+    private void resumeFromExitConfirm() {
+        elapsedTimer.offsetStart(System.currentTimeMillis() - pauseStartTime);
+        showExitConfirm = false;
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
+            if (showExitConfirm) { resumeFromExitConfirm(); return true; }
             if (gameWon) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
+            pauseStartTime = System.currentTimeMillis();
             showExitConfirm = true; return true;
         }
         if (showExitConfirm) return true;

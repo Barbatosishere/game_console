@@ -194,7 +194,10 @@ public class Minecraft2DScreen extends Screen {
 
     // ══════════════ TICK ══════════════
     @Override public void tick(){
-        super.tick();if(!started)return;
+        super.tick();
+        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        if (!minecraft.isWindowActive()) { for (int i = 0; i < keys.length; i++) if (keys[i]) { Arrays.fill(keys, false); break; } }
+        if(!started)return;
         if(showExitConfirm)return; // 弹窗期间冻结物理/挖矿/饥饿
         tick++;dayTick=(dayTick+1)%2400;
         if(dead){if(System.currentTimeMillis()-deadAt>3000)respawn();return;}
@@ -509,13 +512,25 @@ public class Minecraft2DScreen extends Screen {
         if(b==Blocks.BEDROCK)return "基岩(不可破)";return b.getDescriptionId();
     }
 
+    /** 弹窗打开时间戳：关闭时据此平移 deadAt，防止死亡后弹窗停留超过重生等待时长导致瞬间重生 */
+    private long pauseStartTime = 0;
+
+    private void resumeFromExitConfirm() {
+        if (dead && deadAt > 0) deadAt += System.currentTimeMillis() - pauseStartTime;
+        showExitConfirm = false;
+    }
+
     // ══════════════ 输入 ══════════════
     @Override public boolean keyPressed(int k,int sc,int m){
-        if(!started)return super.keyPressed(k,sc,m);
+        if(!started){
+            // 修复：菜单态不拦截 ESC 会走默认 onClose() 退回 Minecraft 世界，改为返回游戏选择界面
+            if(k==GLFW.GLFW_KEY_ESCAPE){Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}
+            return super.keyPressed(k,sc,m);
+        }
         // 修复：退出确认弹窗打开时，仅允许 ESC（再次按 ESC 关闭弹窗），拦截移动等所有游戏按键输入
         if(k==GLFW.GLFW_KEY_ESCAPE){
-            if(showExitConfirm){showExitConfirm=false;}
-            else{showExitConfirm=true;Arrays.fill(keys,false);} // 清空已按住的按键，防止打开弹窗前按住的 WASD 继续移动
+            if(showExitConfirm){resumeFromExitConfirm();}
+            else{showExitConfirm=true;pauseStartTime=System.currentTimeMillis();Arrays.fill(keys,false);} // 清空已按住的按键，防止打开弹窗前按住的 WASD 继续移动
             return true;
         }
         if(showExitConfirm) return true;
@@ -527,7 +542,7 @@ public class Minecraft2DScreen extends Screen {
     @Override public boolean keyReleased(int k,int sc,int m){if(k>=0&&k<keys.length)keys[k]=false;return super.keyReleased(k,sc,m);} // 修复：同上，过滤非法 keyCode
     @Override public boolean mouseClicked(double mx,double my,int btn){
         // 修复：退出后回游戏选择界面，与其他游戏保持一致（原 onClose() 会回到游戏世界）
-        if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}if(click==2){showExitConfirm=false;return true;}return true;}
+        if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}if(click==2){resumeFromExitConfirm();return true;}return true;}
         if(!started){
             int bw=160,bh=22,bx2=width/2-bw/2,by2=height/2+42;
             if(mx>=bx2&&mx<=bx2+bw&&my>=by2&&my<=by2+bh){started=true;return true;}

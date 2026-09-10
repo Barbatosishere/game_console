@@ -24,8 +24,10 @@ public class GameConsoleItem extends Item {
     @Override
     public void appendHoverText(ItemStack p_41421_, Item.TooltipContext p_41422_, List<Component> p_41423_, TooltipFlag p_41424_) {
         super.appendHoverText(p_41421_, p_41422_, p_41423_, p_41424_);
-        p_41423_.add(Component.literal("游戏~游戏~我想玩游戏~").withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC));
-        p_41423_.add(Component.literal("右键Play给木~").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.ITALIC));
+        // ★ Bug修复：原版硬编码中文,英文 locale 下显示原中文+奇怪拼接。
+        //   改用 translatable key,en_us.json / zh_cn.json 分别定义
+        p_41423_.add(Component.translatable("tooltip.game_console.item_flavor").withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC));
+        p_41423_.add(Component.translatable("tooltip.game_console.item_hint").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.ITALIC));
     }
 
     @Override

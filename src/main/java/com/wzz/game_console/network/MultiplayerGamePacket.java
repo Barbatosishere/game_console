@@ -10,7 +10,9 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 多人游戏网络包（双向）
@@ -35,19 +37,64 @@ public record MultiplayerGamePacket(
     private static final int MAX_DATA_BYTES = 32767;
     private static final int MAX_NAME_BYTES = 256;
 
+    /**
+     * GAME_* data envelope.  It is deliberately kept inside the existing UTF-8
+     * data field, so the payload type, codec field order, and PacketType ordinals
+     * remain wire compatible with old clients.  Legacy clients may still send a
+     * bare data string; parseData() then returns a legacy envelope.
+     *
+     * Format: MGP1|session UUID|sequence|base64url(body)
+     */
+    public record DataEnvelope(UUID sessionId, long sequence, String body, boolean legacy) {
+        public DataEnvelope {
+            body = body == null ? "" : body;
+        }
+
+        public static DataEnvelope of(UUID sessionId, long sequence, String body) {
+            return fromValue(MultiplayerGameDataEnvelope.of(sessionId, sequence, body));
+        }
+
+        /** Safe, non-throwing parser. Bare data is legacy; malformed envelopes are rejected. */
+        public static DataEnvelope parse(String data) {
+            return fromValue(MultiplayerGameDataEnvelope.parse(data));
+        }
+
+        public String encode() {
+            return MultiplayerGameDataEnvelope.encode(
+                    new MultiplayerGameDataEnvelope.Value(sessionId, sequence, body, legacy));
+        }
+
+        private static DataEnvelope fromValue(MultiplayerGameDataEnvelope.Value value) {
+            return value == null ? null
+                    : new DataEnvelope(value.sessionId(), value.sequence(), value.body(), value.legacy());
+        }
+    }
+
+    /** Parse a GAME_* data field; bare data from old clients remains usable. */
+    public static DataEnvelope parseData(String data) { return DataEnvelope.parse(data); }
+
+    /** Encode a session/sequence/body envelope for a GAME_* data field. */
+    public static String envelopeData(UUID sessionId, long sequence, String body) {
+        return DataEnvelope.of(sessionId, sequence, body).encode();
+    }
+
     public enum PacketType {
         INVITE,
         ACCEPT_INVITE,
         DECLINE_INVITE,
         GAME_MOVE,
         GAME_STATE_SYNC,
+        // ⚠ 当前无发送方，但序号已被旧客户端引用，保留占位防止后续类型序号位移
         GAME_OVER,
         LEAVE_GAME,
         REQUEST_PLAYERS,
         PLAYER_LIST,
         // ⚠ 新类型必须追加在枚举末尾：序号即线上索引，
         // 插入/调整已有顺序会破坏与旧版本的 encode/decode 兼容性。
-        INVITE_CANCELLED
+        INVITE_CANCELLED,
+        // 服务端断线看门狗广播（ServerDisconnectWatcher 生成，data=退出者 UUID），
+        // 仅服务端→客户端单向，客户端发送的 PLAYER_QUIT 在 handleServer 中被忽略
+        PLAYER_QUIT
     }
 
     public static final Type<MultiplayerGamePacket> TYPE =
@@ -75,9 +122,13 @@ public record MultiplayerGamePacket(
             boolean hasSender = buf.readBoolean();
             UUID senderUuid = hasSender ? buf.readUUID() : null;
             String senderName = buf.readUtf(MAX_NAME_BYTES);
-
             String gameId = buf.readUtf(MAX_GAME_ID_BYTES);
             String data = buf.readUtf(MAX_DATA_BYTES);
+            if (ByteBufUtil.utf8Bytes(senderName) > MAX_NAME_BYTES
+                    || ByteBufUtil.utf8Bytes(gameId) > MAX_GAME_ID_BYTES
+                    || ByteBufUtil.utf8Bytes(data) > MAX_DATA_BYTES) {
+                throw new IllegalArgumentException("多人游戏包 UTF-8 字节数超过限制");
+            }
             return new MultiplayerGamePacket(type, target, senderUuid, senderName, gameId, data);
         }
 
@@ -155,6 +206,14 @@ public record MultiplayerGamePacket(
             var server = sender.getServer();
             if (server == null) return;
 
+            // 简单限流：单一客户端每秒超过 120 包直接丢弃，
+            // 防止被劫持/失控的客户端刷包占满转发带宽
+            if (!tryAcquireForward(sender.getUUID())) {
+                LOGGER.warn("[游戏机联机] 玩家 {} 发包频率超限，丢弃 {}",
+                        sender.getGameProfile().getName(), packet.packetType());
+                return;
+            }
+
             switch (packet.packetType()) {
                 case REQUEST_PLAYERS -> {
                     // 收集在线玩家列表发回给请求者
@@ -194,5 +253,26 @@ public record MultiplayerGamePacket(
                 default -> {}
             }
         });
+    }
+
+    /** 转发限流：每玩家每秒最多包数 */
+    private static final int FORWARD_RATE_LIMIT = 120;
+    /** 玩家 → {窗口起始 nanoTime, 窗口内已计数}；long[] 复合值避免每包分配两个条目 */
+    private static final Map<UUID, long[]> FORWARD_WINDOWS = new ConcurrentHashMap<>();
+
+    private static boolean tryAcquireForward(UUID sender) {
+        long now = System.nanoTime();
+        if (FORWARD_WINDOWS.size() > 512) {
+            // 粗粒度清理：移除 10 秒无流量的窗口，防止离线玩家条目无限累积
+            FORWARD_WINDOWS.entrySet().removeIf(e -> now - e.getValue()[0] > 10_000_000_000L);
+        }
+        long[] w = FORWARD_WINDOWS.computeIfAbsent(sender, k -> new long[]{now, 0});
+        synchronized (w) {
+            if (now - w[0] > 1_000_000_000L) {
+                w[0] = now;
+                w[1] = 0;
+            }
+            return ++w[1] <= FORWARD_RATE_LIMIT;
+        }
     }
 }

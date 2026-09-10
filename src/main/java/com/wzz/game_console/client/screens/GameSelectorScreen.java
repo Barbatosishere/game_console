@@ -266,30 +266,56 @@ public class GameSelectorScreen extends Screen {
 
     /** 打开文件对话框导入外部游戏设置 JSON */
     private void importSettingsFromFile() {
-        try {
-            Frame frame = new Frame();
-            frame.setAlwaysOnTop(true);
-            FileDialog dialog = new FileDialog(frame, "选择游戏设置文件 (.json)", FileDialog.LOAD);
-            dialog.setFile("*.json");
-            dialog.setVisible(true);
-            String filePath = dialog.getFile();
-            String dirPath = dialog.getDirectory();
-            frame.dispose();
+        // ★ Bug修复：FileDialog.setVisible(true) 是模态阻塞调用，在 MC 主线程直接打开
+        //   会冻结整个游戏（停帧、无响应）。改为在后台 daemon 线程弹窗，
+        //   用户选完后 mc.execute 回主线程执行实际导入与提示（importMessage 由 render 读取）
+        Thread picker = new Thread(() -> {
+            Frame frame = null;
+            try {
+                frame = new Frame();
+                frame.setAlwaysOnTop(true);
+                // ★ Bug修复：原版不设位置,Windows 多显示器/扩展屏(主屏 x<0 或 y<0)
+                //   时 FileDialog 会落在不可见区域,玩家看不见但模态阻塞,只能 Alt+F4。
+                //   setLocationRelativeTo(null) 强制居中到主屏可视区
+                frame.setLocationRelativeTo(null);
+                FileDialog dialog = new FileDialog(frame, "选择游戏设置文件 (.json)", FileDialog.LOAD);
+                dialog.setFile("*.json");
+                dialog.setLocationRelativeTo(frame);
+                dialog.setVisible(true); // 只阻塞本后台线程，不再冻结游戏
+                String filePath = dialog.getFile();
+                String dirPath = dialog.getDirectory();
 
-            if (filePath == null || dirPath == null) return;
+                if (filePath == null || dirPath == null) return; // 用户取消
 
-            File srcFile = new File(dirPath, filePath);
-            if (!srcFile.exists() || !srcFile.getName().endsWith(".json")) return;
+                File srcFile = new File(dirPath, filePath);
+                if (!srcFile.isFile() || !srcFile.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".json")) {
+                    Minecraft.getInstance().execute(() -> {
+                        importMessage = "导入失败：请选择 JSON 文件";
+                        importMessageTime = System.currentTimeMillis();
+                    });
+                    return;
+                }
 
-            Path srcPath = srcFile.toPath();
-            boolean success = GameSettings.importFromFile(srcPath);
-
-            importMessage = success ? "设置导入成功！" : "导入失败：文件格式不正确";
-            importMessageTime = System.currentTimeMillis();
-        } catch (Exception e) {
-            importMessage = "导入失败：" + e.getMessage();
-            importMessageTime = System.currentTimeMillis();
-        }
+                Path srcPath = srcFile.toPath();
+                // 回到 MC 主线程执行导入与界面提示
+                Minecraft.getInstance().execute(() -> {
+                    boolean success = GameSettings.importFromFile(srcPath);
+                    importMessage = success ? "设置导入成功！" : "导入失败：文件格式不正确";
+                    importMessageTime = System.currentTimeMillis();
+                });
+            } catch (Exception e) {
+                String msg = "导入失败：" + e.getMessage();
+                Minecraft.getInstance().execute(() -> {
+                    importMessage = msg;
+                    importMessageTime = System.currentTimeMillis();
+                });
+            } finally {
+                // ★ 修复 AWT Frame 泄漏：dispose 移入 finally，异常/用户取消路径也会释放
+                if (frame != null) frame.dispose();
+            }
+        }, "GameConsole-SettingsImport");
+        picker.setDaemon(true);
+        picker.start();
     }
 
     @Override
