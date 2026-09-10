@@ -251,7 +251,7 @@ class MCTSGoAIRegressionTest {
     }
 
     @Test
-    void treeReusePreservesIncomingEdgePrior() throws Exception { 
+    void treeReusePreservesIncomingEdgePrior() throws Exception {
         GoPlayer[][] board = emptyBoard();
         Object root = node(board, GoPlayer.BLACK, null, null, List.of());
         Object child = node(copy(board), GoPlayer.WHITE, root, new int[]{4, 4}, List.of());
