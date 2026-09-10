@@ -30,6 +30,9 @@ public class AIPlayer {
      */
     public List<Card> chooseCardsToPlay(List<Card> hand, List<Card> lastCards, boolean isMyTurn,
                                         int myIdx, int lastPlayerIdx, int landlordIdx, int[] handCounts) {
+        if (!isMyTurn || hand == null || lastCards == null) {
+            return new ArrayList<>();
+        }
         if (lastCards.isEmpty()) {
             // 主动出牌，优先选择较小的组合
             return chooseActivePlay(hand);

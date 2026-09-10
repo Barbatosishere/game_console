@@ -30,7 +30,7 @@ public class ModNetworks {
     public static void register(final RegisterPayloadHandlersEvent event) {
         // ★ Bug修复：新增 INVITE_CANCELLED/PLAYER_QUIT 包类型后未升协议版本，
         //   新旧客户端混连时可能因 codec 校验被服务端拒收，这里同步升版
-        final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.2.0");
+        final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.3.0");
 
         // GameSelectorPacket: 服务端→客户端（打开游戏选择器）
         // 处理器通过反射调用 ClientPayloadHandler，避免服务端加载客户端类

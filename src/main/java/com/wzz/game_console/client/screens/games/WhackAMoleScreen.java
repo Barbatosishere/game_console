@@ -552,6 +552,8 @@ public class WhackAMoleScreen extends Screen {
             if (hasMole) {
                 int moleRenderY = (int) (y + HOLE_SIZE - MOLE_SIZE + moleY);
                 int moleRenderX = x + (HOLE_SIZE - MOLE_SIZE) / 2;
+                guiGraphics.enableScissor(x, y, x + HOLE_SIZE, y + HOLE_SIZE);
+                try {
 
                 // ★ Bug修复：原版用 64x64 实体纹理中裁切 8x8 头部再缩放到 32x32，
                 //   但 OptiFine/资源包常使 zombie/creeper/skeleton 纹理尺寸异常
@@ -596,12 +598,15 @@ public class WhackAMoleScreen extends Screen {
                     guiGraphics.fill(moleRenderX, moleRenderY,
                             moleRenderX + MOLE_SIZE, moleRenderY + MOLE_SIZE, 0x80FF0000);
                 }
+                } finally {
+                    guiGraphics.disableScissor();
+                }
             }
         }
 
         public boolean isClicked(double mouseX, double mouseY) {
-            return mouseX >= x && mouseX <= x + HOLE_SIZE &&
-                    mouseY >= y && mouseY <= y + HOLE_SIZE;
+            return MoleHitbox.containsVisiblePart(x, y, HOLE_SIZE, MOLE_SIZE,
+                    moleY, hasMole, mouseX, mouseY);
         }
 
         public boolean hasMole() { return hasMole; }

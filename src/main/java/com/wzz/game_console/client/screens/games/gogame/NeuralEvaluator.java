@@ -2,6 +2,7 @@ package com.wzz.game_console.client.screens.games.gogame;
 
 import java.util.*;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 import com.wzz.game_console.util.GameSettings;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -64,6 +65,8 @@ public class NeuralEvaluator {
     // 持久化
     private static final int MODEL_MAGIC = 0x4E455633; // NEV3
     private static final int MODEL_FORMAT = 3;
+    private static final int LEGACY_MODEL_MAGIC = 0x4E455632; // NEV2
+    private static final int LEGACY_MODEL_FORMAT = 2;
     private static final int MAX_CACHE_SIZE = 10000;
 
     // 四方向
@@ -124,6 +127,9 @@ public class NeuralEvaluator {
     private double valueB2;
 
     private final ReentrantReadWriteLock modelLock = new ReentrantReadWriteLock();
+    /** Serializes forward/train with release so the native backend cannot be closed in use. */
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private volatile boolean released;
     private volatile long modelVersion;
 
     // 动量缓冲（惰性分配，首次 momentum > 0 训练时创建）
@@ -154,13 +160,20 @@ public class NeuralEvaluator {
      * MCTSGoAI 会堆积 native 句柄只能靠 GC 兜底。重复调用安全（幂等）。
      */
     public void release() {
-        OpenCLBackend b = opencl;
-        opencl = null;
-        if (b != null) {
-            try {
-                b.close();
-            } catch (Throwable ignored) {
+        lifecycleLock.lock();
+        try {
+            if (released) return;
+            released = true;
+            OpenCLBackend b = opencl;
+            opencl = null;
+            if (b != null) {
+                try {
+                    b.close();
+                } catch (Throwable ignored) {
+                }
             }
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -474,8 +487,16 @@ public class NeuralEvaluator {
      * 完整前向传播：三级分块 → 双头。
      */
     public ForwardResult forward(double[][][] planes, double[] auxFeatures) {
-        modelLock.readLock().lock();
         try {
+            lifecycleLock.lockInterruptibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ForwardResult(0.0, new double[POLICY_SIZE]);
+        }
+        try {
+            if (released) return new ForwardResult(0.0, new double[POLICY_SIZE]);
+            modelLock.readLock().lock();
+            try {
             // ── 第 1 级：二级子块 ──────────────────────────────────────
             // subOut[b][s][h] — 大块 b 的第 s 个子块的 16 维输出
             double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
@@ -571,8 +592,11 @@ public class NeuralEvaluator {
             double value = Math.tanh(valueSum);
 
             return new ForwardResult(value, policy);
+            } finally {
+                modelLock.readLock().unlock();
+            }
         } finally {
-            modelLock.readLock().unlock();
+            lifecycleLock.unlock();
         }
     }
 
@@ -617,8 +641,16 @@ public class NeuralEvaluator {
         int batchSize = planes.length;
         if (batchSize == 0) return 0;
 
-        modelLock.writeLock().lock();
         try {
+            lifecycleLock.lockInterruptibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0;
+        }
+        try {
+            if (released) return 0;
+            modelLock.writeLock().lock();
+            try {
             // 确保动量缓冲就绪
             if (momentum > 0) ensureVelocities();
             // ── 梯度累加器 ──────────────────────────────────────────────
@@ -924,8 +956,11 @@ public class NeuralEvaluator {
             modelVersion++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
             return totalLoss / batchSize;
+            } finally {
+                modelLock.writeLock().unlock();
+            }
         } finally {
-            modelLock.writeLock().unlock();
+            lifecycleLock.unlock();
         }
     }
 
@@ -1403,41 +1438,80 @@ public class NeuralEvaluator {
 
     public void save(Path path) throws IOException {
         Path absolute = path.toAbsolutePath();
-        Path temp = absolute.resolveSibling(absolute.getFileName() + ".tmp");
-        ModelWeights m = snapshot();
-        try (DataOutputStream out = new DataOutputStream(
-                Files.newOutputStream(temp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING))) {
-            out.writeInt(MODEL_MAGIC);
-            out.writeInt(MODEL_FORMAT);
-            out.writeLong(m.version);
-            // 9 套子块权重
-            for (int b = 0; b < NUM_BLOCKS; b++) {
-                writeMatrix(out, m.subW1[b]); writeVector(out, m.subB1[b]);
-            }
-            // 9 套字块权重
-            for (int b = 0; b < NUM_BLOCKS; b++) {
-                writeMatrix(out, m.blockW1[b]); writeVector(out, m.blockB1[b]);
-            }
-            writeMatrix(out, m.topW1); writeVector(out, m.topB1);
-            writeMatrix(out, m.policyW); writeVector(out, m.policyB);
-            writeMatrix(out, m.valueW1); writeVector(out, m.valueB1);
-            writeVector(out, m.valueW2); out.writeFloat((float)m.valueB2);
-        }
+        Path parent = absolute.getParent();
+        if (parent != null) Files.createDirectories(parent);
+        Path temp = Files.createTempFile(parent == null ? Path.of(".") : parent,
+                absolute.getFileName().toString() + ".", ".tmp");
         try {
-            Files.move(temp, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-            Files.move(temp, absolute, StandardCopyOption.REPLACE_EXISTING);
+            ModelWeights m = snapshot();
+            // 缓冲流：模型 ~37 万 float 逐值写出，无缓冲时每次 writeFloat 都是一次系统调用
+            try (DataOutputStream out = new DataOutputStream(new java.io.BufferedOutputStream(
+                    Files.newOutputStream(temp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING),
+                    1 << 16))) {
+                out.writeInt(MODEL_MAGIC);
+                out.writeInt(MODEL_FORMAT);
+                out.writeLong(m.version);
+                // 9 套子块权重
+                for (int b = 0; b < NUM_BLOCKS; b++) {
+                    writeMatrix(out, m.subW1[b]); writeVector(out, m.subB1[b]);
+                }
+                // 9 套字块权重
+                for (int b = 0; b < NUM_BLOCKS; b++) {
+                    writeMatrix(out, m.blockW1[b]); writeVector(out, m.blockB1[b]);
+                }
+                writeMatrix(out, m.topW1); writeVector(out, m.topB1);
+                writeMatrix(out, m.policyW); writeVector(out, m.policyB);
+                writeMatrix(out, m.valueW1); writeVector(out, m.valueB1);
+                writeVector(out, m.valueW2); out.writeFloat((float)m.valueB2);
+            }
+            replaceFile(temp, absolute);
+        } finally {
+            Files.deleteIfExists(temp);
         }
     }
 
+    /**
+     * 原子替换目标文件；Windows 上若另一线程/进程正持有目标文件的读句柄
+     * （JVM 流不申请 FILE_SHARE_DELETE），replace 会抛 AccessDeniedException。
+     * 读取窗口极短（缓冲流毫秒级），指数退避重试即可收敛。
+     */
+    private static void replaceFile(Path temp, Path absolute) throws IOException {
+        IOException last = null;
+        for (int attempt = 0; attempt < 6; attempt++) {
+            try {
+                try {
+                    Files.move(temp, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(temp, absolute, StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (java.nio.file.AccessDeniedException e) {
+                last = e;
+                try {
+                    Thread.sleep(20L << attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("interrupted while replacing " + absolute, ie);
+                }
+            }
+        }
+        throw last;
+    }
+
     public void load(Path path) throws IOException {
-        try (DataInputStream in = new DataInputStream(Files.newInputStream(path))) {
+        // 缓冲流：与 save 对称，避免 ~37 万次逐 float 读取的系统调用开销
+        try (DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(
+                Files.newInputStream(path), 1 << 16))) {
             int magic = in.readInt();
             int fmt = in.readInt();
-            // 向后兼容：NEV2（0x4E455632）用 double 8 字节，NEV3 用 float 4 字节
-            boolean isDouble = (magic == 0x4E455632 && fmt == 2);
-            if (magic != MODEL_MAGIC && magic != 0x4E455632)
-                throw new IOException("Unsupported model format: magic=" + Integer.toHexString(magic) + " fmt=" + fmt);
+            boolean currentFormat = magic == MODEL_MAGIC && fmt == MODEL_FORMAT;
+            boolean legacyFormat = magic == LEGACY_MODEL_MAGIC && fmt == LEGACY_MODEL_FORMAT;
+            if (!currentFormat && !legacyFormat) {
+                throw new IOException("Unsupported model format: magic="
+                        + Integer.toHexString(magic) + " fmt=" + fmt);
+            }
+            // 向后兼容：NEV2 用 double 8 字节，NEV3 用 float 4 字节。
+            boolean isDouble = legacyFormat;
             long ver = in.readLong();
 
             double[][][] lSubW1 = new double[NUM_BLOCKS][SUB_INPUT][SUB_HIDDEN];
@@ -1453,7 +1527,10 @@ public class NeuralEvaluator {
             double[][] lValueW1 = readMatrix(in, TOP_HIDDEN, VALUE_HIDDEN, isDouble);
             double[] lValueB1 = readVector(in, VALUE_HIDDEN, isDouble);
             double[] lValueW2 = readVector(in, VALUE_HIDDEN, isDouble);
-            double lValueB2 = isDouble ? in.readDouble() : in.readFloat();
+            double lValueB2 = readFinite(in, isDouble);
+            if (in.read() != -1) {
+                throw new IOException("Unexpected trailing data in model file");
+            }
 
             ModelWeights m = new ModelWeights(lSubW1, lSubB1, lBlockW1, lBlockB1,
                     lTopW1, lTopB1, lPolicyW, lPolicyB,
@@ -1470,18 +1547,23 @@ public class NeuralEvaluator {
     }
     private static double[][] readMatrix(DataInputStream in, int r, int c, boolean isDouble) throws IOException {
         double[][] m = new double[r][c];
-        for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) m[i][j] = isDouble ? in.readDouble() : in.readFloat();
+        for (int i = 0; i < r; i++) for (int j = 0; j < c; j++) m[i][j] = readFinite(in, isDouble);
         return m;
     }
     private static void readMatrix(DataInputStream in, double[][] target, boolean isDouble) throws IOException {
-        for (double[] r : target) for (int j = 0; j < r.length; j++) r[j] = isDouble ? in.readDouble() : in.readFloat();
+        for (double[] r : target) for (int j = 0; j < r.length; j++) r[j] = readFinite(in, isDouble);
     }
     private static double[] readVector(DataInputStream in, int n, boolean isDouble) throws IOException {
         double[] v = new double[n];
-        for (int i = 0; i < n; i++) v[i] = isDouble ? in.readDouble() : in.readFloat();
+        for (int i = 0; i < n; i++) v[i] = readFinite(in, isDouble);
         return v;
     }
     private static void readVector(DataInputStream in, double[] target, boolean isDouble) throws IOException {
-        for (int i = 0; i < target.length; i++) target[i] = isDouble ? in.readDouble() : in.readFloat();
+        for (int i = 0; i < target.length; i++) target[i] = readFinite(in, isDouble);
+    }
+    private static double readFinite(DataInputStream in, boolean isDouble) throws IOException {
+        double value = isDouble ? in.readDouble() : in.readFloat();
+        if (!Double.isFinite(value)) throw new IOException("Non-finite model weight");
+        return value;
     }
 }

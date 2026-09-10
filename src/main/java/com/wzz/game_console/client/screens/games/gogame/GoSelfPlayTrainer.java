@@ -86,6 +86,8 @@ public final class GoSelfPlayTrainer {
     private final Config config;
     private NeuralEvaluator evaluator;
     private final List<Sample> replayBuffer = new ArrayList<>();
+    /** Serializes generation, replay-buffer, and evaluator mutation per trainer instance. */
+    private final Object generationLock = new Object();
     /** 当前代次数（用于探索衰减等训练策略） */
     private int generation = 0;
 
@@ -103,36 +105,76 @@ public final class GoSelfPlayTrainer {
     }
 
     public NeuralEvaluator getEvaluator() { return evaluator; }
-    public int getReplayBufferSize() { return replayBuffer.size(); }
-    public void clearReplayBuffer() { replayBuffer.clear(); }
+    public int getReplayBufferSize() {
+        synchronized (generationLock) { return replayBuffer.size(); }
+    }
+    public void clearReplayBuffer() {
+        synchronized (generationLock) { replayBuffer.clear(); }
+    }
 
     /** Runs one generation, then trains the shared model on the collected positions. */
     public Result runGeneration(int games, int parallelism, int epochs, double learningRate, long seed) {
         if (games < 0 || epochs < 0 || learningRate <= 0) throw new IllegalArgumentException("Invalid generation parameters");
-        if (games == 0) return new Result(0, 0, 0, 0, evaluator);
+        synchronized (generationLock) {
+            return runGenerationLocked(games, parallelism, epochs, learningRate, seed);
+        }
+    }
+
+    private Result runGenerationLocked(int games, int parallelism, int epochs, double learningRate, long seed) {
+        if (games == 0 || Thread.currentThread().isInterrupted()) return new Result(games, 0, 0, 0, evaluator);
         generation++; // 递增代次，供探索衰减使用
         // 探索强度随训练代次衰减：gen 1→1.0, gen 41→0.2（下限 0.2）
         final double expScale = Math.max(0.2, 1.0 - 0.02 * (generation - 1));
         int workers = Math.max(1, Math.min(parallelism <= 0 ? config.parallelism : parallelism, games));
         final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
         ExecutorService pool = Executors.newFixedThreadPool(workers);
-        List<Future<GameSamples>> futures = new ArrayList<>();
+        List<Future<GameSamples>> futures = new ArrayList<>(workers);
         try {
-            for (int i = 0; i < games; i++) {
-                final int gameIndex = i;
+            List<Sample> newSamples = new ArrayList<>();
+            int nextGame = 0;
+            for (; nextGame < workers; nextGame++) {
+                final int gameIndex = nextGame;
                 futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
             }
-            List<Sample> newSamples = new ArrayList<>();
             int completed = 0;
-            for (Future<GameSamples> future : futures) {
+            while (!futures.isEmpty()) {
+                Future<GameSamples> future = futures.remove(0);
                 try {
                     GameSamples game = future.get();
-                    newSamples.addAll(game.samples);
-                    completed++;
-                } catch (Exception e) {
-                    System.err.println("[SelfPlay] game failed: " + e.getMessage());
+                    if (game.completed) {
+                        appendReplaySamples(newSamples, game.samples);
+                        completed++;
+                    } else {
+                        System.err.println("[SelfPlay] game truncated; discarding samples");
+                    }
+                    if (nextGame < games) {
+                        final int gameIndex = nextGame++;
+                        futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    for (Future<GameSamples> pending : futures) pending.cancel(true);
+                    future.cancel(true);
+                    return new Result(games, 0, 0, 0, evaluator);
+                } catch (java.util.concurrent.CancellationException ce) {
+                    for (Future<GameSamples> pending : futures) pending.cancel(true);
+                    return new Result(games, 0, 0, 0, evaluator);
+                } catch (java.util.concurrent.ExecutionException ee) {
+                    Throwable cause = ee.getCause();
+                    if (cause instanceof java.util.concurrent.CancellationException
+                            || cause instanceof InterruptedException) {
+                        if (cause instanceof InterruptedException) Thread.currentThread().interrupt();
+                        for (Future<GameSamples> pending : futures) pending.cancel(true);
+                        return new Result(games, 0, 0, 0, evaluator);
+                    }
+                    System.err.println("[SelfPlay] game failed: " + cause);
+                    if (nextGame < games) {
+                        final int gameIndex = nextGame++;
+                        futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
+                    }
                 }
             }
+            if (Thread.currentThread().isInterrupted()) return new Result(games, 0, 0, 0, evaluator);
             replayBuffer.addAll(newSamples);
             trimReplayBuffer();
             double loss = train(replayBuffer, epochs, learningRate, seed ^ 0xD1B54A32D192ED03L);
@@ -149,6 +191,14 @@ public final class GoSelfPlayTrainer {
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
             }
+        }
+    }
+
+    private void appendReplaySamples(List<Sample> samples, List<Sample> gameSamples) {
+        samples.addAll(gameSamples);
+        int max = Math.max(1, config.maxReplaySamples);
+        if (samples.size() > max) {
+            samples.subList(0, samples.size() - max).clear();
         }
     }
 
@@ -178,6 +228,7 @@ public final class GoSelfPlayTrainer {
         GoGame game = GoGame.rulesOnly();
         MCTSGoAI ai = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, model);
         ai.setRandomSeed(seed);
+        double roundKomi = GoGame.getConfiguredKomi();
         // 自对弈模式：开启根节点 Dirichlet 噪声 + 访问分布温度采样（增强探索）
         ai.setSelfPlayMode(true);
         // 探索强度随训练代次衰减
@@ -186,43 +237,39 @@ public final class GoSelfPlayTrainer {
             int moves = 0;
             int[] lastMoveOnBoard = null; // 上一手（构建 plane 3，与推理的 node.move 对齐）
             while (!game.isGameOver() && moves < Math.max(1, config.maxMoves)) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new java.util.concurrent.CancellationException("self-play generation cancelled");
+                }
                 GoPlayer player = game.getCurrentPlayer();
+                int[] previousLastMove = lastMoveOnBoard == null ? null : lastMoveOnBoard.clone();
                 // 获取当前棋盘副本
                 GoPlayer[][] boardCopy = game.getBoardCopy();
 
                 // 获取 MCTS 走法（并记录访问分布作为策略目标）
                 int[] move = ai.getBestMove(game);
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new java.util.concurrent.CancellationException("self-play generation cancelled");
+                }
                 // 从 MCTS 获取访问分布（访问数 / 总访问数）
                 double[] policyTarget = ai.getVisitDistribution();
 
-                // 存储样本：棋盘 + 当前玩家 + 上一手 + 策略目标（价值目标在终局后统一设置）
-                samples.add(new Sample(boardCopy, player, lastMoveOnBoard, policyTarget));
-
-                // 执行走法
-                boolean played = move != null && move.length >= 2 && game.placeStone(move[0], move[1]);
-                if (!played) {
-                    for (int x = 0; x < game.getBoardSize() && !played; x++) {
-                        for (int y = 0; y < game.getBoardSize() && !played; y++) {
-                            played = game.placeStone(x, y);
-                        }
-                    }
-                }
-                if (!played) {
-                    game.pass();
-                    lastMoveOnBoard = null; // 弃权无位置，plane 3 置空
-                } else {
-                    lastMoveOnBoard = move != null && move.length >= 2 ? new int[]{move[0], move[1]} : null;
-                }
+                GoTrainingMove.Applied applied = GoTrainingMove.apply(game, move, policyTarget);
+                lastMoveOnBoard = applied.coordinates();
+                policyTarget = applied.policy();
+                samples.add(new Sample(boardCopy, player, previousLastMove, policyTarget));
                 moves++;
             }
-            if (!game.isGameOver()) game.pass();
+            if (!game.isGameOver()) {
+                // maxMoves is a truncation guard, not an implicit second pass.
+                return new GameSamples(Collections.emptyList(), false);
+            }
 
             // 设置价值目标（中国规则数子法）
-            double margin = game.getScoreMargin(GoPlayer.BLACK);
+            double margin = game.getScoreMargin(GoPlayer.BLACK, Collections.emptySet(), roundKomi);
             for (Sample s : samples) {
                 s.valueTarget = clamp((s.player == GoPlayer.BLACK ? margin : -margin) / 100.0);
             }
-            return new GameSamples(samples);
+            return new GameSamples(samples, true);
         } finally {
             ai.shutdown();
             game.close();
@@ -243,6 +290,7 @@ public final class GoSelfPlayTrainer {
             Collections.shuffle(samples, random);
             int batchLimit = Math.max(1, config.batchSize);
             for (int start = 0; start < samples.size(); start += batchLimit) {
+                if (Thread.currentThread().isInterrupted()) return batches == 0 ? 0 : total / batches;
                 int end = Math.min(samples.size(), start + batchLimit);
                 int baseCount = end - start;
                 double[][][][] planes = new double[baseCount * symCount][][][];
@@ -284,6 +332,7 @@ public final class GoSelfPlayTrainer {
                         n++;
                     }
                 }
+                if (Thread.currentThread().isInterrupted()) return batches == 0 ? 0 : total / batches;
                 total += evaluator.trainMiniBatch(planes, aux, values, policies,
                         learningRate, config.l2, config.gradientClip, config.momentum);
                 batches++;
@@ -311,6 +360,10 @@ public final class GoSelfPlayTrainer {
 
     private static final class GameSamples {
         final List<Sample> samples;
-        GameSamples(List<Sample> samples) { this.samples = samples; }
+        final boolean completed;
+        GameSamples(List<Sample> samples, boolean completed) {
+            this.samples = samples;
+            this.completed = completed;
+        }
     }
 }

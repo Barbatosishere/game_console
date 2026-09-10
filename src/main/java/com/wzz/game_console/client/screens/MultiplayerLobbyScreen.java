@@ -3,6 +3,7 @@ package com.wzz.game_console.client.screens;
 import com.wzz.game_console.client.screens.games.LanMultiplayerScreen;
 import com.wzz.game_console.init.ModNetworks;
 import com.wzz.game_console.network.MultiplayerGamePacket;
+import com.wzz.game_console.network.MultiplayerInviteAttempt;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -62,6 +63,8 @@ public class MultiplayerLobbyScreen extends Screen {
     // ─── 等待状态 ───
     private String waitingMessage = "";
     private UUID invitedPlayer = null;
+    private String invitedGameId = null;
+    private UUID invitedAttemptNonce = null;
 
     // ─── 斗地主三人联机：需要选两个玩家 ───
     private final Set<UUID> selectedLanPeers = Collections.synchronizedSet(new LinkedHashSet<>());  // 最多2个，线程安全
@@ -71,7 +74,8 @@ public class MultiplayerLobbyScreen extends Screen {
     private UUID lanHostUuid = null;      // 发起邀请时记录主机自身UUID
 
     // ─── 等待超时机制 ───
-    private long waitingStartTick = 0;
+    /** -1 means the lobby is not currently waiting for invite responses. */
+    private long waitingStartTick = -1L;
     private static final long WAIT_TIMEOUT_TICKS = 600; // 30秒超时
 
     // ─── 分页 ───
@@ -88,6 +92,8 @@ public class MultiplayerLobbyScreen extends Screen {
     // 已接受邀请的主机与时间戳：候选者接受邀请后会切到对局界面等待开局（pendingInvite 已清空），
     // 主机此后发来的 INVITE_CANCELLED 需要靠它做兜底通知（见 handleIncomingPacket）
     private static UUID acceptedInviteHostUuid = null;
+    private static String acceptedInviteGameId = null;
+    private static UUID acceptedInviteNonce = null;
     private static long acceptedInviteMs = 0;
     /** 兜底通知有效窗口：主机等待上限 30 秒，60 秒足以覆盖其流产通知，又防过期报文误伤 */
     private static final long ACCEPTED_INVITE_VALID_MS = 60_000;
@@ -97,6 +103,24 @@ public class MultiplayerLobbyScreen extends Screen {
     // 原因：回放发生在新建的大厅实例上，邀请上下文（invitedPlayer、selectedLanPeers 等）
     // 无法随包可靠恢复，回放会被来源校验全部拒绝（形同虚设），且误恢复上下文反而
     // 可能被伪造包利用。故降级为明确的 LOGGER.warn + 丢弃，见 ACCEPT_INVITE 分支。
+
+    private static MultiplayerGame findGame(String gameId) {
+        if (gameId == null || gameId.isBlank()) return null;
+        for (MultiplayerGame game : MP_GAMES) {
+            if (game.id().equals(gameId) && game.supportsLAN()) return game;
+        }
+        return null;
+    }
+
+    private static void clearAcceptedInvite(UUID sender, String gameId) {
+        if (Objects.equals(acceptedInviteHostUuid, sender)
+                && Objects.equals(acceptedInviteGameId, gameId)) {
+            acceptedInviteHostUuid = null;
+            acceptedInviteGameId = null;
+            acceptedInviteNonce = null;
+            acceptedInviteMs = 0;
+        }
+    }
 
     public MultiplayerLobbyScreen() {
         super(Component.literal("联机大厅"));
@@ -112,10 +136,27 @@ public class MultiplayerLobbyScreen extends Screen {
         Minecraft mc = Minecraft.getInstance();
         switch (packet.getType()) {
             case INVITE -> {
+                UUID sender = packet.getSenderUuid();
+                UUID nonce = MultiplayerInviteAttempt.parse(packet.getData());
+                UUID self = mc.player != null ? mc.player.getUUID() : null;
+                if (sender == null || sender.equals(self) || nonce == null || findGame(packet.getGameId()) == null) {
+                    LOGGER.warn("[游戏机联机] 忽略非法邀请 sender={} gameId={}", sender, packet.getGameId());
+                    break;
+                }
+                if (pendingInvite != null
+                        && (!Objects.equals(pendingInvite.getSenderUuid(), sender)
+                        || !Objects.equals(pendingInvite.getGameId(), packet.getGameId())
+                        || !Objects.equals(MultiplayerInviteAttempt.parse(pendingInvite.getData()), nonce))) {
+                    LOGGER.warn("[游戏机联机] 已有待处理邀请，拒绝覆盖 sender={} gameId={}", sender, packet.getGameId());
+                    ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+                            MultiplayerGamePacket.PacketType.DECLINE_INVITE,
+                            sender, packet.getGameId(), MultiplayerInviteAttempt.encode(nonce)));
+                    break;
+                }
                 pendingInvite = packet;
-                // 邀请者名字优先用服务端盖章的 senderName，data 只作兜底
-                inviterName = (packet.getSenderName() != null && !packet.getSenderName().isEmpty())
-                        ? packet.getSenderName() : packet.getData();
+                // 邀请者名字只使用服务端盖章字段；data 保留给邀请尝试 nonce。
+                inviterName = packet.getSenderName() != null && !packet.getSenderName().isEmpty()
+                        ? packet.getSenderName() : "对方";
                 pendingInviteArrivalMs = System.currentTimeMillis();
                 // 如果当前不在大厅，显示通知
                 if (!(mc.screen instanceof MultiplayerLobbyScreen)) {
@@ -148,7 +189,10 @@ public class MultiplayerLobbyScreen extends Screen {
                     // 仅当取消方确实是当前待处理邀请的发起者时才清除并提示，
                     // 防止伪造包顶掉正常邀请、或无关报文打扰玩家
                     if (pendingInvite != null
-                            && Objects.equals(pendingInvite.getSenderUuid(), packet.getSenderUuid())) {
+                            && Objects.equals(pendingInvite.getSenderUuid(), packet.getSenderUuid())
+                            && Objects.equals(pendingInvite.getGameId(), packet.getGameId())
+                            && Objects.equals(MultiplayerInviteAttempt.parse(pendingInvite.getData()),
+                            MultiplayerInviteAttempt.parse(packet.getData()))) {
                         pendingInvite = null;
                         inviterName = null;
                         if (mc.player != null) {
@@ -164,9 +208,14 @@ public class MultiplayerLobbyScreen extends Screen {
                     //   回到大厅并用 chat 提示（沿用"邀请已取消/超时"的提示机制）
                     if (acceptedInviteHostUuid != null
                             && Objects.equals(acceptedInviteHostUuid, packet.getSenderUuid())
+                            && Objects.equals(acceptedInviteGameId, packet.getGameId())
+                            && MultiplayerInviteAttempt.matches(packet.getData(), acceptedInviteNonce)
                             && System.currentTimeMillis() - acceptedInviteMs <= ACCEPTED_INVITE_VALID_MS
                             && !(mc.screen instanceof MultiplayerLobbyScreen)) {
                         acceptedInviteHostUuid = null;
+                        acceptedInviteGameId = null;
+                        acceptedInviteNonce = null;
+                        acceptedInviteMs = 0;
                         mc.setScreen(new MultiplayerLobbyScreen());
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
@@ -179,6 +228,13 @@ public class MultiplayerLobbyScreen extends Screen {
                 mc.execute(() -> {
                     if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
                         UUID from = packet.getSenderUuid();
+                        if (lobby.state != LobbyState.WAITING || lobby.invitedGameId == null
+                                || !lobby.invitedGameId.equals(packet.getGameId())
+                                || !MultiplayerInviteAttempt.matches(packet.getData(), lobby.invitedAttemptNonce)) {
+                            LOGGER.warn("[游戏机联机] 忽略与当前邀请不匹配的拒绝消息 sender={} gameId={}",
+                                    from, packet.getGameId());
+                            return;
+                        }
                         // 斗地主批量邀请路径：候选人拒绝则移出名单，凑不齐两人时终止等待
                         if (from != null && lobby.selectedLanPeers.contains(from)) {
                             lobby.selectedLanPeers.remove(from);
@@ -186,9 +242,7 @@ public class MultiplayerLobbyScreen extends Screen {
                                     ? "一位玩家" : packet.getSenderName();
                             if (lobby.state == LobbyState.WAITING && lobby.selectedLanPeers.size() < 2) {
                                 // 剩余候选不足两人，永远等不到 2 个接受，直接终止
-                                lobby.state = LobbyState.MODE_SELECT;
-                                lobby.resetLanWaitState();
-                                lobby.waitingMessage = nm + " 拒绝了斗地主邀请";
+                                lobby.terminateWaiting(nm + " 拒绝了斗地主邀请");
                             } else if (mc.player != null) {
                                 mc.player.displayClientMessage(
                                         Component.literal("[游戏机] " + nm + " 拒绝了斗地主邀请"), false);
@@ -217,23 +271,44 @@ public class MultiplayerLobbyScreen extends Screen {
             // ─── 游戏内网络包路由（通用，任何实现 LanMultiplayerScreen 的 Screen 均可接收）
             case GAME_MOVE -> {
                 mc.execute(() -> {
-                    if (mc.screen instanceof LanMultiplayerScreen s)
-                        // 传入服务端盖章的发送者 UUID，供需要按来源校验座位的游戏使用
-                        s.onRemoteMove(packet.getSenderUuid(), packet.getData());
+                    if (mc.screen instanceof LanMultiplayerScreen s
+                            && s.getLanGameId() != null
+                            && packet.getGameId() != null
+                            && Objects.equals(s.getLanGameId(), packet.getGameId()))
+                        {
+                            MultiplayerGamePacket.DataEnvelope data = s.acceptLanEnvelope(packet.getType(), packet.getSenderUuid(), packet.getData());
+                            if (data != null) {
+                                clearAcceptedInvite(packet.getSenderUuid(), packet.getGameId());
+                                s.onRemoteMove(packet.getSenderUuid(), data.body());
+                            }
+                        }
                 });
             }
             case GAME_STATE_SYNC -> {
                 mc.execute(() -> {
-                    if (mc.screen instanceof LanMultiplayerScreen s)
-                        // 传入服务端盖章的发送者 UUID，供需要按来源校验的游戏使用
-                        s.onRemoteState(packet.getSenderUuid(), packet.getData());
+                    if (mc.screen instanceof LanMultiplayerScreen s
+                            && s.getLanGameId() != null
+                            && packet.getGameId() != null
+                            && Objects.equals(s.getLanGameId(), packet.getGameId()))
+                        {
+                            MultiplayerGamePacket.DataEnvelope data = s.acceptLanEnvelope(packet.getType(), packet.getSenderUuid(), packet.getData());
+                            if (data != null) {
+                                clearAcceptedInvite(packet.getSenderUuid(), packet.getGameId());
+                                s.onRemoteState(packet.getSenderUuid(), data.body());
+                            }
+                        }
                 });
             }
             case GAME_OVER -> {
                 mc.execute(() -> {
-                    if (mc.screen instanceof LanMultiplayerScreen s)
-                        // 传入服务端盖章的发送者 UUID，供需要按来源校验的游戏使用
-                        s.onRemoteGameOver(packet.getSenderUuid(), packet.getData());
+                    if (mc.screen instanceof LanMultiplayerScreen s
+                            && s.getLanGameId() != null
+                            && packet.getGameId() != null
+                            && Objects.equals(s.getLanGameId(), packet.getGameId()))
+                        {
+                            MultiplayerGamePacket.DataEnvelope data = s.acceptLanEnvelope(packet.getType(), packet.getSenderUuid(), packet.getData());
+                            if (data != null) s.onRemoteGameOver(packet.getSenderUuid(), data.body());
+                        }
                 });
             }
             case LEAVE_GAME -> {
@@ -264,6 +339,8 @@ public class MultiplayerLobbyScreen extends Screen {
                                     Component.literal("[游戏机] " + name + " 已退出对局"), false);
                         }
                         mc.setScreen(null);
+                    } else if (mc.screen instanceof MultiplayerLobbyScreen lobby) {
+                        lobby.onWaitingPeerLeave(packet);
                     }
                 });
             }
@@ -317,12 +394,11 @@ public class MultiplayerLobbyScreen extends Screen {
         ));
     }
 
-    private void sendInvite(UUID target) {
+    private void sendInvite(UUID target, UUID nonce) {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
-        String senderName = Minecraft.getInstance().player != null ?
-                Minecraft.getInstance().player.getGameProfile().getName() : "???";
         ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.INVITE, target, game.id, senderName
+                MultiplayerGamePacket.PacketType.INVITE, target, game.id,
+                MultiplayerInviteAttempt.encode(nonce)
         ));
     }
 
@@ -337,16 +413,17 @@ public class MultiplayerLobbyScreen extends Screen {
     private void sendLandlordInvites() {
         MultiplayerGame game = MP_GAMES.get(selectedGameIndex);
         Minecraft mc = Minecraft.getInstance();
-        String senderName = mc.player != null ?
-                mc.player.getGameProfile().getName() : "???";
         // 记录主机UUID，启动游戏时传入三个UUID（主机+两个接受者）
         lanHostUuid = mc.player != null ? mc.player.getGameProfile().getId() : null;
+        invitedAttemptNonce = UUID.randomUUID();
         for (UUID uuid : selectedLanPeersInOrder()) {
             ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                    MultiplayerGamePacket.PacketType.INVITE, uuid, game.id, senderName
+                    MultiplayerGamePacket.PacketType.INVITE, uuid, game.id,
+                    MultiplayerInviteAttempt.encode(invitedAttemptNonce)
             ));
         }
         invitedPlayer = null; // 斗地主用 selectedLanPeers 代替
+        invitedGameId = game.id();
         expectedAccepts = 2;
         pendingAccepts = 0;
         acceptedPeers.clear();
@@ -364,10 +441,13 @@ public class MultiplayerLobbyScreen extends Screen {
         if (invitedPlayer != null) targets.add(invitedPlayer);
         targets.addAll(selectedLanPeers); // 斗地主：批量邀请的所有候选
         if (targets.isEmpty()) return;
-        String gameId = MP_GAMES.get(selectedGameIndex).id;
+        String gameId = invitedGameId;
+        UUID nonce = invitedAttemptNonce;
+        if (gameId == null || nonce == null) return;
         for (UUID target : targets) {
             ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                    MultiplayerGamePacket.PacketType.INVITE_CANCELLED, target, gameId, ""
+                    MultiplayerGamePacket.PacketType.INVITE_CANCELLED, target, gameId,
+                    MultiplayerInviteAttempt.encode(nonce)
             ));
         }
     }
@@ -375,13 +455,15 @@ public class MultiplayerLobbyScreen extends Screen {
     /** 统一清理联机等待状态（无论成功或失败都调用） */
     private void resetLanWaitState() {
         invitedPlayer = null;
+        invitedGameId = null;
+        invitedAttemptNonce = null;
         lanHostUuid = null;
         pendingAccepts = 0;
         expectedAccepts = 1;
         acceptedPeers.clear();
         selectedLanPeers.clear();
         waitingMessage = "";
-        waitingStartTick = 0;
+        waitingStartTick = -1L;
     }
 
     /**
@@ -412,15 +494,36 @@ public class MultiplayerLobbyScreen extends Screen {
         }
     }
 
+    private void onWaitingPeerLeave(MultiplayerGamePacket packet) {
+        UUID sender = packet.getSenderUuid();
+        if (state != LobbyState.WAITING || !"landlord".equals(invitedGameId)
+                || !Objects.equals(invitedGameId, packet.getGameId())
+                || !MultiplayerInviteAttempt.matches(packet.getData(), invitedAttemptNonce)
+                || sender == null || !acceptedPeers.containsKey(sender)
+                || !selectedLanPeers.contains(sender)) {
+            return;
+        }
+        String name = acceptedPeers.remove(sender);
+        selectedLanPeers.remove(sender);
+        terminateWaiting((name == null || name.isEmpty() ? "一位玩家" : name) + " 已退出等待");
+    }
+
     private void onInviteAccepted(MultiplayerGamePacket packet) {
         // 接受者身份一律以服务端盖章的 senderUuid/senderName 为准
         // （targetPlayer 是收件人即主机自己，不可用作接受者身份）
         String gameId      = packet.getGameId();
         UUID accepterUuid  = packet.getSenderUuid();
         String accepterName = packet.getSenderName() != null && !packet.getSenderName().isEmpty()
-                ? packet.getSenderName() : packet.getData();
+                ? packet.getSenderName() : "一位玩家";
         if (accepterUuid == null) {
             LOGGER.warn("[游戏机联机] 收到缺少发送者身份的 ACCEPT_INVITE，已忽略");
+            return;
+        }
+        if (state != LobbyState.WAITING || invitedGameId == null
+                || !invitedGameId.equals(gameId) || findGame(gameId) == null
+                || !MultiplayerInviteAttempt.matches(packet.getData(), invitedAttemptNonce)) {
+            LOGGER.warn("[游戏机联机] 忽略与当前邀请不匹配的 ACCEPT_INVITE sender={} gameId={} pending={}",
+                    accepterUuid, gameId, invitedGameId);
             return;
         }
 
@@ -477,7 +580,7 @@ public class MultiplayerLobbyScreen extends Screen {
             lastRefreshTime = tickCount;
         }
         // 等待超时机制：长时间无人接受则自动取消邀请
-        if (state == LobbyState.WAITING && waitingStartTick > 0
+        if (state == LobbyState.WAITING && waitingStartTick >= 0
                 && tickCount - waitingStartTick > WAIT_TIMEOUT_TICKS) {
             terminateWaiting("等待超时，邀请已取消");
         }
@@ -581,19 +684,19 @@ public class MultiplayerLobbyScreen extends Screen {
         if (game.supportsAI) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
                     "🤖 玩家 vs 人机", 0xFF2A4A14);
-            if (h) hoveredModeIndex = 0;
+            if (h) hoveredModeIndex = modeIdx;
             modeIdx++;
         }
         if (game.supportsLocal) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
                     "👥 本地双人", 0xFF4A3A14);
-            if (h) hoveredModeIndex = 1;
+            if (h) hoveredModeIndex = modeIdx;
             modeIdx++;
         }
         if (game.supportsLAN) {
             boolean h = drawModeButton(g, mx, my, cx - btnW/2, startY + modeIdx * 30, btnW, btnH,
                     "🌐 局域网对战", 0xFF143A4A);
-            if (h) hoveredModeIndex = 2;
+            if (h) hoveredModeIndex = modeIdx;
             modeIdx++;
         }
 
@@ -751,21 +854,24 @@ public class MultiplayerLobbyScreen extends Screen {
 
             // 接受按钮：nx+20, ny+nh-28, 宽110, 高22
             if (mx >= nx + 20 && mx <= nx + 130 && my >= ny + nh - 28 && my <= ny + nh - 6) {
-                String gameId    = pendingInvite.getGameId();
+                String gameId = pendingInvite.getGameId();
+                UUID inviteNonce = MultiplayerInviteAttempt.parse(pendingInvite.getData());
                 // 主机 UUID 以服务端盖章的发送者身份为准（targetPlayer 仍是收件人即自己）
-                UUID hostUuid    = pendingInvite.getSenderUuid();
-                if (hostUuid == null) {
-                    // 缺失发送者身份的畸形邀请，直接丢弃
+                UUID hostUuid = pendingInvite.getSenderUuid();
+                if (hostUuid == null || inviteNonce == null) {
+                    // 缺失发送者身份或邀请尝试标识的畸形邀请，直接丢弃
                     pendingInvite = null;
                     return true;
                 }
                 ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
                         MultiplayerGamePacket.PacketType.ACCEPT_INVITE,
-                        hostUuid, gameId, ""
+                        hostUuid, gameId, MultiplayerInviteAttempt.encode(inviteNonce)
                 ));
                 // 记录已接受邀请的主机：主机此后流产(INVITE_CANCELLED)时用于兜底通知，
                 // 否则已切到对局界面等待的候选者收不到任何通知
                 acceptedInviteHostUuid = hostUuid;
+                acceptedInviteGameId = gameId;
+                acceptedInviteNonce = inviteNonce;
                 acceptedInviteMs = System.currentTimeMillis();
                 pendingInvite = null;
                 // 被邀请方作为 CLIENT 直接启动游戏
@@ -779,7 +885,7 @@ public class MultiplayerLobbyScreen extends Screen {
                     case "chess"      -> new com.wzz.game_console.client.screens.games.ChessGameScreen(false, hostUuid);
                     case "go"         -> new com.wzz.game_console.client.screens.games.gogame.GoGameScreen(false, hostUuid);
                     // 斗地主CLIENT：等HOST推送初始状态（含玩家索引）
-                    case "landlord"   -> new com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen(false, hostUuid);
+                    case "landlord"   -> new com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen(false, hostUuid, inviteNonce);
                     default           -> null;
                 };
                 if (clientScreen != null) {
@@ -852,8 +958,10 @@ public class MultiplayerLobbyScreen extends Screen {
                 }
                 if (hoveredPlayerIndex >= 0 && hoveredPlayerIndex < onlinePlayers.size()) {
                     UUID target = onlinePlayers.get(hoveredPlayerIndex).uuid();
-                    sendInvite(target);
+                    invitedAttemptNonce = UUID.randomUUID();
+                    sendInvite(target, invitedAttemptNonce);
                     invitedPlayer = target;
+                    invitedGameId = MP_GAMES.get(selectedGameIndex).id();
                     expectedAccepts = 1;
                     pendingAccepts = 0;
                     acceptedPeers.clear();
@@ -919,11 +1027,13 @@ public class MultiplayerLobbyScreen extends Screen {
         boolean ai = "AI".equalsIgnoreCase(mode) || "HUMAN".equalsIgnoreCase(mode);
         boolean localTwoPlayer = "LOCAL_TWO_PLAYER".equalsIgnoreCase(mode) || "LOCAL".equalsIgnoreCase(mode);
         Screen gameScreen = switch (game.id) {
-            case "gomoku"    -> new com.wzz.game_console.client.screens.games.GomokuScreen();
+            case "gomoku"    -> new com.wzz.game_console.client.screens.games.GomokuScreen(ai);
             case "go"        -> new com.wzz.game_console.client.screens.games.gogame.GoGameScreen(
-                    new com.wzz.game_console.client.screens.games.gogame.GoGame());
+                    new com.wzz.game_console.client.screens.games.gogame.GoGame(ai));
             case "tictactoe" -> new com.wzz.game_console.client.screens.games.tictactoe.TicTacToeScreen(
-                    com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame.GameMode.SINGLE_PLAYER);
+                    localTwoPlayer
+                            ? com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame.GameMode.TWO_PLAYER
+                            : com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame.GameMode.SINGLE_PLAYER);
             case "chess"     -> new com.wzz.game_console.client.screens.games.ChessGameScreen(
                     ai ? com.wzz.game_console.client.screens.games.ChessGameScreen.GameMode.PVA
                             : com.wzz.game_console.client.screens.games.ChessGameScreen.GameMode.PVP);
@@ -977,7 +1087,7 @@ public class MultiplayerLobbyScreen extends Screen {
         } else {
             ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
                     MultiplayerGamePacket.PacketType.DECLINE_INVITE,
-                    inviterUuid, invite.getGameId(), ""));
+                    inviterUuid, invite.getGameId(), invite.getData()));
         }
         pendingInvite = null;
         inviterName = null;

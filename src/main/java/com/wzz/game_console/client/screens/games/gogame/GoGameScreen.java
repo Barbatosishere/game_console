@@ -16,13 +16,34 @@ import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+
 @OnlyIn(Dist.CLIENT)
 public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger(GoGameScreen.class);
     boolean showExitConfirm = false;
     private static final int BOARD_SIZE = 19;
 
-    private enum State { MENU, SETTINGS, PLAYING, GAME_OVER }
+    private enum State { MENU, SETTINGS, PLAYING, SCORING, GAME_OVER }
+    private final Set<Long> markedDead = new HashSet<>();
+    private boolean scoringConfirmed;
+    private long scoringRevision;
+    private UUID scoringEpoch;
+    private String scoringDigest = "";
+    private boolean remoteScoringConfirmed;
+    private long remoteConfirmedRevision = -1L;
+    private String remoteConfirmedDigest = "";
+    /** Canonical komi captured for this round's final scoring. */
+    private double roundKomi = GoGame.DEFAULT_KOMI;
+    private boolean roundKomiSet;
+    private long scoringLastBroadcastTick = -40L;
+    private GoScoringProtocol.Snapshot finalScoringSnapshot;
+    /** Round identity and accepted move index prevent delayed packets crossing a restart. */
+    private UUID gameEpoch = UUID.randomUUID();
+    private long networkPly;
     private State state = State.MENU;
     private final GoGame game;
     private long tickCount = 0;
@@ -45,7 +66,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     // ── AI 引擎设置 ─────────────────────────────────────────
     /** 设置界面中当前选中的引擎 */
-    private String settingsEngine = GameSettings.getString("go", "engine", "mcts");
+    private String settingsEngine = GoAI.normalizeEngine(GameSettings.getString("go", "engine", "mcts"));
     /** 设置界面中当前的搜索时间（ms） */
     private int settingsSearchTime = GameSettings.getInt("go", "searchTime", 3000);
     /** 设置界面中当前的 KataGo 路径 */
@@ -54,10 +75,16 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     /** AI 后台思考标记（防止重复启动线程） */
     private volatile boolean aiThinking = false;
-    /** AI 后台思考产生走法（null=建议弃权）；aiComputed=true 时有效 */
-    private volatile int[] aiPendingMove = null;
+    /** A failed AI turn remains frozen until the round is restarted. */
+    private boolean aiFailed = false;
+    /** Versioned result preserves action semantics and its source position across the worker boundary. */
+    private volatile GoGame.AiMoveComputation aiPendingComputation = null;
+    /** Serializes AI worker start, completion publication, and client-side consumption. */
+    private final Object aiWorkerLock = new Object();
     /** AI 后台是否已完成思考（待客户端线程消费） */
     private volatile boolean aiComputed = false;
+    /** Generation associated with the published result; access under aiWorkerLock. */
+    private int aiComputedGeneration = -1;
     /**
      * AI 搜索代际：resetGame 时递增，worker 落地前比对。
      * 修复：worker 的 finally 无条件 aiComputed=true，重开对局后迟到的落地会让
@@ -68,9 +95,14 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     /** 单机 / AI 构造 */
     public GoGameScreen(GoGame game) {
+        this(game, game.isAiEnabled());
+    }
+
+    /** 单机构造，可选择 AI 对战或本地双人模式。 */
+    public GoGameScreen(GoGame game, boolean aiMode) {
         super(Component.literal("围棋"));
         this.game = game;
-        this.game.setAiMode(true);
+        this.game.setAiMode(aiMode);
     }
 
     /** LAN 联机构造 */
@@ -114,12 +146,16 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private synchronized void cleanup() {
         if (cleanedUp) return;
         cleanedUp = true;
-        aiGeneration++;
-        Thread t = aiWorker;
-        aiWorker = null;
-        aiThinking = false;
-        aiComputed = false;
-        aiPendingMove = null;
+        Thread t;
+        synchronized (aiWorkerLock) {
+            aiGeneration++;
+            t = aiWorker;
+            aiWorker = null;
+            aiThinking = false;
+            aiComputed = false;
+            aiComputedGeneration = -1;
+            aiPendingComputation = null;
+        }
         if (t != null && t != Thread.currentThread()) {
             t.interrupt();
             try { t.join(2000L); }
@@ -130,6 +166,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override
     public void removed() {
+        sendLeaveGameOnce();
         cleanup();
         super.removed();
     }
@@ -143,41 +180,152 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override
     public void onRemoteMove(String data) {
-        if ("RESTART".equals(data)) { resetGame(); return; }
-        if ("PASS".equals(data)) {
-            game.pass();
-            myTurn = true;
-            if (game.isGameOver()) finishGame();
+        if (lanMode == LAN_NONE || data == null) return;
+        String[] message = data.split("\\|", -1);
+        if (message.length != 4 || !"GO_MOVE1".equals(message[0])) return;
+        UUID epoch = GoScoringProtocol.parseEpoch(message[1]);
+        Long ply = GoScoringProtocol.parseRevision(message[2]);
+        if (epoch == null || ply == null) return;
+        String action = message[3];
+        if ("START".equals(action) || "RESTART".equals(action)) {
+            // START/RESTART is idempotent per epoch; a duplicate or delayed packet from
+            // the current round must not erase moves already accepted on this client.
+            if (lanMode != LAN_CLIENT || ply != 0 || epoch.equals(gameEpoch)) return;
+            resetGame();
+            gameEpoch = epoch;
+            networkPly = 0;
+            state = State.PLAYING;
             return;
         }
-        if (data.startsWith("RESIGN:")) {
-            // 对方认输，我赢
-            myWin    = true;
+        if (!epoch.equals(gameEpoch) || ply != networkPly) return;
+        // 认输不受回合状态限制；否则对方在本地回合认输时会被 guard 丢弃。
+        if ("RESIGN".equals(action)) {
+            if (state != State.PLAYING || game.isGameOver()) return;
+            networkPly++;
+            myWin = true;
             resultMsg = "对方认输，你赢了！";
-            state    = State.GAME_OVER;
+            state = State.GAME_OVER;
             return;
         }
-        try {
-            String[] p = data.split(",");
-            // ★ Bug修复：原版 split 后直接 parseInt,1 字段/越界/畸形报文抛异常被吞
-            //   但 myTurn=true 已执行,玩家误以为轮到自己下子空过一回合
-            if (p.length < 2) return;
-            int x = Integer.parseInt(p[0]);
-            int y = Integer.parseInt(p[1]);
-            if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE
-                    || !game.canPlaceStone(x, y)) return;
-            if (!game.placeStone(x, y)) return;
+        if (state != State.PLAYING || game.isGameOver() || myTurn) return;
+        if ("PASS".equals(action)) {
+            game.pass();
+            networkPly++;
             myTurn = true;
-            if (game.isGameOver()) finishGame();
-        } catch (Exception ignored) {}
+            // 只有 HOST 建立评分 epoch。CLIENT 等待 HOST 的 BEGIN，
+            // 避免先生成随机 epoch 后拒绝主机的 canonical 状态。
+            if (game.isGameOver() && lanMode == LAN_HOST) enterScoring();
+            return;
+        }
+        String[] coordinates = action.split(",", -1);
+        if (coordinates.length != 2) return;
+        try {
+            int x = Integer.parseInt(coordinates[0]);
+            int y = Integer.parseInt(coordinates[1]);
+            if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
+            if (!game.placeStone(x, y)) return;
+            networkPly++;
+            myTurn = true;
+            if (game.isGameOver() && lanMode == LAN_HOST) enterScoring();
+        } catch (NumberFormatException ignored) {}
     }
 
-    @Override public void onRemoteState(String data) { /* 围棋走法驱动 */ }
-    @Override public void onRemoteGameOver(String data) { /* 由 finishGame 本地处理 */ }
 
-    private void sendLanMove(String moveData) {
-        if (lanMode == LAN_NONE) return;
-        sendMove(moveData);
+    @Override public void onRemoteState(UUID senderUuid, String data) {
+        if (remotePeer == null || !remotePeer.equals(senderUuid) || data == null) return;
+        String[] parts = data.split("\\|", -1);
+        if (parts.length < 2 || !GoScoringProtocol.PREFIX.equals(parts[0])) return;
+        String action = parts[1];
+        try {
+            if ("BEGIN".equals(action) || "STATE".equals(action) || "FINAL".equals(action)) {
+                GoScoringProtocol.Phase phase = switch (state) {
+                    case PLAYING -> GoScoringProtocol.Phase.PLAYING;
+                    case SCORING -> GoScoringProtocol.Phase.SCORING;
+                    case GAME_OVER -> GoScoringProtocol.Phase.FINISHED;
+                    default -> GoScoringProtocol.Phase.OTHER;
+                };
+                GoScoringProtocol.Snapshot current = currentScoringSnapshot();
+                GoScoringProtocol.Snapshot incoming = GoScoringProtocol.receiveSnapshot(game,
+                        new GoScoringProtocol.Receiver(lanMode == LAN_CLIENT, remotePeer, gameEpoch, phase, current),
+                        senderUuid, parts);
+                if (incoming == null) return;
+                if ("FINAL".equals(action)) {
+                    finishGame(incoming.marks());
+                    return;
+                }
+                if (!incoming.equals(current)) {
+                    scoringConfirmed = false;
+                    remoteScoringConfirmed = false;
+                    remoteConfirmedRevision = -1L;
+                    remoteConfirmedDigest = "";
+                }
+                scoringEpoch = incoming.epoch();
+                scoringRevision = incoming.revision();
+                markedDead.clear();
+                markedDead.addAll(incoming.marks());
+                scoringDigest = incoming.digest();
+                roundKomi = incoming.komi();
+                roundKomiSet = true;
+                state = State.SCORING;
+            } else if ("CLEAR".equals(action) && lanMode == LAN_HOST && state == State.SCORING && parts.length == 4) {
+                UUID epoch = GoScoringProtocol.parseEpoch(parts[2]);
+                Long baseRevision = GoScoringProtocol.parseRevision(parts[3]);
+                if (epoch == null || baseRevision == null || !epoch.equals(scoringEpoch)
+                        || baseRevision != scoringRevision) return;
+                markedDead.clear();
+                scoringRevision++;
+                scoringConfirmed = false;
+                remoteScoringConfirmed = false;
+                remoteConfirmedRevision = -1L;
+                remoteConfirmedDigest = "";
+                sendScoringState();
+            } else if ("TOGGLE".equals(action) && lanMode == LAN_HOST && state == State.SCORING && parts.length == 5) {
+                UUID epoch = GoScoringProtocol.parseEpoch(parts[2]);
+                Long baseRevision = GoScoringProtocol.parseRevision(parts[3]);
+                if (epoch == null || baseRevision == null || !epoch.equals(scoringEpoch)
+                        || baseRevision != scoringRevision) return;
+                String[] xy = parts[4].split(",", -1);
+                if (xy.length != 2) return;
+                int x = Integer.parseInt(xy[0]);
+                int y = Integer.parseInt(xy[1]);
+                if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE
+                        || game.getStone(x, y) == GoPlayer.NONE) return;
+                toggleMarkedGroupLocal(x, y);
+                sendScoringState();
+            } else if ("CONFIRM".equals(action) && lanMode == LAN_HOST && state == State.SCORING
+                    && parts.length == 7) {
+                UUID epoch = GoScoringProtocol.parseEpoch(parts[2]);
+                Long revision = GoScoringProtocol.parseRevision(parts[3]);
+                Double komi = GoScoringProtocol.parseKomi(parts[6]);
+                if (epoch == null || revision == null || komi == null || !epoch.equals(scoringEpoch)
+                        || revision != scoringRevision || !sameKomi(komi, roundKomi)) return;
+                Set<Long> confirmedMarks = GoScoringProtocol.parseMarks(parts[4]);
+                validateMarks(confirmedMarks);
+                String digest = GoScoringProtocol.digest(confirmedMarks);
+                if (!digest.equals(parts[5]) || !confirmedMarks.equals(markedDead)) return;
+                remoteScoringConfirmed = true;
+                remoteConfirmedRevision = revision;
+                remoteConfirmedDigest = digest;
+                if (scoringConfirmed && remoteConfirmedRevision == scoringRevision
+                        && remoteConfirmedDigest.equals(scoringDigest)) {
+                    finishConfirmedScoring();
+                }
+            }
+        } catch (IllegalArgumentException ignored) {
+            LOGGER.warn("[围棋] 丢弃畸形结算消息");
+        }
+    }
+    @Override public void onRemoteState(String data) { }
+    @Override public void onRemoteGameOver(String data) { }
+
+    private void sendLanMove(String action) {
+        if (lanMode == LAN_NONE || gameEpoch == null) return;
+        sendMoveEnvelope("GO_MOVE1|" + gameEpoch + "|" + networkPly + "|" + action);
+    }
+
+    private void sendLanStart(String action) {
+        if (lanMode != LAN_HOST || gameEpoch == null) return;
+        sendMoveEnvelope("GO_MOVE1|" + gameEpoch + "|0|" + action);
     }
 
     /** 单一入口判断本地玩家当前是否可落子/虚着/显示预览。 */
@@ -190,20 +338,41 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     // ── 游戏逻辑 ──────────────────────────────────────────────
     private void resetGame() {
         // ★ Bug修复：玩家在 AI 思考中按 N 重开,旧 AI 线程仍持有旧 game 引用,
-        //   写入的 aiPendingMove 可能是新 game 还没准备好的状态,后续落子错乱。
+        //   写入的 aiPendingComputation 可能是新 game 还没准备好的状态,后续落子错乱。
         //   这里中断旧 AI 线程并清空 pending 状态
-        Thread old = aiWorker;
-        if (old != null) old.interrupt();
-        aiWorker = null;
-        aiThinking = false;
-        aiPendingMove = null;
-        aiComputed = false;
-        aiGeneration++; // 旧 worker 的迟到落地一律作废
+        Thread old;
+        synchronized (aiWorkerLock) {
+            old = aiWorker;
+            aiGeneration++; // 旧 worker 的迟到落地一律作废
+            aiWorker = null;
+            aiThinking = false;
+            aiPendingComputation = null;
+            aiFailed = false;
+            aiComputed = false;
+            aiComputedGeneration = -1;
+        }
+        if (old != null && old != Thread.currentThread()) {
+            old.interrupt();
+            try { old.join(1000L); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
 
         game.reset();
         myTurn    = (lanMode != LAN_CLIENT);
         resultMsg = "";
         myWin     = false;
+        markedDead.clear();
+        scoringConfirmed = false;
+        remoteScoringConfirmed = false;
+        remoteConfirmedRevision = -1L;
+        remoteConfirmedDigest = "";
+        scoringRevision = 0;
+        scoringEpoch = null;
+        scoringDigest = "";
+        finalScoringSnapshot = null;
+        roundKomi = GoGame.DEFAULT_KOMI;
+        roundKomiSet = false;
+        scoringLastBroadcastTick = tickCount - 40L;
         state     = State.PLAYING;
     }
 
@@ -211,15 +380,83 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
      * 游戏结束时计算胜负（中国规则数子法，黑棋贴目 7.5）。
      * 修复 Bug：原版 endGame() 不计算胜者，导致局域网双方都显示"你赢了"。
      */
-    private void finishGame() {
-        // 统一使用 GoGame 的计分实现，确保贴目配置与所有结算路径一致。
-        double blackScore = game.getScore(GoPlayer.BLACK);
-        double whiteScore = game.getScore(GoPlayer.WHITE);
-        boolean blackWins = blackScore > whiteScore;
+    private void enterScoring() {
+        markedDead.clear();
+        scoringRevision = 0;
+        // A scoring session belongs to exactly one game round; reuse the round epoch
+        // so delayed scoring packets from a previous restart cannot enter this game.
+        scoringEpoch = gameEpoch;
+        roundKomi = GoGame.normalizeKomi(GoGame.getConfiguredKomi());
+        roundKomiSet = true;
+        scoringDigest = GoScoringProtocol.digest(markedDead);
+        scoringConfirmed = false;
+        remoteScoringConfirmed = false;
+        remoteConfirmedRevision = -1L;
+        remoteConfirmedDigest = "";
+        state = State.SCORING;
+        if (lanMode == LAN_HOST) {
+            // Bootstrap is self-contained so a reordered follow-up STATE cannot strand the client.
+            sendStateEnvelope("GO_SCORE1|BEGIN|" + scoringEpoch + "|" + scoringRevision + "|"
+                    + encodeMarks() + "|" + scoringDigest + "|" + formatRoundKomi());
+            sendScoringState();
+        }
+    }
+
+    private String formatRoundKomi() {
+        return GoScoringProtocol.formatKomi(roundKomiSet ? roundKomi : GoGame.DEFAULT_KOMI);
+    }
+
+    private static boolean sameKomi(double first, double second) {
+        return Double.doubleToLongBits(first) == Double.doubleToLongBits(second);
+    }
+
+    private GoScoringProtocol.Snapshot currentScoringSnapshot() {
+        if (scoringEpoch == null || !roundKomiSet) return null;
+        return new GoScoringProtocol.Snapshot(scoringEpoch, scoringRevision, markedDead, scoringDigest, roundKomi);
+    }
+
+    private void finishConfirmedScoring() {
+        finalScoringSnapshot = currentScoringSnapshot();
+        if (finalScoringSnapshot == null) return;
+        sendStateEnvelope(finalScoringSnapshot.encode("FINAL"));
+        scoringLastBroadcastTick = tickCount;
+        finishGame(finalScoringSnapshot.marks());
+    }
+
+    private void sendScoringState() {
+        if (lanMode != LAN_HOST || scoringEpoch == null) return;
+        scoringDigest = GoScoringProtocol.digest(markedDead);
+        sendStateEnvelope("GO_SCORE1|STATE|" + scoringEpoch + "|" + scoringRevision
+                + "|" + GoScoringProtocol.encodeMarks(markedDead) + "|" + scoringDigest
+                + "|" + formatRoundKomi());
+    }
+
+    private void validateMarks(Set<Long> marks) {
+        for (long point : marks) {
+            if (game.getStone(GoScoringProtocol.x(point), GoScoringProtocol.y(point)) == GoPlayer.NONE) {
+                throw new IllegalArgumentException("marked point is empty");
+            }
+        }
+    }
+
+    private void finishGame() { finishGame(Collections.emptySet()); }
+
+    private void finishGame(Set<Long> deadGroups) {
+        // 统一使用 GoGame 的显式死棋计分实现，避免自动猜测死活。
+        double komi = roundKomiSet ? roundKomi : GoGame.getConfiguredKomi();
+        GoGame.Score score = game.getScores(deadGroups, komi);
+        double blackScore = score.black();
+        double whiteScore = score.white();
+        GoPlayer winner = score.winner();
+        boolean blackWins = winner == GoPlayer.BLACK;
+        boolean tied = winner == GoPlayer.NONE;
 
         if (lanMode == LAN_NONE) {
             // 单机/AI 模式
-            if (game.isAiMode()) {
+            if (tied) {
+                myWin = false;
+                resultMsg = String.format("平局！黑%.1f 白%.1f", blackScore, whiteScore);
+            } else if (game.isAiMode()) {
                 // AI 执白，玩家执黑
                 myWin = blackWins;
                 resultMsg = String.format("%s 胜！黑%.1f 白%.1f",
@@ -233,8 +470,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         } else {
             // LAN 模式：HOST=黑，CLIENT=白
             boolean iAmBlack = (lanMode == LAN_HOST);
-            myWin     = iAmBlack == blackWins;
-            resultMsg = String.format("%s 胜！黑%.1f 白%.1f",
+            myWin = !tied && iAmBlack == blackWins;
+            resultMsg = tied
+                    ? String.format("平局！黑%.1f 白%.1f", blackScore, whiteScore)
+                    : String.format("%s 胜！黑%.1f 白%.1f",
                     myWin ? "你" : "对方", blackScore, whiteScore);
         }
         state = State.GAME_OVER;
@@ -255,41 +494,85 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override public void tick() {
         tickCount++;
+        if (lanMode == LAN_HOST && tickCount - scoringLastBroadcastTick >= 40L) {
+            if (state == State.SCORING) {
+                sendScoringState();
+                scoringLastBroadcastTick = tickCount;
+            } else if (state == State.GAME_OVER && finalScoringSnapshot != null) {
+                sendStateEnvelope(finalScoringSnapshot.encode("FINAL"));
+                scoringLastBroadcastTick = tickCount;
+            }
+        }
+        if (showExitConfirm) return;
         // AI 模式：AI 执白，黑棋下完后触发
         if (state == State.PLAYING && lanMode == LAN_NONE && game.isAiMode()
-                && !game.isGameOver() && game.getCurrentPlayer() == GoPlayer.WHITE) {
+                && !aiFailed && !game.isGameOver() && game.getCurrentPlayer() == GoPlayer.WHITE) {
             // 后台线程计算 AI 走法，避免阻塞客户端线程（MCTS 搜索 1~12 秒）
-            if (!aiThinking && !aiComputed) {
-                aiThinking = true;
-                final int gen = aiGeneration;
-                Thread t = new Thread(() -> {
-                    try {
-                        // screen 关闭时会被 interrupt,这里快速退出
-                        if (Thread.currentThread().isInterrupted()) return;
-                        int[] mv = game.computeAiMove(); // null = 建议弃权
-                        if (gen != aiGeneration) return; // 已重开，丢弃
-                        aiPendingMove = mv;
-                    } catch (Exception e) {
-                        aiPendingMove = null; // 异常时弃权
-                    } finally {
-                        if (gen == aiGeneration) { // 代际守卫：旧 worker 不再触发落地
-                            aiThinking = false;
-                            aiComputed = true;
+            synchronized (aiWorkerLock) {
+                if (!aiThinking && !aiComputed) {
+                    aiThinking = true;
+                    final int gen = aiGeneration;
+                    Thread t = new Thread(() -> {
+                        GoGame.AiMoveComputation computation = null;
+                        try {
+                            // 外部引擎创建和握手也在 worker 中，绝不阻塞客户端线程。
+                            if (Thread.currentThread().isInterrupted()) return;
+                            game.initAiIfAbsent();
+                            if (Thread.currentThread().isInterrupted() || gen != aiGeneration) return;
+                            computation = game.computeAiMoveComputation();
+                        } catch (Exception e) {
+                            LOGGER.warn("[KataGo] AI turn failed: {}", e.getMessage());
+                        } finally {
+                            synchronized (aiWorkerLock) {
+                                if (gen == aiGeneration && !cleanedUp) {
+                                    aiPendingComputation = computation;
+                                    aiComputedGeneration = gen;
+                                    aiThinking = false;
+                                    aiComputed = true;
+                                }
+                            }
                         }
-                    }
-                }, "go-ai-worker");
-                aiWorker = t;
-                t.setDaemon(true);
-                t.start();
+                    }, "go-ai-worker");
+                    aiWorker = t;
+                    t.setDaemon(true);
+                    t.start();
+                }
             }
         }
         // 客户端线程消费 AI 结果并落子
-        if (aiComputed) {
-            aiComputed = false;
-            int[] move = aiPendingMove;
-            aiPendingMove = null;
-            game.applyAiMove(move);
-            if (game.isGameOver()) finishGame();
+        GoGame.AiMoveComputation computation = null;
+        boolean consumeAiMove = false;
+        synchronized (aiWorkerLock) {
+            if (aiComputed && aiComputedGeneration == aiGeneration) {
+                aiComputed = false;
+                aiComputedGeneration = -1;
+                computation = aiPendingComputation;
+                aiPendingComputation = null;
+                consumeAiMove = true;
+            } else if (aiComputed && aiComputedGeneration != aiGeneration) {
+                aiComputed = false;
+                aiComputedGeneration = -1;
+                aiPendingComputation = null;
+            }
+        }
+        if (consumeAiMove && computation != null && state == State.PLAYING && !game.isGameOver()
+                && lanMode == LAN_NONE && game.isAiMode()
+                && game.getCurrentPlayer() == GoPlayer.WHITE) {
+            GoAI.MoveResult result = computation.result();
+            if (!game.applyAiMoveComputation(computation)) return;
+            if (result.type() == GoAI.MoveType.ERROR) {
+                aiFailed = true;
+                return;
+            }
+            if (game.isGameOver()) {
+                if (result.type() == GoAI.MoveType.RESIGN) {
+                    myWin = true;
+                    resultMsg = "AI认输，你赢了！";
+                    state = State.GAME_OVER;
+                } else {
+                    enterScoring();
+                }
+            }
         }
     }
 
@@ -315,27 +598,31 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         if (key == GLFW.GLFW_KEY_N) {
             // LAN：CLIENT 不能单方面重开；HOST 重开需广播 RESTART 同步对端，否则双方棋盘永久分叉
             if (lanMode == LAN_CLIENT) return true;
-            resetGame(); state = State.PLAYING;
-            if (lanMode == LAN_HOST) sendLanMove("RESTART");
+            resetGame();
+            gameEpoch = UUID.randomUUID();
+            networkPly = 0;
+            state = State.PLAYING;
+            if (lanMode == LAN_HOST) sendLanStart("RESTART");
             return true;
         }
         if (key == GLFW.GLFW_KEY_P && state == State.PLAYING && !game.isGameOver()) {
             if (!canLocalPlayerMove()) return true;
             if (lanMode == LAN_NONE) {
                 game.pass();
-                if (game.isGameOver()) finishGame();
+                if (game.isGameOver()) enterScoring();
             } else if (myTurn) {
                 game.pass();
-                myTurn = false;
                 sendLanMove("PASS");
-                if (game.isGameOver()) finishGame();
+                networkPly++;
+                myTurn = false;
+                if (game.isGameOver() && lanMode != LAN_CLIENT) enterScoring();
             }
             return true;
         }
         if (key == GLFW.GLFW_KEY_R && state == State.PLAYING && !game.isGameOver()) {
             // 认输：仅联机有效（单机没有结算对手）。对端在 onRemoteMove 收到 RESIGN: 判胜。
             if (lanMode != LAN_NONE) {
-                sendLanMove("RESIGN:");
+                sendLanMove("RESIGN");
                 myWin = false;
                 resultMsg = "你认输了";
                 state = State.GAME_OVER;
@@ -356,6 +643,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             case MENU -> renderMenu(g, mx, my);
             case SETTINGS -> renderSettings(g, mx, my);
             case PLAYING -> renderPlaying(g, mx, my);
+            case SCORING -> { renderPlaying(g, mx, my); renderScoring(g, mx, my); }
             case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g, mx, my); }
         }
         if (katagoPathEditBox != null && katagoPathEditBox.visible) {
@@ -419,7 +707,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         int sliderX = px + 90, sliderW = 200;
         g.fill(sliderX, timeY + 8, sliderX + sliderW, timeY + 18, 0xFF3A3A3A);
         // 滑块填充
-        int fillW = (settingsSearchTime - 1000) * sliderW / 9000;
+        int searchRange = GameSettings.GO_SEARCH_TIME_MAX - GameSettings.GO_SEARCH_TIME_MIN;
+        int fillW = (settingsSearchTime - GameSettings.GO_SEARCH_TIME_MIN) * sliderW / searchRange;
         g.fill(sliderX, timeY + 8, sliderX + fillW, timeY + 18, 0xFF4A6A8A);
         // 滑块位置
         int thumbX = sliderX + fillW - 5;
@@ -442,8 +731,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
         // 当前状态
         int statusY = pathY + 10;
-        String currentEngine = GameSettings.getString("go", "engine", "mcts");
-        String status = "当前引擎: " + ("mcts".equals(currentEngine) ? "改进版MCTS" : "KataGo");
+        String configuredEngine = GoAI.normalizeEngine(GameSettings.getString("go", "engine", "mcts"));
+        String status = "配置引擎: " + ("mcts".equals(configuredEngine) ? "改进版MCTS" : "KataGo");
         g.drawString(font, status, px + 15, statusY, 0xFF888888);
 
         // 保存并返回按钮
@@ -479,6 +768,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                     int color = stone == GoPlayer.BLACK ? 0xFF111111 : 0xFFEEEEEE;
                     GameRenderHelper.drawCircle(g, scx, scy, stoneR, color);
                     if (stone == GoPlayer.WHITE) GameRenderHelper.drawCircle(g, scx-stoneR/3, scy-stoneR/3, stoneR/4, 0x44FFFFFF);
+                    if (state == State.SCORING && markedDead.contains(key(x, y))) {
+                        GameRenderHelper.drawCircle(g, scx, scy, Math.max(2, stoneR / 2), 0x99CC3333);
+                    }
                 }
             }
 
@@ -503,7 +795,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
         String turnHint;
         if (lanMode == LAN_NONE) {
-            turnHint = game.isAiMode() ? (game.getCurrentPlayer()==GoPlayer.BLACK ? "你的回合" : "AI思考中") : "进行中";
+            turnHint = aiFailed ? "AI错误，请重开" : game.isAiMode()
+                    ? (game.getCurrentPlayer()==GoPlayer.BLACK ? "你的回合" : "AI思考中") : "进行中";
         } else {
             turnHint = myTurn ? "你的回合" : "等待对方";
         }
@@ -516,13 +809,69 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawString(font, modeStr, infoX + 5, infoY + 78, 0xCCCCCC);
 
         // AI 引擎状态
-        String engineStr = GameSettings.getString("go", "engine", "mcts");
-        String engineLabel = "mcts".equals(engineStr) ? "MCTS" : "KataGo";
+        String engineLabel = game.getRuntimeAiEngineLabel();
+        if (engineLabel == null) {
+            engineLabel = aiFailed ? "不可用" : aiThinking ? "启动中" : "未启动";
+        }
         g.drawString(font, "AI: " + engineLabel, infoX + 5, infoY + 92, 0x666666);
 
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "⚫⚪ 围棋", 8, 7, 0xFFFFFF);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  N 新游戏  P 弃权");
+    }
+
+    private void renderScoring(GuiGraphics g, int mx, int my) {
+        int cx = width / 2;
+        g.fill(cx - 145, boardStartY + BOARD_SIZE * cellSize + 10, cx + 145,
+                boardStartY + BOARD_SIZE * cellSize + 62, 0xCC0A1520);
+        g.drawCenteredString(font, "结算：点击棋块标记死棋", cx, boardStartY + BOARD_SIZE * cellSize + 16, 0xFFFFFF);
+        GameRenderHelper.drawPrimaryButton(g, font, "清除标记", cx - 140, boardStartY + BOARD_SIZE * cellSize + 32, 90, 22, mx, my);
+        GameRenderHelper.drawPrimaryButton(g, font, "确认结果", cx + 50, boardStartY + BOARD_SIZE * cellSize + 32, 90, 22, mx, my);
+    }
+
+    private static long key(int x, int y) { return ((long) x << 32) | (y & 0xffffffffL); }
+
+    private Set<Long> collectGroup(int sx, int sy) {
+        GoPlayer color = game.getStone(sx, sy);
+        if (color == GoPlayer.NONE) return Collections.emptySet();
+        Set<Long> group = new HashSet<>();
+        java.util.ArrayDeque<int[]> queue = new java.util.ArrayDeque<>();
+        queue.add(new int[]{sx, sy}); group.add(key(sx, sy));
+        int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+        while (!queue.isEmpty()) {
+            int[] p = queue.remove();
+            for (int[] d : dirs) {
+                int x = p[0] + d[0], y = p[1] + d[1];
+                if (x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE
+                        && game.getStone(x, y) == color && group.add(key(x, y))) queue.add(new int[]{x, y});
+            }
+        }
+        return group;
+    }
+
+    private void toggleMarkedGroupLocal(int x, int y) {
+        Set<Long> group = collectGroup(x, y);
+        if (group.isEmpty()) return;
+        if (markedDead.contains(key(x, y))) markedDead.removeAll(group); else markedDead.addAll(group);
+        scoringConfirmed = false;
+        scoringRevision++;
+        remoteScoringConfirmed = false;
+        remoteConfirmedRevision = -1L;
+        remoteConfirmedDigest = "";
+    }
+
+    private void toggleMarkedGroup(int x, int y) {
+        if (lanMode == LAN_CLIENT) {
+            if (scoringEpoch == null) return;
+            sendStateEnvelope("GO_SCORE1|TOGGLE|" + scoringEpoch + "|" + scoringRevision + "|" + x + "," + y);
+            return;
+        }
+        toggleMarkedGroupLocal(x, y);
+        if (lanMode == LAN_HOST) sendScoringState();
+    }
+
+    private String encodeMarks() {
+        return GoScoringProtocol.encodeMarks(markedDead);
     }
 
     private void renderGameOver(GuiGraphics g, int mx, int my) {
@@ -542,8 +891,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private int[] getBoardPos(int mx, int my) {
-        int bx = Mth.floor((mx - boardStartX + cellSize/2) / (float)cellSize);
-        int by = Mth.floor((my - boardStartY + cellSize/2) / (float)cellSize);
+        int bx = Mth.floor((mx - boardStartX) / (float)cellSize);
+        int by = Mth.floor((my - boardStartY) / (float)cellSize);
         if (bx >= 0 && bx < BOARD_SIZE && by >= 0 && by < BOARD_SIZE) return new int[]{bx, by};
         return null;
     }
@@ -579,8 +928,9 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             int timeY = optionY + 45;
             int sliderX = px + 90, sliderW = 200;
             if (mx >= sliderX && mx <= sliderX + sliderW && my >= timeY + 3 && my <= timeY + 23) {
-                int ratio = (int) ((mx - sliderX) * 9.0 / sliderW) + 1;
-                settingsSearchTime = Math.max(1000, Math.min(10000, ratio * 1000));
+                double ratio = (mx - sliderX) / sliderW;
+                int range = GameSettings.GO_SEARCH_TIME_MAX - GameSettings.GO_SEARCH_TIME_MIN;
+                settingsSearchTime = GameSettings.GO_SEARCH_TIME_MIN + (int) Math.round(ratio * range);
                 return true;
             }
 
@@ -602,7 +952,12 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         if (state == State.MENU) {
             int cx = width/2, cy = height/2;
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+30 && my <= cy+52) {
-                resetGame(); state = State.PLAYING; return true;
+                resetGame();
+                gameEpoch = UUID.randomUUID();
+                networkPly = 0;
+                state = State.PLAYING;
+                if (lanMode == LAN_HOST) sendLanStart("START");
+                return true;
             }
             // 设置按钮
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+58 && my <= cy+80) {
@@ -610,6 +965,38 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                 if (katagoPathEditBox != null) katagoPathEditBox.setVisible("katago".equals(settingsEngine));
                 return true;
             }
+        }
+        if (state == State.SCORING && btn == 0) {
+            int[] pos = getBoardPos((int) mx, (int) my);
+            if (pos != null) { toggleMarkedGroup(pos[0], pos[1]); return true; }
+            int cx = width / 2;
+            int by = boardStartY + BOARD_SIZE * cellSize + 32;
+            if (mx >= cx - 140 && mx <= cx - 50 && my >= by && my <= by + 22) {
+                if (lanMode == LAN_CLIENT && scoringEpoch != null) {
+                    sendStateEnvelope("GO_SCORE1|CLEAR|" + scoringEpoch + "|" + scoringRevision);
+                } else {
+                    markedDead.clear(); scoringConfirmed = false;
+                    scoringRevision++;
+                    remoteScoringConfirmed = false; remoteConfirmedRevision = -1L; remoteConfirmedDigest = "";
+                    if (lanMode == LAN_HOST) sendScoringState();
+                }
+                return true;
+            }
+            if (mx >= cx + 50 && mx <= cx + 140 && my >= by && my <= by + 22) {
+                scoringConfirmed = true;
+                if (lanMode == LAN_NONE) finishGame(markedDead);
+                else if (lanMode == LAN_HOST) {
+                    if (remoteScoringConfirmed && remoteConfirmedRevision == scoringRevision
+                            && remoteConfirmedDigest.equals(scoringDigest)) {
+                        finishConfirmedScoring();
+                    } else sendScoringState();
+                } else if (scoringEpoch != null && roundKomiSet) {
+                    sendStateEnvelope("GO_SCORE1|CONFIRM|" + scoringEpoch + "|" + scoringRevision + "|"
+                            + encodeMarks() + "|" + scoringDigest + "|" + formatRoundKomi());
+                }
+                return true;
+            }
+            return true;
         }
         if (state == State.PLAYING && btn == 0 && !game.isGameOver()) {
             if (!canLocalPlayerMove()) return true;
@@ -619,9 +1006,10 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
                 if (game.placeStone(pos[0], pos[1])) {
                     if (lanMode != LAN_NONE) {
                         sendLanMove(pos[0] + "," + pos[1]);
+                        networkPly++;
                         myTurn = false;
                     }
-                    if (game.isGameOver()) finishGame();
+                    if (game.isGameOver() && lanMode != LAN_CLIENT) enterScoring();
                     else if (lanMode == LAN_NONE && game.isAiMode()) {
                         // AI 在 tick 里触发
                     }

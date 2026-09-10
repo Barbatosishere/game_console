@@ -29,6 +29,7 @@ public class CardPattern {
     }
 
     public boolean canBeat(CardPattern other) {
+        if (other == null || type == null) return false;
         // 王炸最大
         if (type == Type.JOKER_BOMB) {
             return other.type != Type.JOKER_BOMB;

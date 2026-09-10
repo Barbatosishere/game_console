@@ -206,6 +206,12 @@ public class PikafishChessAI implements ChessAI {
     }
 
     @Override
+    public void cancelSearch() {
+        connected = false;
+        if (process != null && process.isAlive()) process.destroy();
+    }
+
+    @Override
     public void setSearchTime(long ms) {
         this.searchTimeMs = ms;
     }

@@ -64,6 +64,16 @@ class LandlordFullGameSimulationTest {
         }
 
         assertEquals(LandlordGame.GameState.ENDED, game.getGameState(), "对局必须在步数上限内终局");
+        int roundWinner = game.getRoundWinner();
+        assertTrue(roundWinner >= 0 && roundWinner < 3, "终局必须能识别本局获胜者");
+        assertTrue(game.getPlayerHand(roundWinner).isEmpty(), "本局获胜者必须是空手牌玩家");
+        int landlord = game.getLandlordPlayer();
+        for (int player = 0; player < 3; player++) {
+            boolean expected = player == roundWinner
+                    || (roundWinner != landlord && player != landlord);
+            assertEquals(expected, LandlordGame.isRoundWinForPlayer(player, landlord, roundWinner),
+                    "农民队伍的本局胜负应与地主身份一致");
+        }
         int[] scores = game.getScores();
         assertEquals(0, scores[0] + scores[1] + scores[2], "计分必须零和");
         assertTrue(game.getPlayerHand(game.getLandlordPlayer()).isEmpty()
@@ -79,6 +89,25 @@ class LandlordFullGameSimulationTest {
         List<Card> single = new ArrayList<>();
         single.add(sorted.get(0));
         return game.playCards(p, single);
+    }
+
+    @Test
+    void landlordSnapshotAcceptsPlayedBottomCard() {
+        LandlordGame host = new LandlordGame();
+        assertTrue(host.bid(0, true));
+        Card playedBottomCard = host.getLandlordCards().get(0);
+        assertTrue(host.playCards(0, List.of(playedBottomCard)));
+
+        String state = host.serializeFor(0);
+        LandlordGame client = new LandlordGame();
+        List<Card> restoredHand = new ArrayList<>();
+
+        assertTrue(client.applyState(state, 0, restoredHand),
+                "地主打出一张原底牌后仍应能应用合法状态快照");
+        assertFalse(restoredHand.contains(playedBottomCard),
+                "已打出的底牌不应仍出现在地主手牌中");
+        assertTrue(client.getLandlordCards().contains(playedBottomCard),
+                "底牌集合用于展示和审计，应保留原始三张底牌");
     }
 
     @Test
@@ -105,5 +134,29 @@ class LandlordFullGameSimulationTest {
             assertTrue(spadeThrees == 0,
                     "重复 token 被接受后手牌不得残留同牌（残留=少扣了一张）");
         }
+    }
+
+    @Test
+    void biddingSnapshotsHideBottomCardsAndStillRoundTrip() {
+        LandlordGame host = new LandlordGame();
+        String state = host.serializeFor(1);
+        assertTrue(state.endsWith("|"), "叫地主阶段底牌字段必须隐藏");
+
+        LandlordGame client = new LandlordGame();
+        List<Card> restoredHand = new ArrayList<>();
+        assertTrue(client.applyState(state, 1, restoredHand));
+        assertEquals(LandlordGame.GameState.BIDDING, client.getGameState());
+        assertTrue(client.getLandlordCards().isEmpty(), "客机叫地主阶段不应看到底牌");
+    }
+
+    @Test
+    void roundWinnerUsesEmptyHandAndFarmerTeamDespiteCumulativeScores() {
+        assertFalse(LandlordGame.isRoundWinForPlayer(0, 0, 1));
+        assertTrue(LandlordGame.isRoundWinForPlayer(1, 0, 1));
+        assertTrue(LandlordGame.isRoundWinForPlayer(2, 0, 1));
+        assertTrue(LandlordGame.isRoundWinForPlayer(0, 0, 0));
+        assertFalse(LandlordGame.isRoundWinForPlayer(1, 0, 0));
+        assertFalse(LandlordGame.isRoundWinForPlayer(2, 0, 0));
+        assertFalse(LandlordGame.isRoundWinForPlayer(0, 0, -1));
     }
 }

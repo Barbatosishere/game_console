@@ -18,6 +18,7 @@ import com.wzz.game_console.util.GameSettings;
  *     "engine": "mcts",        // "mcts" | "katago"
  *     "searchTime": 3000,      // 搜索时间 ms
  *     "mctsIterations": 2000,  // MCTS 迭代次数
+ *     "modelPath": "",         // MCTS 已训练 checkpoint（NEV2/NEV3）；空 = 随机初始化
  *     "katagoPath": "E:/katago/katago.exe",
  *     "katagoModel": "E:/katago/model.bin.gz",
  *     "katagoConfig": "E:/katago/analysis.cfg"
@@ -27,12 +28,46 @@ import com.wzz.game_console.util.GameSettings;
  */
 public interface GoAI {
     /**
+     * Result of an AI turn. The typed result keeps pass, resignation, and
+     * transport/search errors distinct while retaining the legacy coordinate API.
+     */
+    enum MoveType { MOVE, PASS, RESIGN, ERROR }
+
+    record MoveResult(MoveType type, int x, int y) {
+        public MoveResult {
+            if (type == null) throw new IllegalArgumentException("move type is required");
+            if (type == MoveType.MOVE && (x < 0 || y < 0)) {
+                throw new IllegalArgumentException("a move requires coordinates");
+            }
+        }
+
+        public static MoveResult move(int x, int y) { return new MoveResult(MoveType.MOVE, x, y); }
+        public static MoveResult pass() { return new MoveResult(MoveType.PASS, -1, -1); }
+        public static MoveResult resign() { return new MoveResult(MoveType.RESIGN, -1, -1); }
+        public static MoveResult error() { return new MoveResult(MoveType.ERROR, -1, -1); }
+
+        public int[] coordinates() {
+            return type == MoveType.MOVE ? new int[] {x, y} : null;
+        }
+    }
+
+    /**
      * 获取最佳落子位置。
      *
      * @param game 当前对局状态
      * @return {x, y} 落子坐标，或 null 表示弃权
      */
     int[] getBestMove(GoGame game);
+
+    /** Typed AI action. Existing implementations remain source-compatible. */
+    default MoveResult getBestMoveResult(GoGame game) {
+        try {
+            int[] move = getBestMove(game);
+            return move == null ? MoveResult.pass() : MoveResult.move(move[0], move[1]);
+        } catch (RuntimeException ignored) {
+            return MoveResult.error();
+        }
+    }
 
     /**
      * 获取 AI 的执棋颜色。
@@ -64,6 +99,18 @@ public interface GoAI {
         return org.slf4j.LoggerFactory.getLogger("GoAI");
     }
 
+    /** Normalizes unsupported or missing engine names to the actual fallback engine. */
+    static String normalizeEngine(String engine) {
+        return engine != null && "katago".equalsIgnoreCase(engine.trim()) ? "katago" : "mcts";
+    }
+
+    static String runtimeEngineLabel(Class<?> engineType) {
+        if (engineType == null) return null;
+        if (KataGoGoAI.class.isAssignableFrom(engineType)) return "KataGo";
+        if (MCTSGoAI.class.isAssignableFrom(engineType)) return "MCTS";
+        return engineType.getSimpleName();
+    }
+
     /**
      * 根据 GameSettings 创建 AI 引擎实例。
      * 配置键：go.engine = "mcts"（默认）或 "katago"。
@@ -92,7 +139,7 @@ public interface GoAI {
             // slf4j 不可用时使用默认 MCTS
             return MCTSGoAI.createFromSettings();
         }
-        if ("katago".equalsIgnoreCase(engine)) {
+        if ("katago".equals(normalizeEngine(engine))) {
             String katagoPath;
             try {
                 katagoPath = GameSettings.getString("go", "katagoPath", "");

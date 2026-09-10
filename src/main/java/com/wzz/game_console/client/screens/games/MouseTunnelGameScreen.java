@@ -55,6 +55,8 @@ public class MouseTunnelGameScreen extends Screen {
     // 鼠标追踪
     private int playerX;
     private int playerY;
+    private int latestMouseX;
+    private int latestMouseY;
     private boolean mouseInTunnel = true;
 
     // 游戏参数
@@ -167,6 +169,8 @@ public class MouseTunnelGameScreen extends Screen {
         difficulty = 1;
         scrollOffset = 0;
         mouseInTunnel = true;
+        latestMouseX = playerX;
+        latestMouseY = playerY;
         // 重置难度计时基准与宽限计时，避免开局瞬间触发难度提升或误判游戏结束
         lastDifficultyIncrease = System.currentTimeMillis();
         outOfTunnelSince = 0;
@@ -189,12 +193,9 @@ public class MouseTunnelGameScreen extends Screen {
         GameRenderHelper.fillDarkBackground(graphics, width, height);
 
         if (gameState == GameState.PLAYING) {
-            // 更新鼠标位置
-            playerX = mouseX;
-            playerY = mouseY;
-
-            // 检查碰撞（弹窗期间暂停判定，否则宽限计时会持续走完导致暂停中被判失败）
-            if (!showExitConfirm) checkCollision();
+            // 游戏逻辑统一在 tick() 推进；render 只读取已更新的位置。
+            playerX = latestMouseX;
+            playerY = latestMouseY;
 
             // 渲染游戏
             renderGame(graphics);
@@ -300,6 +301,12 @@ public class MouseTunnelGameScreen extends Screen {
         }
     }
 
+    @Override
+    public void mouseMoved(double mx, double my) {
+        latestMouseX = (int) mx;
+        latestMouseY = (int) my;
+    }
+
     private void checkCollision() {
         // 计算当前鼠标位置对应的通道段
         int segmentIndex = (playerX + scrollOffset) / SEGMENT_WIDTH;
@@ -356,14 +363,26 @@ public class MouseTunnelGameScreen extends Screen {
     public void tick() {
         super.tick();
 
-        if (gameState == GameState.PLAYING && mouseInTunnel && !showExitConfirm) { // 弹窗期间暂停滚动与计时
+        if (gameState == GameState.PLAYING && !showExitConfirm) { // 弹窗期间暂停滚动与计时
+            playerX = latestMouseX;
+            playerY = latestMouseY;
+            checkCollision();
+            if (!mouseInTunnel) return;
             // 更新生存时间
             long currentTime = System.currentTimeMillis();
             survivalTime = currentTime - gameStartTime;
-            score = (int)(survivalTime / 100); // 每100毫秒1分
+            MouseTunnelProgress.Snapshot progress = MouseTunnelProgress.calculate(
+                    survivalTime, currentTime - lastDifficultyIncrease);
+            score = progress.score();
 
-            // 达到100分时胜利结算
-            if (score >= 100) {
+            // Increase difficulty before evaluating victory so every scheduled level is observable.
+            for (int i = 0; i < progress.difficultyIncreases(); i++) {
+                difficulty++;
+                lastDifficultyIncrease += MouseTunnelProgress.DIFFICULTY_INTERVAL_MILLIS;
+                generateMoreChallengingTunnel();
+            }
+
+            if (progress.won()) {
                 isWin = true;
                 gameOver();
                 return;
@@ -371,13 +390,6 @@ public class MouseTunnelGameScreen extends Screen {
 
             // 滚动通道
             scrollOffset += SCROLL_SPEED + (difficulty - 1);
-
-            // 增加难度
-            if (currentTime - lastDifficultyIncrease > 10000) { // 每10秒增加难度
-                difficulty++;
-                lastDifficultyIncrease = currentTime;
-                generateMoreChallengingTunnel();
-            }
 
             // 生成新的通道段 - 修改触发条件
             if (scrollOffset >= SEGMENT_WIDTH) {

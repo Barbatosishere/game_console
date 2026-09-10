@@ -11,6 +11,9 @@ public final class GoGpuProbe {
             } else {
                 System.out.println("FAILED: OpenCL 不可用，将回退 CPU");
             }
+        } catch (Throwable t) {
+            // 探针本身不能因缺少 JNA、OpenCL 或本地驱动而使进程崩溃。
+            System.out.println("FAILED: GPU 探测异常，将回退 CPU (" + t + ")");
         }
     }
 }

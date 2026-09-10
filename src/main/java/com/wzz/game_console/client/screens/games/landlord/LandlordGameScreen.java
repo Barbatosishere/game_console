@@ -4,6 +4,7 @@ import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.client.screens.games.LanMultiplayerScreen;
 import com.wzz.game_console.init.ModNetworks;
 import com.wzz.game_console.network.MultiplayerGamePacket;
+import com.wzz.game_console.network.MultiplayerInviteAttempt;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -47,16 +48,29 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private UUID peer1Uuid   = null;
     private UUID peer2Uuid   = null;
     private UUID hostUuid    = null;
+    private UUID inviteAttemptNonce = null;
     private int  myPlayerIdx = 0;
     private boolean waitingStart = false;
     private boolean localTwoPlayer = false;
-    private boolean initApplied = false;
+    private final LandlordLanState.Receiver stateReceiver = new LandlordLanState.Receiver();
     private boolean peer1InitAcked = false;
     private boolean peer2InitAcked = false;
+    private long peer1InitSequence = -1;
+    private long peer2InitSequence = -1;
+    private final Set<Long> peer1InitSequences = new HashSet<>();
+    private final Set<Long> peer2InitSequences = new HashSet<>();
     private boolean initRetriesActive = true;
     private long lastInitSendTick = Long.MIN_VALUE;
-    private static final long INIT_FIRST_SEND_TICK = 5;
-    private static final long INIT_RETRY_INTERVAL_TICKS = 20;
+    private int initSendAttempts = 0;
+    private long initStartTick = 0;
+    /** 每个屏幕实例独立 token，避免旧界面的 INIT/STATE 污染新对局。 */
+    private long sessionToken = createSessionToken();
+    private long nextStateSequence = 0;
+
+    private static long createSessionToken() {
+        long token = UUID.randomUUID().getMostSignificantBits() ^ UUID.randomUUID().getLeastSignificantBits();
+        return token == 0 ? 1 : token;
+    }
 
     // ── UI 状态 ───────────────────────────────────────
     private String msg=""; private long msgTick=-9999;
@@ -84,8 +98,12 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         game=new LandlordGame();
     }
     public LandlordGameScreen(boolean isHost,UUID host){
+        this(isHost, host, null);
+    }
+    public LandlordGameScreen(boolean isHost, UUID host, UUID inviteAttemptNonce){
         super(Component.literal("斗地主"));
-        lanMode=LAN_CLIENT; hostUuid=host; myPlayerIdx=-1; waitingStart=true;
+        lanMode=LAN_CLIENT; hostUuid=host; this.inviteAttemptNonce=inviteAttemptNonce;
+        myPlayerIdx=-1; waitingStart=true;
         game=new LandlordGame();
     }
 
@@ -115,16 +133,29 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
             LOGGER.warn("[斗地主联机] 忽略非对端来源的走法报文: {}",from);
             return;
         }
+        if (!data.startsWith("INIT_ACK:")) {
+            if (!(pl == 1 ? peer1InitAcked : peer2InitAcked)) return;
+            data = LandlordLanState.decodeAction(sessionToken, data);
+            if (data == null) return;
+        }
         try{
             if(data.startsWith("INIT_ACK:")){
-                int ackSeat=Integer.parseInt(data.substring(9));
-                if(ackSeat!=pl){
-                    LOGGER.warn("[斗地主联机] 忽略座位不匹配的 INIT_ACK: sender={}, claimed={}, expected={}",from,ackSeat,pl);
+                String[] ack=data.substring(9).split(":",-1);
+                if(ack.length!=3)return;
+                int ackSeat=Integer.parseInt(ack[0]);
+                long ackToken=Long.parseLong(ack[1]);
+                long ackSequence=Long.parseLong(ack[2]);
+                long expectedSequence=pl==1?peer1InitSequence:peer2InitSequence;
+                if(ackSeat!=pl||ackToken!=sessionToken
+                        ||!(pl==1?peer1InitSequences:peer2InitSequences).contains(ackSequence)){
+                    LOGGER.warn("[斗地主联机] 忽略不匹配的 INIT_ACK: sender={}, seat={}/{}, token={}, sequence={}/{}",
+                            from,ackSeat,pl,ackToken,ackSequence,expectedSequence);
                     return;
                 }
                 if(pl==1)peer1InitAcked=true;
                 else peer2InitAcked=true;
                 if(peer1InitAcked&&peer2InitAcked)initRetriesActive=false;
+                sendToPeer(from, encodeState("STATE:", game.serializeFor(pl)));
             }else if(data.startsWith("BID:")){
                 String[] p = data.substring(4).split(":", -1);
                 if (p.length != 2 || !String.valueOf(pl).equals(p[0])
@@ -141,7 +172,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
                     showMsg(lastInfo);broadcastState();
                 }else{
                     // 拒绝时回发 REJECT，客机不再面对"报文被静默吞掉、无任何反馈"的黑洞
-                    sendToPeer(from,"REJECT:"+name(pl)+" 的出牌无效（状态不同步或牌型不合法）");
+                    sendToPeer(from, encodeState("REJECT:", name(pl) + " 的出牌无效（状态不同步或牌型不合法）"));
                 }
             }
         }catch(Exception e){
@@ -181,85 +212,93 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void onRemoteState(String data){
         if(lanMode!=LAN_CLIENT||data==null)return;
-        try{
-            if(data.startsWith("INIT:")){
-                String body=data.substring(5);
-                int sep=body.indexOf('|');
-                if(sep<=0)return;
-                int assignedSeat=Integer.parseInt(body.substring(0,sep));
-                if(assignedSeat<1||assignedSeat>2)return; // 客机只能是座位1/2
-                if(initApplied){
-                    // HOST 可能因 ACK 丢包而重发 INIT。只确认同一座位，不重复覆盖已开始的状态。
-                    if(assignedSeat==myPlayerIdx)sendToHost("INIT_ACK:"+myPlayerIdx);
-                    else LOGGER.warn("[斗地主联机] 忽略与已分配座位不一致的重复 INIT: {} != {}",assignedSeat,myPlayerIdx);
-                    return;
-                }
-                List<Card> h=new ArrayList<>();
-                if (!game.applyState(body.substring(sep+1), assignedSeat, h)) return;
-                myPlayerIdx=assignedSeat;
-                initApplied=true;
-                waitingStart=false;
-                cardSelected=new boolean[h.size()];
-                selectedCards.clear();
-                sendToHost("INIT_ACK:"+myPlayerIdx);
-                showMsg("游戏开始！你是 "+name(myPlayerIdx));
-            }else if(data.startsWith("STATE:")){
-                if(myPlayerIdx<0)return;
-                List<Card> h=new ArrayList<>();
-                if (!game.applyState(data.substring(6), myPlayerIdx, h)) return;
-                if(cardSelected.length!=h.size())cardSelected=new boolean[h.size()];
-                // ★ Bug修复:applyState 后牌数变化,旧 selectedCards 列表残留旧索引,
-                //   玩家点击可能选中错误的牌。同步清空选牌列表与选中标记数组
-                //   （原版只清 selectedCards,cardSelected[] 残留 true 会导致
-                //   syncSel 把未点击的旧牌重新塞回 selectedCards）
-                selectedCards.clear();
-                Arrays.fill(cardSelected,false);
-            }else if(data.startsWith("REJECT:")){
-                // 主机拒绝了客机的出牌/叫牌（如状态滞后、牌型不合法），给出可见反馈
-                showMsg("主机拒绝: "+data.substring(7));
-            }
-        }catch(Exception e){
-            // 远端状态报文防护：畸形数据不导致崩溃
-            LOGGER.warn("[斗地主联机] 处理远端状态报文失败: {}",e.toString());
+        var applied = stateReceiver.receive(game, data);
+        if (applied == null) return;
+        sessionToken = applied.token();
+        myPlayerIdx = applied.seat();
+        if (applied.rejection() != null) {
+            showMsg("主机拒绝: " + applied.rejection());
+            return;
+        }
+        waitingStart = false;
+        cardSelected = new boolean[game.getPlayerHand(myPlayerIdx).size()];
+        selectedCards.clear();
+        if (applied.init()) {
+            showExitConfirm = false;
+            sendInitAck(applied.sequence());
+            showMsg("游戏开始！你是 " + name(myPlayerIdx));
         }
     }
     @Override public void onRemoteGameOver(String d){}
 
     private void sendToHost(String d){
+        if (d.startsWith("BID:") || d.startsWith("PLAY:")) {
+            d = LandlordLanState.encodeAction(sessionToken, d);
+        }
         ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-            MultiplayerGamePacket.PacketType.GAME_MOVE,hostUuid,"landlord",d));
+            MultiplayerGamePacket.PacketType.GAME_MOVE,hostUuid,"landlord",envelopeLanData(d)));
+    }
+    private void sendInitAck(long initSequence){
+        sendToHost("INIT_ACK:"+myPlayerIdx+":"+sessionToken+":"+initSequence);
     }
     private void sendToPeer(UUID peer,String d){
         ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-            MultiplayerGamePacket.PacketType.GAME_STATE_SYNC,peer,"landlord",d));
+            MultiplayerGamePacket.PacketType.GAME_STATE_SYNC,peer,"landlord",envelopeLanData(d)));
     }
     private void broadcastState(){
         if(lanMode!=LAN_HOST||peer1Uuid==null||peer2Uuid==null)return;
-        sendToPeer(peer1Uuid,"STATE:"+game.serializeFor(1));
-        sendToPeer(peer2Uuid,"STATE:"+game.serializeFor(2));
+        sendToPeer(peer1Uuid, encodeState("STATE:", game.serializeFor(1)));
+        sendToPeer(peer2Uuid, encodeState("STATE:", game.serializeFor(2)));
     }
     private void sendInit(UUID peer,int idx){
-        if(peer!=null)sendToPeer(peer,"INIT:"+idx+"|"+game.serializeFor(idx));
+        if(peer==null)return;
+        long sequence=nextStateSequence++;
+        if(idx==1){peer1InitSequence=sequence;peer1InitSequences.add(sequence);}
+        else if(idx==2){peer2InitSequence=sequence;peer2InitSequences.add(sequence);}
+        sendToPeer(peer, LandlordGame.encodeNetworkState(
+                sessionToken, sequence, "INIT:"+idx+"|"+game.serializeFor(idx)));
+    }
+
+    private String encodeState(String prefix, String payload){
+        return LandlordGame.encodeNetworkState(sessionToken, nextStateSequence++, prefix + payload);
     }
 
     private void resendUnackedInit(){
         if(!initRetriesActive||lanMode!=LAN_HOST)return;
         if(!peer1InitAcked)sendInit(peer1Uuid,1);
         if(!peer2InitAcked)sendInit(peer2Uuid,2);
+        initSendAttempts++;
         lastInitSendTick=tickCount;
     }
 
     // ══ Tick ═════════════════════════════════════════
     @Override public void tick(){
         tickCount++;
-        if(lanMode==LAN_HOST&&initRetriesActive&&tickCount>=INIT_FIRST_SEND_TICK
-                &&(lastInitSendTick==Long.MIN_VALUE||tickCount-lastInitSendTick>=INIT_RETRY_INTERVAL_TICKS)){
-            boolean firstSend=lastInitSendTick==Long.MIN_VALUE;
-            resendUnackedInit();
-            if(firstSend)showMsg("游戏开始！");
+        if(lanMode==LAN_HOST&&initRetriesActive){
+            long elapsed=tickCount-initStartTick;
+            long lastElapsed=lastInitSendTick==Long.MIN_VALUE
+                    ?Long.MIN_VALUE:lastInitSendTick-initStartTick;
+            LandlordStartupGuard.HostAction action=LandlordStartupGuard.hostAction(
+                    elapsed,lastElapsed,initSendAttempts);
+            if(action==LandlordStartupGuard.HostAction.ABORT){
+                abortLanStartup("等待客机确认超时，对局已取消");
+                return;
+            }
+            if(action==LandlordStartupGuard.HostAction.SEND){
+                boolean firstSend=lastInitSendTick==Long.MIN_VALUE;
+                resendUnackedInit();
+                if(firstSend&&initRetriesActive)showMsg("游戏开始！");
+            }
+        }
+        if(lanMode==LAN_CLIENT
+                && LandlordStartupGuard.clientTimedOut(waitingStart,tickCount-initStartTick)){
+            abortLanStartup("等待主机开始超时，已退出对局");
+            return;
         }
         if(lanMode==LAN_NONE){
             int cp=game.getCurrentPlayer();
+            // 本地双人时将当前的人类座位切换到操作栏，座位2仍由 AI 控制。
+            if (localTwoPlayer && cp >= 0 && cp <= 1) myPlayerIdx = cp;
             boolean aiTurn = cp == 1 && !localTwoPlayer || cp == 2;
             if(aiTurn&&tickCount-lastAiTick>AI_DELAY){
                 lastAiTick=tickCount;
@@ -430,7 +469,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(0,0,width,height,0xAA000000);
         int[] sc = game.getScores();
         if (myPlayerIdx < 0 || myPlayerIdx >= sc.length) return;
-        boolean win = sc[myPlayerIdx] > 0;
+        int roundWinner = game.getRoundWinner();
+        boolean win = LandlordGame.isRoundWinForPlayer(myPlayerIdx,
+                game.getLandlordPlayer(), roundWinner);
         int cw=300,ch=130,cax=cx-cw/2,cay=cy-ch/2;
         g.fill(cax-2,cay-2,cax+cw+2,cay+ch+2,win?0xFF44FF44:0xFFFF4444);
         g.fill(cax,cay,cax+cw,cay+ch,0xFF070F1E);
@@ -522,6 +563,14 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         initRetriesActive=false;
     }
 
+    private void abortLanStartup(String reason){
+        stopInitRetries();
+        sendLeaveGame();
+        Minecraft mc=Minecraft.getInstance();
+        if(mc.player!=null)mc.player.displayClientMessage(Component.literal("[游戏机] "+reason),false);
+        mc.setScreen(new com.wzz.game_console.client.screens.MultiplayerLobbyScreen());
+    }
+
     /** 联机时主机需通知两位客机（getLanPeer 只返回其中一位），且只发一次 */
     private boolean leaveSent=false;
     @Override public void sendLeaveGame(){
@@ -536,8 +585,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     }
     private void sendLeaveTo(UUID peer){
         if(peer==null)return;
+        String data=inviteAttemptNonce==null?"":MultiplayerInviteAttempt.encode(inviteAttemptNonce);
         ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-            MultiplayerGamePacket.PacketType.LEAVE_GAME,peer,"landlord",""));
+            MultiplayerGamePacket.PacketType.LEAVE_GAME,peer,"landlord",data));
     }
 
     @Override public void onClose(){
@@ -548,8 +598,9 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     }
 
     @Override public void removed(){
-        // setScreen(...) 替换界面不一定经过 onClose；离屏后必须停止 INIT 定时重发。
+        // setScreen(...) 替换界面不一定经过 onClose；离屏后必须停止 INIT 定时重发并通知对端。
         stopInitRetries();
+        if(lanMode!=LAN_NONE)sendLeaveGame();
         super.removed();
     }
 
@@ -604,8 +655,24 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     }
     private void syncSel(List<Card> h){selectedCards.clear();for(int i=0;i<Math.min(cardSelected.length,h.size());i++)if(cardSelected[i])selectedCards.add(h.get(i));}
     private void restartGame(){
-        if(lanMode!=LAN_NONE){showMsg("LAN不支持单独重开");return;}
-        game.restart();clearSel();showMsg("新的一局！");lastAiTick=0;
+        if(lanMode==LAN_CLIENT){showMsg("等待主机重开");return;}
+        game.restart();clearSel();showMsg("新的一局！");lastAiTick=tickCount;
+        cardSelected = new boolean[game.getPlayerHand(myPlayerIdx).size()];
+        lastInfo = "";
+        if (lanMode == LAN_HOST) {
+            sessionToken = createSessionToken();
+            peer1InitAcked = false;
+            peer2InitAcked = false;
+            peer1InitSequence = -1;
+            peer2InitSequence = -1;
+            peer1InitSequences.clear();
+            peer2InitSequences.clear();
+            initSendAttempts = 0;
+            initRetriesActive = true;
+            lastInitSendTick = Long.MIN_VALUE;
+            initStartTick = tickCount;
+            resendUnackedInit();
+        }
     }
     private void showMsg(String m){msg=m;msgTick=tickCount;}
     private String name(int id){

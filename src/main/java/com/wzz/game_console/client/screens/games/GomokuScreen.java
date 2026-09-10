@@ -36,6 +36,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private GomokuAI.Difficulty difficulty = GomokuAI.Difficulty.NORMAL;
     private int boardSize = 15;
     private GomokuAI ai;
+    private final boolean localTwoPlayer;
     private int lanMode = 0;
     private UUID remotePeer = null;
     private boolean isMyTurn = true;
@@ -49,13 +50,21 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     private boolean aiComputing = false;
     /** 对局代次，重开/退出后丢弃残留的 AI 结果 */
     private int aiGeneration = 0;
+    private volatile Thread aiWorker;
 
     public GomokuScreen() {
         super(Component.literal("五子棋"));
+        this.localTwoPlayer = false;
+    }
+
+    public GomokuScreen(boolean aiMode) {
+        super(Component.literal("五子棋"));
+        this.localTwoPlayer = !aiMode;
     }
 
     public GomokuScreen(boolean isHost, UUID remote) {
         super(Component.literal("五子棋-联机"));
+        this.localTwoPlayer = false;
         this.lanMode = isHost ? 1 : 2;
         this.remotePeer = remote;
         this.isMyTurn = isHost;
@@ -93,11 +102,38 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     @Override
     public void onClose() {
         this.sendLeaveGameOnce();
+        stopAiWorker();
         super.onClose();
     }
 
+    @Override
+    public void removed() {
+        sendLeaveGameOnce();
+        stopAiWorker();
+        super.removed();
+    }
+
+    private void stopAiWorker() {
+        Thread worker = aiWorker;
+        synchronized (this) {
+            aiGeneration++;
+            aiComputing = false;
+            aiDone = false;
+            aiPending = null;
+            aiWorker = null;
+        }
+        if (worker != null && worker != Thread.currentThread()) {
+            worker.interrupt();
+            try { worker.join(1000L); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+    }
+
     public void onRemoteMove(String data) {
-        if (data != null && data.startsWith("RESTART")) {
+        if (this.lanMode == 0 || data == null) return;
+        if (data.startsWith("RESTART")) {
+            // 只有 HOST 可以发起重开，客户端不接受对端客户端的重开请求。
+            if (this.lanMode != 2) return;
             // ★ 修复 LAN 棋盘尺寸不同步死锁：HOST 报文携带棋盘尺寸 "RESTART:<boardSize>"，
             //   接收端先同步 boardSize 再重开，否则两端各画各的棋盘、走法互相越界。
             //   兼容无后缀旧报文 "RESTART"：按默认 15 处理；解析 try-catch 防坏包
@@ -114,6 +150,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
             this.startGame();
         } else {
+            if (this.state != State.PLAYING || this.winner != 0 || this.isMyTurn) return;
             try {
                 String[] p = data.split(",");
                 if (p.length < 2) return; // 报文不足两个字段,丢弃
@@ -172,6 +209,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private void startGame() {
+        stopAiWorker();
         synchronized (this) {
             this.aiGeneration++;
             this.aiPending = null;
@@ -186,12 +224,12 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         this.lastMoveX = -1;
         this.lastMoveY = -1;
         this.isMyTurn = this.lanMode != 2;
-        this.ai = new GomokuAI(this.difficulty);
+        this.ai = this.lanMode == 0 && !this.localTwoPlayer ? new GomokuAI(this.difficulty) : null;
     }
 
     public void tick() {
         this.tickCount++;
-        if (this.lanMode == 0) {
+        if (this.lanMode == 0 && !this.localTwoPlayer && !showExitConfirm) {
             if (this.state == State.PLAYING && !this.playerTurn && this.winner == 0) {
                 this.tickAiTurn();
             }
@@ -207,20 +245,31 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 this.ai = new GomokuAI(this.difficulty);
             }
             final GomokuAI ai = this.ai;
-            final int[][] snapshot = this.board;
+            final int[][] snapshot = new int[this.board.length][];
+            for (int i = 0; i < this.board.length; i++) {
+                snapshot[i] = this.board[i].clone();
+            }
             final int gen;
             synchronized (this) {
                 gen = this.aiGeneration;
             }
             Thread t = new Thread(() -> {
-                int[] move = ai.getMove(snapshot);
-                synchronized (this) {
-                    if (gen == this.aiGeneration) {
-                        this.aiPending = move;
-                        this.aiDone = true;
+                int[] move = null;
+                try {
+                    move = ai.getMove(snapshot);
+                } catch (Throwable t1) {
+                    LOGGER.warn("[五子棋] AI 计算失败", t1);
+                } finally {
+                    synchronized (this) {
+                        if (gen == this.aiGeneration) {
+                            this.aiPending = move;
+                            this.aiDone = true;
+                        }
+                        if (Thread.currentThread() == this.aiWorker) this.aiWorker = null;
                     }
                 }
             }, "GomokuAI");
+            this.aiWorker = t;
             t.setDaemon(true);
             t.start();
             return;
@@ -232,11 +281,14 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             this.aiComputing = false;
             int[] best = this.aiPending;
             this.aiPending = null;
-            if (best != null) {
-                this.board[best[0]][best[1]] = 2;
-                this.lastMoveX = best[0];
-                this.lastMoveY = best[1];
-            }
+            boolean validMove = best != null && best.length >= 2
+                    && best[0] >= 0 && best[0] < this.boardSize
+                    && best[1] >= 0 && best[1] < this.boardSize
+                    && this.board[best[0]][best[1]] == 0;
+            if (!validMove) return;
+            this.board[best[0]][best[1]] = 2;
+            this.lastMoveX = best[0];
+            this.lastMoveY = best[1];
             if (this.checkWin(2)) {
                 this.winner = 2;
                 this.state = State.GAME_OVER;
@@ -304,6 +356,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public boolean keyPressed(int key, int scan, int mods) {
+        if (showExitConfirm && key != 256) return true;
         if (key != 256) {
             if (key == 82) {
                 if (this.lanMode == 2) {
@@ -312,7 +365,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
                 this.startGame();
                 if (this.lanMode == 1) {
-                    this.sendMove("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
+                    this.sendMoveEnvelope("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                 }
 
                 return true;
@@ -343,6 +396,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; this.sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         int cx = this.width / 2;
         int cy = this.height / 2;
@@ -369,7 +423,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 if (this.lanMode != 2) {
                     this.startGame();
                     if (this.lanMode == 1) {
-                        this.sendMove("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
+                        this.sendMoveEnvelope("RESTART:" + this.boardSize); // 携带棋盘尺寸，防止两端尺寸不同步
                     }
                 }
                 return true;
@@ -388,7 +442,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         if (this.state == State.PLAYING && this.winner == 0) {
-            boolean canMove = this.lanMode == 0 ? this.playerTurn : this.isMyTurn;
+            boolean canMove = this.lanMode == 0 ? (this.localTwoPlayer || this.playerTurn) : this.isMyTurn;
             if (!canMove) {
                 return true;
             }
@@ -396,7 +450,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             int hx = Math.floorDiv((int)mx - this.boardStartX, this.cellSize);
             int hy = Math.floorDiv((int)my - this.boardStartY, this.cellSize);
             if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
-                int myPiece = this.lanMode == 2 ? 2 : 1;
+                int myPiece = this.lanMode == 0 ? (this.playerTurn ? 1 : 2) : (this.lanMode == 2 ? 2 : 1);
                 this.board[hx][hy] = myPiece;
                 this.lastMoveX = hx;
                 this.lastMoveY = hy;
@@ -416,20 +470,20 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                     this.state = State.GAME_OVER;
                     if (this.lanMode != 0) {
                         this.isMyTurn = false;
-                        this.sendMove(hx + "," + hy);
+                        this.sendMoveEnvelope(hx + "," + hy);
                     }
                 } else if (this.isBoardFull()) {
                     this.winner = 0;
                     this.state = State.GAME_OVER;
                     if (this.lanMode != 0) {
                         this.isMyTurn = false;
-                        this.sendMove(hx + "," + hy);
+                        this.sendMoveEnvelope(hx + "," + hy);
                     }
                 } else if (this.lanMode == 0) {
-                    this.playerTurn = false;
+                    this.playerTurn = !this.playerTurn;
                 } else {
                     this.isMyTurn = false;
-                    this.sendMove(hx + "," + hy);
+                    this.sendMoveEnvelope(hx + "," + hy);
                 }
 
                 return true;
@@ -522,23 +576,26 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
         }
 
-        boolean canPreview = this.lanMode == 0 ? this.playerTurn : this.isMyTurn;
+        boolean canPreview = this.lanMode == 0 ? (this.localTwoPlayer || this.playerTurn) : this.isMyTurn;
         if (canPreview && this.winner == 0) {
             int hx = Math.floorDiv(mx - this.boardStartX, this.cellSize);
             int hy = Math.floorDiv(my - this.boardStartY, this.cellSize);
             if (hx >= 0 && hx < this.boardSize && hy >= 0 && hy < this.boardSize && this.board[hx][hy] == 0) {
                 int scx = this.boardStartX + hx * this.cellSize + this.cellSize / 2;
                 int scy = this.boardStartY + hy * this.cellSize + this.cellSize / 2;
-                int previewColor = this.lanMode == 2 ? 0x66EEEEEE : 0x66111111;
+                boolean white = this.lanMode == 2 || (this.localTwoPlayer && !this.playerTurn);
+                int previewColor = white ? 0x66EEEEEE : 0x66111111;
                 GameRenderHelper.drawCircle(g, scx, scy, stoneR, previewColor);
             }
         }
 
         GameRenderHelper.tickAndRenderParticles(g, this.particles);
         GameRenderHelper.drawTopHUD(g, this.width, this.height);
-        String modeTag = " [" + this.difficulty.label + "]";
+        String modeTag = this.localTwoPlayer ? " [本地双人]" : " [" + this.difficulty.label + "]";
         String turnText;
-        if (this.lanMode == 0) {
+        if (this.localTwoPlayer) {
+            turnText = this.playerTurn ? "黑棋回合" : "白棋回合";
+        } else if (this.lanMode == 0) {
             turnText = this.playerTurn ? "⚫ 你的回合 - 黑棋" : "⚪ AI思考中...";
         } else {
             boolean mine = this.isMyTurn;
@@ -565,6 +622,10 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             win = false;
             mainMsg = "🤝 平局！";
             subMsg = "棋盘已满，不分胜负";
+        } else if (this.localTwoPlayer) {
+            win = true;
+            mainMsg = this.winner == 1 ? "黑棋获胜！" : "白棋获胜！";
+            subMsg = "五子连线";
         } else if (this.lanMode == 0) {
             win = this.winner == 1;
             mainMsg = win ? "🎉 你赢了！" : "AI 获胜！";

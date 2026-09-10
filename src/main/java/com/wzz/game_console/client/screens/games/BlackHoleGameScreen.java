@@ -93,9 +93,9 @@ public class BlackHoleGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        gameTime++;
-        
+        if (!minecraft.isWindowActive()) Arrays.fill(keys, false);
         if (gameState == GameState.PLAYING && !showExitConfirm) { // 弹窗期间暂停游戏
+            gameTime++;
             updateGame();
         }
     }

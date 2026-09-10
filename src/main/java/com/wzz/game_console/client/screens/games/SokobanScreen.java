@@ -385,7 +385,6 @@ public class SokobanScreen extends Screen {
             if (Minecraft.getInstance().player != null) {
                 Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
             }
-            init(); // 重新初始化UI
         }
     }
 }

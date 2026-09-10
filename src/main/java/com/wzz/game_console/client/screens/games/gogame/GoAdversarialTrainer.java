@@ -7,6 +7,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import java.io.IOException;
 
 /**
@@ -69,6 +71,8 @@ public final class GoAdversarialTrainer {
     private final Config config;
     private NeuralEvaluator evaluator;
     private final List<Sample> replayBuffer = new ArrayList<>();
+    /** Serializes generation, replay-buffer, and evaluator mutation per trainer instance. */
+    private final Object generationLock = new Object();
 
     public GoAdversarialTrainer(Config config, NeuralEvaluator evaluator) {
         this.config = config == null ? new Config() : config;
@@ -76,8 +80,12 @@ public final class GoAdversarialTrainer {
     }
 
     public NeuralEvaluator getEvaluator() { return evaluator; }
-    public int getReplayBufferSize() { return replayBuffer.size(); }
-    public void clearReplayBuffer() { replayBuffer.clear(); }
+    public int getReplayBufferSize() {
+        synchronized (generationLock) { return replayBuffer.size(); }
+    }
+    public void clearReplayBuffer() {
+        synchronized (generationLock) { replayBuffer.clear(); }
+    }
 
     /**
      * 运行一代对抗训练。
@@ -91,41 +99,70 @@ public final class GoAdversarialTrainer {
     public Result runGeneration(int games, int parallelism, int epochs, double learningRate, long seed) {
         if (games < 0 || epochs < 0 || learningRate <= 0)
             throw new IllegalArgumentException("Invalid generation parameters");
-        if (games == 0) return new Result(0, 0, 0, 0, evaluator, 0);
+        synchronized (generationLock) {
+            return runGenerationLocked(games, parallelism, epochs, learningRate, seed);
+        }
+    }
 
-        int workers = Math.max(1, Math.min(parallelism, games));
+    private Result runGenerationLocked(int games, int parallelism, int epochs, double learningRate, long seed) {
+        if (games == 0 || Thread.currentThread().isInterrupted()) return new Result(games, 0, 0, 0, evaluator, 0);
+
+        int workers = Math.max(1, Math.min(parallelism <= 0 ? 1 : parallelism, games));
         final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
         ExecutorService pool = Executors.newFixedThreadPool(workers);
-        List<Future<GameResult>> futures = new ArrayList<>();
-
+        List<Future<GameResult>> futures = new ArrayList<>(workers);
         try {
-            for (int i = 0; i < games; i++) {
-                final int gameIndex = i;
+            List<Sample> newSamples = new ArrayList<>();
+            int nextGame = 0;
+            for (; nextGame < workers; nextGame++) {
+                final int gameIndex = nextGame;
                 futures.add(pool.submit(() ->
                     playAdversarialGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex)));
             }
-
-            List<Sample> newSamples = new ArrayList<>();
             int completed = 0;
             int ourWins = 0;
-            // 单局上限：maxMoves × 每方最长思考（GTP 超时 10 分钟 + 己方搜索），
-            // 再宽裕 50%——挂死的对局不应拖死整代训练
+            // 单局上限：避免外部引擎不响应时整代无限等待。
             long perGameTimeoutSec = (long) (Math.max(1, config.maxMoves) * 11L * 60 * 1.5);
-            for (Future<GameResult> future : futures) {
+            while (!futures.isEmpty()) {
+                Future<GameResult> future = futures.remove(0);
                 try {
                     GameResult gr = future.get(perGameTimeoutSec, TimeUnit.SECONDS);
-                    newSamples.addAll(gr.samples);
-                    completed++;
-                    if (gr.ourWin) ourWins++;
+                    if (gr.completed) {
+                        appendReplaySamples(newSamples, gr.samples);
+                        completed++;
+                        if (gr.ourWin) ourWins++;
+                    } else {
+                        System.err.println("[Adversarial] game did not complete; discarding samples");
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    future.cancel(true);
+                    for (Future<GameResult> pending : futures) pending.cancel(true);
+                    return new Result(games, 0, 0, 0, evaluator, 0);
+                } catch (java.util.concurrent.CancellationException ce) {
+                    for (Future<GameResult> pending : futures) pending.cancel(true);
+                    return new Result(games, 0, 0, 0, evaluator, 0);
+                } catch (java.util.concurrent.ExecutionException ee) {
+                    Throwable cause = ee.getCause();
+                    if (cause instanceof java.util.concurrent.CancellationException
+                            || cause instanceof InterruptedException) {
+                        if (cause instanceof InterruptedException) Thread.currentThread().interrupt();
+                        for (Future<GameResult> pending : futures) pending.cancel(true);
+                        return new Result(games, 0, 0, 0, evaluator, 0);
+                    }
+                    System.err.println("[Adversarial] game failed: " + cause);
                 } catch (java.util.concurrent.TimeoutException te) {
-                    // ★ 修复：原版 future.get() 无限等待，单个挂死对局会卡住整代训练
                     future.cancel(true);
                     System.err.println("[Adversarial] 对局超时（" + perGameTimeoutSec + "s），已取消");
-                } catch (Exception e) {
-                    System.err.println("[Adversarial] game failed: " + e.getMessage());
+                }
+                if (nextGame < games) {
+                    final int gameIndex = nextGame++;
+                    futures.add(pool.submit(() ->
+                        playAdversarialGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex)));
                 }
             }
 
+            if (Thread.currentThread().isInterrupted()) return new Result(games, 0, 0, 0, evaluator, 0);
             replayBuffer.addAll(newSamples);
             trimReplayBuffer();
             double loss = train(replayBuffer, epochs, learningRate, seed ^ 0xD1B54A32D192ED03L);
@@ -143,6 +180,14 @@ public final class GoAdversarialTrainer {
         }
     }
 
+    private void appendReplaySamples(List<Sample> samples, List<Sample> gameSamples) {
+        samples.addAll(gameSamples);
+        int max = Math.max(1, config.maxReplaySamples);
+        if (samples.size() > max) {
+            samples.subList(0, samples.size() - max).clear();
+        }
+    }
+
     private void trimReplayBuffer() {
         int max = Math.max(1, config.maxReplaySamples);
         int overflow = replayBuffer.size() - max;
@@ -155,9 +200,11 @@ public final class GoAdversarialTrainer {
     private static final class GameResult {
         final List<Sample> samples;
         final boolean ourWin;
-        GameResult(List<Sample> samples, boolean ourWin) {
+        final boolean completed;
+        GameResult(List<Sample> samples, boolean ourWin, boolean completed) {
             this.samples = samples;
             this.ourWin = ourWin;
+            this.completed = completed;
         }
     }
 
@@ -178,13 +225,13 @@ public final class GoAdversarialTrainer {
             String katagoPath = config.katagoPath;
             if (katagoPath.isEmpty()) {
                 System.err.println("[Adversarial] 未配置 katagoPath，跳过");
-                return new GameResult(samples, false);
+                return new GameResult(java.util.Collections.emptyList(), false, false);
             }
             // 检查文件是否存在
             java.io.File exeFile = new java.io.File(katagoPath);
             if (!exeFile.exists()) {
                 System.err.println("[Adversarial] KataGo 不存在: " + katagoPath);
-                return new GameResult(samples, false);
+                return new GameResult(java.util.Collections.emptyList(), false, false);
             }
 
             // 构建命令行参数
@@ -219,10 +266,11 @@ public final class GoAdversarialTrainer {
             java.io.BufferedReader reader = new java.io.BufferedReader(
                 new java.io.InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
 
-            // 初始化 GTP
-            sendGTP(writer, reader, "boardsize 19");
-            sendGTP(writer, reader, "komi 7.5");
-            sendGTP(writer, reader, "clear_board");
+            // 初始化 GTP，使用与训练标签相同的固定贴目快照。
+            double roundKomi = GoGame.getConfiguredKomi();
+            sendGTP(process, writer, reader, "boardsize 19");
+            sendGTP(process, writer, reader, "komi " + GoScoringProtocol.formatKomi(roundKomi));
+            sendGTP(process, writer, reader, "clear_board");
 
             // 对弈
             GoGame game = GoGame.rulesOnly();
@@ -232,71 +280,64 @@ public final class GoAdversarialTrainer {
                 int moves = 0;
                 int[] lastMoveOnBoard = null; // 上一手（plane 3），追踪双方落子
                 while (!game.isGameOver() && moves < Math.max(1, config.maxMoves)) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new java.util.concurrent.CancellationException("adversarial generation cancelled");
+                    }
                     GoPlayer currentPlayer = game.getCurrentPlayer();
                     boolean ourTurn = (currentPlayer == GoPlayer.BLACK) == ourIsBlack;
 
                     if (ourTurn) {
                         // 己方 AI 走棋
                         GoPlayer[][] boardCopy = game.getBoardCopy();
+                        int[] previousLastMove = lastMoveOnBoard == null ? null : lastMoveOnBoard.clone();
                         int[] move = ourAI.getBestMove(game);
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new java.util.concurrent.CancellationException("adversarial generation cancelled");
+                        }
                         double[] policyTarget = ourAI.getVisitDistribution();
-                        samples.add(new Sample(boardCopy, currentPlayer, lastMoveOnBoard, policyTarget));
-
-                        // 实际落子的坐标（fallback 时可能与 AI 建议不一致，必须用实际落子同步 KataGo）
-                        int[] actuallyPlayed = null;
-                        boolean played = move != null && move.length >= 2 && game.placeStone(move[0], move[1]);
-                        if (played) {
-                            actuallyPlayed = new int[]{move[0], move[1]};
-                        } else {
-                            int fx = -1, fy = -1;
-                            for (int x = 0; x < game.getBoardSize() && !played; x++)
-                                for (int y = 0; y < game.getBoardSize() && !played; y++)
-                                    if (game.placeStone(x, y)) { played = true; fx = x; fy = y; }
-                            if (played) actuallyPlayed = new int[]{fx, fy};
-                        }
-                        if (!played) {
-                            game.pass();
-                            lastMoveOnBoard = null;
-                        } else {
-                            lastMoveOnBoard = actuallyPlayed;
-                        }
+                        GoTrainingMove.Applied applied = GoTrainingMove.apply(game, move, policyTarget);
+                        int[] actuallyPlayed = applied.coordinates();
+                        lastMoveOnBoard = actuallyPlayed;
+                        policyTarget = applied.policy();
+                        samples.add(new Sample(boardCopy, currentPlayer, previousLastMove, policyTarget));
 
                         // 同步到 KataGo（用实际落子，避免 fallback 时两盘棋分叉）
                         if (actuallyPlayed != null) {
                             String color = ourIsBlack ? "black" : "white";
-                            sendGTP(writer, reader, "play " + color + " " + formatMove(actuallyPlayed[0], actuallyPlayed[1]));
+                            sendGTP(process, writer, reader, "play " + color + " " + formatMove(actuallyPlayed[0], actuallyPlayed[1]));
                         } else {
                             String color = ourIsBlack ? "black" : "white";
-                            sendGTP(writer, reader, "play " + color + " pass");
+                            sendGTP(process, writer, reader, "play " + color + " pass");
                         }
                     } else {
                         // KataGo 走棋
                         String color = ourIsBlack ? "white" : "black";
-                        String response = sendGTP(writer, reader, "genmove " + color);
-                        // ★ 修复：resign 是认输而非弃权——原版按 pass 处理会继续对弈，
-                        //   胜负判定与样本标签全部失真。对手认输 → 我方胜，立即终局
-                        if (response != null && response.toLowerCase().contains("resign")) {
+                        String response = sendGTP(process, writer, reader, "genmove " + color);
+                        // resign ends the game; pass is a real pass. Any other malformed
+                        // or illegal response fails the game instead of desynchronizing boards.
+                        GoAI.MoveResult action = parseGTPAction(response);
+                        if (action.type() == GoAI.MoveType.RESIGN) {
                             kataResigned = true;
                             break;
                         }
-                        int[] move = parseGTPMove(response);
-
-                        boolean played = false;
-                        if (move != null) {
-                            played = game.placeStone(move[0], move[1]);
-                            lastMoveOnBoard = new int[]{move[0], move[1]};
-                        }
-                        if (!played) {
+                        if (action.type() == GoAI.MoveType.PASS) {
                             game.pass();
                             lastMoveOnBoard = null;
+                        } else if (action.type() == GoAI.MoveType.MOVE && game.placeStone(action.x(), action.y())) {
+                            lastMoveOnBoard = action.coordinates();
+                        } else {
+                            throw new IOException("Invalid KataGo genmove response: " + response);
                         }
                     }
                     moves++;
                 }
-                if (!game.isGameOver() && !kataResigned) game.pass();
+                if (!game.isGameOver() && !kataResigned) {
+                    // maxMoves is a truncation guard, not an implicit second pass.
+                    return new GameResult(java.util.Collections.emptyList(), false, false);
+                }
 
                 // 计算胜负：认输直接记确定值 ±1（残盘点目对中盘认输无意义）
-                double margin = game.getScoreMargin(GoPlayer.BLACK);
+                double margin = game.getScoreMargin(GoPlayer.BLACK, java.util.Collections.emptySet(), roundKomi);
                 boolean ourWin = kataResigned
                         ? true
                         : (ourIsBlack && margin > 0) || (!ourIsBlack && margin < 0);
@@ -309,20 +350,26 @@ public final class GoAdversarialTrainer {
                 }
 
                 // 关闭 KataGo（优先优雅退出，外层 finally 兜底强杀，覆盖所有异常路径）
-                sendGTP(writer, reader, "quit");
+                sendGTP(process, writer, reader, "quit");
                 writer.close();
                 reader.close();
                 process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
 
-                return new GameResult(samples, ourWin);
+                return new GameResult(samples, ourWin, true);
             } finally {
                 game.close();
-                ourAI.shutdown();
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new java.util.concurrent.CancellationException("adversarial generation cancelled");
+        } catch (java.util.concurrent.CancellationException e) {
+            throw e;
         } catch (Exception e) {
             System.err.println("[Adversarial] 对局异常: " + e.getMessage());
-            return new GameResult(samples, false);
+            return new GameResult(java.util.Collections.emptyList(), false, false);
         } finally {
+            // Every early-return and initialization failure must release the private evaluator.
+            ourAI.shutdown();
             // ★ Bug修复：此前 kataGo 变量从未真正赋值，异常路径下真正持有子进程的 process
             // 完全没被清理——GTP 通信异常/超时会让 KataGo 残留为僵尸进程占用显存。
             // 无论正常返回还是任意异常路径，这里保证子进程被强杀。
@@ -333,64 +380,111 @@ public final class GoAdversarialTrainer {
     }
 
     private String sendGTP(java.io.Writer writer, java.io.Reader reader, String cmd) throws Exception {
+        return sendGTP(null, writer, reader, cmd, 600_000L);
+    }
+
+    private String sendGTP(Process process, java.io.Writer writer, java.io.Reader reader,
+                           String cmd) throws Exception {
+        return sendGTP(process, writer, reader, cmd, 600_000L);
+    }
+
+    /** Test hook without a process handle: timeout abandons the reader instead of closing the stream. */
+    private String sendGTP(java.io.Writer writer, java.io.Reader reader, String cmd,
+                           long timeoutMillis) throws Exception {
+        return sendGTP(null, writer, reader, cmd, timeoutMillis);
+    }
+
+    /**
+     * 发送 GTP 命令并等待响应终止行（"=..."/"?..."）。
+     * <p>
+     * 超时/中断路径绝不在主线程 close() reader：reader 线程可能仍持有 BufferedReader
+     * 内部锁阻塞在管道读上，同步 close 会永久死锁（Windows 实测复现）。此处改为
+     * destroyForcibly 引擎使管道 EOF，reader 线程自行退出；进程清理由对局 finally 兜底。
+     *
+     * @param process 所属引擎进程；仅用于超时/中断时强制解除管道阻塞，可为 null（测试钩子）
+     */
+    private String sendGTP(Process process, java.io.Writer writer, java.io.Reader reader, String cmd,
+                           long timeoutMillis) throws Exception {
         writer.write(cmd + "\n");
         writer.flush();
-        StringBuilder sb = new StringBuilder();
         java.io.BufferedReader br = (java.io.BufferedReader) reader;
-        String line;
-        int timeout = 600000; // 600 秒 = 10 分钟，充分覆盖并发 GPU 竞争
-        long deadline = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < deadline) {
-            while (br.ready()) {
-                line = br.readLine();
-                if (line == null) throw new IOException("KataGo 进程已退出");
-                sb.append(line).append("\n");
-                if (line.startsWith("=") || line.startsWith("?")) {
-                    return sb.toString();
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMillis));
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<String> responseRef = new AtomicReference<>();
+        AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        Thread readerThread = new Thread(() -> {
+            StringBuilder noise = new StringBuilder();
+            try {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String trimmed = line.stripLeading();
+                    if (trimmed.startsWith("=") || trimmed.startsWith("?")) {
+                        responseRef.set(trimmed);
+                        return;
+                    }
+                    // 响应前的引擎日志/横幅行不属于 GTP 响应，丢弃
+                    noise.append(line).append('\n');
                 }
-            }
-            Thread.sleep(50);
-        }
-        throw new java.util.concurrent.TimeoutException("GTP 命令超时: " + cmd);
-    }
-
-    /** 读取进程直到收到 GTP 响应（用于处理进程启动时的调优输出） */
-    private String waitForGTPReady(java.io.BufferedReader br, int timeoutMs) throws Exception {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        StringBuilder sb = new StringBuilder();
-        while (System.currentTimeMillis() < deadline) {
-            while (br.ready()) {
-                String line = br.readLine();
-                if (line == null) return sb.toString();
-                sb.append(line).append("\n");
-                if (line.startsWith("=") || line.startsWith("?")) {
-                    return sb.toString();
+                // EOF：若此前还有未终止的内容（半行响应），不得当作成功返回
+                if (noise.length() > 0) {
+                    errorRef.set(new IOException("KataGo 进程已退出（响应不完整）"));
                 }
+                // 注意：readLine 会把"无换行即 EOF"的尾行当作完整行返回（如 "=1"），
+                // 这类响应会作为成功文本交由 parseGTPAction 判定；裸 id/非法动作会被
+                // 判为 ERROR 使对局安全失败，且引擎已死时下一条命令必然 EOF。
+            } catch (Throwable t) {
+                errorRef.set(t);
+            } finally {
+                done.countDown();
             }
-            Thread.sleep(10);
-        }
-        return sb.toString();
-    }
-
-    private int[] parseGTPMove(String response) {
-        if (response == null || response.isEmpty()) return null;
-        String line = response.trim();
-        if (!line.startsWith("=")) return null;
-        String coord = line.substring(1).trim().toLowerCase();
-        if ("pass".equals(coord) || "resign".equals(coord)) return null;
+        }, "gtp-response-reader");
+        readerThread.setDaemon(true);
+        readerThread.start();
         try {
-            char colChar = coord.charAt(0);
-            int row = Integer.parseInt(coord.substring(1));
-            int col = colChar - 'a';
-            if (col >= 0 && col < 19 && row - 1 >= 0 && row - 1 < 19) {
-                return new int[]{col, row - 1};
+            long deadline = System.nanoTime() + timeoutNanos;
+            while (!done.await(100L, TimeUnit.MILLISECONDS)) {
+                if (System.nanoTime() >= deadline) {
+                    throw new java.util.concurrent.TimeoutException("GTP 命令超时: " + cmd);
+                }
             }
-        } catch (NumberFormatException ignored) {}
-        return null;
+        } catch (java.util.concurrent.TimeoutException | InterruptedException e) {
+            if (process != null) process.destroyForcibly();
+            throw e;
+        }
+        Throwable error = errorRef.get();
+        if (error instanceof IOException io) throw io;
+        if (error instanceof RuntimeException re) throw re;
+        if (error != null) throw new IOException("KataGo GTP read failed", error);
+        String response = responseRef.get();
+        if (response == null) throw new IOException("KataGo 进程已退出");
+        if (response.startsWith("?")) {
+            throw new IOException("KataGo rejected GTP command " + cmd + ": " + response);
+        }
+        return response + "\n";
+    }
+
+    static GoAI.MoveResult parseGTPAction(String response) {
+        if (response == null) return GoAI.MoveResult.error();
+        String line = response.trim();
+        if (!line.startsWith("=")) return GoAI.MoveResult.error();
+        String body = line.substring(1).trim();
+        int idEnd = 0;
+        while (idEnd < body.length() && Character.isDigit(body.charAt(idEnd))) idEnd++;
+        if (idEnd > 0) {
+            if (idEnd == body.length() || !Character.isWhitespace(body.charAt(idEnd))) {
+                return GoAI.MoveResult.error();
+            }
+            body = body.substring(idEnd).trim();
+        }
+        if (body.isEmpty() || body.chars().anyMatch(Character::isWhitespace)) {
+            return GoAI.MoveResult.error();
+        }
+        return KataGoGoAI.parseMoveResult(body);
     }
 
     private String formatMove(int x, int y) {
-        return String.valueOf((char) ('a' + x)) + (y + 1);
+        int gtpCol = x + (x >= 8 ? 1 : 0);
+        return String.valueOf((char) ('a' + gtpCol)) + (y + 1);
     }
 
     // ── 训练（与 GoSelfPlayTrainer 相同） ──────────────────────────
@@ -428,6 +522,7 @@ public final class GoAdversarialTrainer {
             java.util.Collections.shuffle(samples, random);
             int batchLimit = Math.max(1, config.batchSize);
             for (int start = 0; start < samples.size(); start += batchLimit) {
+                if (Thread.currentThread().isInterrupted()) return batches == 0 ? 0 : total / batches;
                 int end = Math.min(samples.size(), start + batchLimit);
                 int baseCount = end - start;
                 double[][][][] planes = new double[baseCount * symCount][4][BOARD_SIZE][BOARD_SIZE];
@@ -461,6 +556,7 @@ public final class GoAdversarialTrainer {
                         n++;
                     }
                 }
+                if (Thread.currentThread().isInterrupted()) return batches == 0 ? 0 : total / batches;
                 total += evaluator.trainMiniBatch(planes, aux, values, policies,
                         learningRate, config.l2, config.gradientClip, config.momentum);
                 batches++;

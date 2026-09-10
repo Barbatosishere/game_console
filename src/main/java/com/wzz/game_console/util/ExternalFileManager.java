@@ -223,7 +223,9 @@ public final class ExternalFileManager {
         Path root = availableRoot();
         if (root == null || !isSafePathPart(subFolder)) return null;
         try {
-            return root.resolve(subFolder);
+            Path normalizedRoot = root.toAbsolutePath().normalize();
+            Path resolved = normalizedRoot.resolve(subFolder).normalize();
+            return resolved.startsWith(normalizedRoot) ? resolved : null;
         } catch (Throwable failure) {
             logOperationFailure("解析子文件夹失败: " + subFolder, failure);
             return null;
@@ -235,7 +237,11 @@ public final class ExternalFileManager {
         Path dir = resolveSubFolder(subFolder);
         if (dir == null) return null;
         try {
-            return dir.resolve(fileName);
+            Path resolved = dir.resolve(fileName).toAbsolutePath().normalize();
+            Path root = availableRoot();
+            if (root == null) return null;
+            Path normalizedRoot = root.toAbsolutePath().normalize();
+            return resolved.startsWith(normalizedRoot) && resolved.startsWith(dir) ? resolved : null;
         } catch (Throwable failure) {
             logOperationFailure("解析文件失败: " + fileName, failure);
             return null;
@@ -248,7 +254,12 @@ public final class ExternalFileManager {
             Files.createDirectories(file.getParent());
             temp = Files.createTempFile(file.getParent(), file.getFileName().toString() + ".", ".tmp");
             writer.write(temp);
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            try {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                // 某些文件系统不支持原子移动；仍完成替换，避免整个持久化操作失败。
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
             return true;
         } catch (Throwable failure) {
             logOperationFailure("写入文件失败: " + file, failure);

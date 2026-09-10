@@ -55,12 +55,13 @@ public class KataGoGoAI implements GoAI {
     /** AI 执棋颜色，默认白棋 */
     private GoPlayer aiColor = GoPlayer.WHITE;
 
-    /** 上次同步时的走子数量（用于增量同步） */
-    private int lastSyncedMoveCount = 0;
+    private final BoardSync boardSync = new BoardSync(this::sendCommand);
 
     /** 驻留读线程 + 队列：读线程只负责把 GTP 行推入队列，
      *  响应等待方用 poll(剩余时间) 实现超时，超时不会遗留阻塞在 readLine 上的任务 */
-    private final BlockingQueue<String> responseQueue = new LinkedBlockingQueue<>();
+    /** Bounded so a buggy engine spamming stdout fails fast instead of leaking memory. */
+    private static final int RESPONSE_QUEUE_CAPACITY = 4_096;
+    private final BlockingQueue<String> responseQueue = new LinkedBlockingDeque<>(RESPONSE_QUEUE_CAPACITY);
     private volatile boolean running = true;
     /** 引擎退出/流关闭时入队的哨兵（空行已在读线程过滤，队列中出现 "" 仅表示 EOF） */
     private static final String EOF_SENTINEL = "";
@@ -185,61 +186,85 @@ public class KataGoGoAI implements GoAI {
 
     @Override
     public int[] getBestMove(GoGame game) {
+        return getBestMoveResult(game).coordinates();
+    }
+
+    @Override
+    public MoveResult getBestMoveResult(GoGame game) {
         if (!connected) {
-            LOGGER.warn("[KataGo] 未连接，返回 null");
-            return null;
+            LOGGER.warn("[KataGo] 未连接，返回错误结果");
+            return MoveResult.error();
         }
 
         try {
-            // 同步棋盘状态（增量同步）
-            syncBoard(game);
-
-            // 请求 AI 走法：sendCommand 已返回本条命令的响应正文（"="/"?" 前缀与命令 id 均已剥离）
-            String colorStr = (aiColor == GoPlayer.WHITE) ? "white" : "black";
-            return parseMove(sendCommand("genmove " + colorStr));
+            return boardSync.generate(game.getMoveHistory(), aiColor);
         } catch (Exception e) {
             LOGGER.error("[KataGo] 获取走法失败: {}", e.getMessage());
-            return null;
+            return MoveResult.error();
         }
     }
 
-    /**
-     * 同步棋盘状态到 KataGo（增量同步）。
-     * <p>
-     * KataGo 内部会缓存棋盘状态，避免每步都 clear_board 丢失缓存。
-     * 只有在棋盘为空或历史收缩（如重开，任何手数倒退）时才全量同步。
-     */
-    private void syncBoard(GoGame game) throws IOException, TimeoutException {
-        List<GoMove> history = game.getMoveHistory();
+    @FunctionalInterface
+    interface CommandTransport {
+        String send(String command) throws IOException;
+    }
 
-        // 如果棋盘为空或历史收缩（如重开，任何手数倒退都可能是分叉），全量同步
-        if (lastSyncedMoveCount == 0 || history.size() < lastSyncedMoveCount) {
-            sendCommand("clear_board");
-            lastSyncedMoveCount = 0;
-            for (GoMove move : history) {
-                if (move.x >= 0 && move.y >= 0) {
-                    String color = move.player == GoPlayer.BLACK ? "black" : "white";
-                    sendCommand("play " + color + " " + formatMove(move.x, move.y));
+    /** Production replay logic, independent of the child process for transport tests. */
+    static final class BoardSync {
+        private final CommandTransport transport;
+        private final java.util.ArrayList<GoMove> engineHistory = new java.util.ArrayList<>();
+        private boolean dirty = true;
+
+        BoardSync(CommandTransport transport) {
+            this.transport = transport;
+        }
+
+        synchronized MoveResult generate(List<GoMove> history, GoPlayer color) throws IOException {
+            try {
+                syncBoard(history);
+                MoveResult result = parseMoveResult(transport.send("genmove " + colorName(color)));
+                // genmove applies its own move. The next local history must acknowledge it.
+                if (result.type() == MoveType.MOVE) {
+                    engineHistory.add(new GoMove(result.x(), result.y(), color, 0));
+                } else if (result.type() == MoveType.PASS) {
+                    engineHistory.add(new GoMove(-1, -1, color, 0));
+                } else {
+                    dirty = true;
+                }
+                return result;
+            } catch (IOException | RuntimeException e) {
+                dirty = true;
+                throw e;
+            }
+        }
+
+        private void syncBoard(List<GoMove> history) throws IOException {
+            boolean prefixMatches = history.size() >= engineHistory.size();
+            if (prefixMatches) {
+                for (int i = 0; i < engineHistory.size(); i++) {
+                    GoMove local = history.get(i), engine = engineHistory.get(i);
+                    if (local.x != engine.x || local.y != engine.y || local.player != engine.player) {
+                        prefixMatches = false;
+                        break;
+                    }
                 }
             }
-            lastSyncedMoveCount = history.size();
-            return;
+            if (dirty || !prefixMatches) {
+                transport.send("clear_board");
+                engineHistory.clear();
+            }
+            for (int i = engineHistory.size(); i < history.size(); i++) {
+                GoMove move = history.get(i);
+                String coordinate = move.x < 0 || move.y < 0 ? "pass" : formatMove(move.x, move.y);
+                transport.send("play " + colorName(move.player) + " " + coordinate);
+                engineHistory.add(move);
+            }
+            dirty = false;
         }
 
-        // 增量同步：只发送新增的走法
-        for (int i = lastSyncedMoveCount; i < history.size(); i++) {
-            GoMove move = history.get(i);
-            if (move.x >= 0 && move.y >= 0) {
-                String color = move.player == GoPlayer.BLACK ? "black" : "white";
-                sendCommand("play " + color + " " + formatMove(move.x, move.y));
-            } else {
-                // ★ 修复：pass 也要转发给引擎，否则引擎端回合指针与本地棋盘脱节，
-                //   genmove 会给错误的行棋方出招
-                String color = move.player == GoPlayer.BLACK ? "black" : "white";
-                sendCommand("play " + color + " pass");
-            }
+        private static String colorName(GoPlayer color) {
+            return color == GoPlayer.BLACK ? "black" : "white";
         }
-        lastSyncedMoveCount = history.size();
     }
 
     /**
@@ -278,13 +303,22 @@ public class KataGoGoAI implements GoAI {
             String line;
             while (running && (line = reader.readLine()) != null) {
                 if (line.isBlank()) continue; // GTP 响应以"=..."行为准，空行终止符无需入队
-                responseQueue.put(line);
+                if (!responseQueue.offer(line)) {
+                    LOGGER.error("[KataGo] 响应队列溢出（{} 条未消费），判定引擎输出异常并断开",
+                            RESPONSE_QUEUE_CAPACITY);
+                    connected = false;
+                    running = false;
+                    responseQueue.clear();
+                    break;
+                }
             }
         } catch (IOException ignored) {
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt(); // shutdown 中断读线程，落 finally 哨兵
+            // shutdown 通过 closeProcess 关闭流使 readLine 抛出并落到 finally 哨兵
         } finally {
-            responseQueue.offer(EOF_SENTINEL);
+            if (!responseQueue.offer(EOF_SENTINEL)) {
+                responseQueue.clear();
+                responseQueue.offer(EOF_SENTINEL);
+            }
         }
     }
 
@@ -334,41 +368,33 @@ public class KataGoGoAI implements GoAI {
     /**
      * 解析 GTP 坐标为 {x, y}（GTP 使用 A-T 跳过 I 列）
      */
-    private int[] parseMove(String coord) {
-        if (coord == null || coord.isEmpty()) return null;
-
-        coord = coord.toLowerCase().trim();
-
-        // PASS 或认输
-        if ("pass".equals(coord) || "resign".equals(coord)) {
-            return null;
-        }
-
+    static MoveResult parseMoveResult(String coordinate) {
+        if (coordinate == null) return MoveResult.error();
+        String coord = coordinate.toLowerCase().trim();
+        if (coord.isEmpty()) return MoveResult.error();
+        if ("pass".equals(coord)) return MoveResult.pass();
+        if ("resign".equals(coord)) return MoveResult.resign();
         try {
-            // GTP 格式：A1, B2, ...（列用字母，行用数字）
             char colChar = coord.charAt(0);
             int row = Integer.parseInt(coord.substring(1));
-
-            // 转换 GTP 列号到棋盘坐标（GTP 列 A=1 对应棋盘列 0）
-            int col = colChar - 'a';
+            if (colChar == 'i' || colChar < 'a' || colChar > 't') return MoveResult.error();
+            int col = colChar < 'i' ? colChar - 'a' : colChar - 'a' - 1;
             int boardRow = row - 1;
-
-            // 转换为棋盘坐标 (x=col, y=boardRow)
             if (col >= 0 && col < BOARD_SIZE && boardRow >= 0 && boardRow < BOARD_SIZE) {
-                return new int[]{col, boardRow};
+                return MoveResult.move(col, boardRow);
             }
-        } catch (NumberFormatException e) {
-            LOGGER.warn("[KataGo] 无法解析坐标: {}", coord);
+        } catch (NumberFormatException ignored) {
+            LOGGER.warn("[KataGo] 无法解析坐标: {}", coordinate);
         }
-
-        return null;
+        return MoveResult.error();
     }
 
     /**
      * 格式化坐标为 GTP 格式
      */
-    private String formatMove(int x, int y) {
-        char col = (char) ('a' + x);
+    private static String formatMove(int x, int y) {
+        // GTP 列坐标跳过 I：棋盘第 8 列对应 J，而不是 I。
+        char col = (char) ('a' + x + (x >= 8 ? 1 : 0));
         return col + String.valueOf(y + 1);
     }
 
@@ -378,42 +404,31 @@ public class KataGoGoAI implements GoAI {
         LIVE_INSTANCES.remove(this);
         connected = false;
         running = false;
+        responseQueue.clear();
         responseQueue.offer(EOF_SENTINEL); // 唤醒可能仍在等待的消费者
 
-        // 先发送 quit 命令优雅关闭
-        try {
-            if (writer != null) {
-                writer.write((commandId.incrementAndGet()) + " quit\n");
-                writer.flush();
-            }
-        } catch (Exception ignored) {}
+        closeProcess(process, writer, reader);
+        LOGGER.info("[KataGo] 已关闭");
+    }
 
-        // 关闭 writer
-        try {
-            if (writer != null) {
-                writer.close();
-            }
-        } catch (IOException ignored) {}
-
-        // 关闭 reader
-        try {
-            if (reader != null) {
-                reader.close();
-            }
-        } catch (IOException ignored) {}
-
-        // 等待进程退出，最多 2 秒
+    static void closeProcess(Process process, Closeable writer, Closeable reader) {
+        // Terminate the child first. Closing a reader before the child exits can
+        // block on platform pipes while KataGo is still writing its response.
         if (process != null && process.isAlive()) {
             process.destroy();
             try {
-                if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                }
+                if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
         }
-        LOGGER.info("[KataGo] 已关闭");
+
+        try {
+            if (writer != null) writer.close();
+        } catch (IOException ignored) {}
+        try {
+            if (reader != null) reader.close();
+        } catch (IOException ignored) {}
     }
 }

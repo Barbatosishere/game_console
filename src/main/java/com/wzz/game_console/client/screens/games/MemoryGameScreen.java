@@ -171,8 +171,9 @@ public class MemoryGameScreen extends Screen {
     
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
-        if (gameState == GameState.WAITING_INPUT) {
+        if (showExitConfirm) {
+            if (button != 0) return true; int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { resumeFromExitConfirm(); return true; } return true; }
+        if (button == 0 && gameState == GameState.WAITING_INPUT) {
             int clickedCell = getCellAtPosition((int)mouseX, (int)mouseY);
             if (clickedCell != -1) {
                 handleCellClick(clickedCell);
@@ -288,6 +289,7 @@ public class MemoryGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (!minecraft.isWindowActive()) showExitConfirm = false;
         if (showExitConfirm) return;
         long currentTime = System.currentTimeMillis();
         if (highlightedCell != -1) {

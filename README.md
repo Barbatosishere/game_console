@@ -73,7 +73,7 @@
 ## 🚀 使用方法
 
 1. 确保已安装 [NeoForge](https://neoforged.net/) 1.21.1
-2. 将 `game_console-1.0.0.jar` 放入 `.minecraft/mods` 文件夹
+2. 将 `Game Console-1.0.0-NeoForge-1.21.1-beta5.jar` 放入 `.minecraft/mods` 文件夹
 3. 启动游戏，在创造模式物品栏「游戏机」分类中获取游戏机
 4. 右键使用游戏机即可打开游戏选择界面
 
@@ -95,7 +95,7 @@ cd game_console
 # 构建
 ./gradlew build
 
-# 产物位于 build/libs/game_console-1.0.0.jar
+# 产物位于 build/libs/Game Console-1.0.0-NeoForge-1.21.1-beta5.jar
 ```
 
 ## 📄 许可证

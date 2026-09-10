@@ -106,6 +106,8 @@ public final class ChessRules {
     private static void tryAdd(int[][] b, List<int[]> m, int c, int r, boolean red) {
         if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
         int t = b[c][r];
+        // 将/帅不是可被捕获的普通棋子；将军与将杀由检查逻辑处理。
+        if (Math.abs(t) == GENERAL) return;
         if (t == 0 || (red && t < 0) || (!red && t > 0)) m.add(new int[]{c, r});
     }
 
@@ -154,7 +156,9 @@ public final class ChessRules {
                     m.add(new int[]{nc, nr});
                     continue;
                 }
-                if ((red && t < 0) || (!red && t > 0)) m.add(new int[]{nc, nr});
+                if (Math.abs(t) != GENERAL && ((red && t < 0) || (!red && t > 0))) {
+                    m.add(new int[]{nc, nr});
+                }
                 break;
             }
         }
@@ -172,7 +176,9 @@ public final class ChessRules {
                     else jumped = true;
                 } else {
                     if (t != 0) {
-                        if ((red && t < 0) || (!red && t > 0)) m.add(new int[]{nc, nr});
+                        if (Math.abs(t) != GENERAL && ((red && t < 0) || (!red && t > 0))) {
+                            m.add(new int[]{nc, nr});
+                        }
                         break;
                     }
                 }
@@ -220,8 +226,16 @@ public final class ChessRules {
                 int p = b[c][r];
                 if (p == 0) continue;
                 if ((p > 0) == isRed) continue;
-                for (int[] a : pseudoMoves(b, c, r)) {
-                    if (a[0] == gc && a[1] == gr) return true;
+                // 攻击检测保留目标的颜色和占位，炮必须隔一子吃实子；
+                // 用普通棋子替代将帅，绕过实际走法的禁止吃将过滤。
+                int target = b[gc][gr];
+                b[gc][gr] = isRed ? SOLDIER : -SOLDIER;
+                try {
+                    for (int[] a : pseudoMoves(b, c, r)) {
+                        if (a[0] == gc && a[1] == gr) return true;
+                    }
+                } finally {
+                    b[gc][gr] = target;
                 }
             }
         }

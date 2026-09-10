@@ -75,6 +75,10 @@ public class Match3GameScreen extends Screen {
     private void initializeGame() {
         gameGrid = new int[GRID_SIZE][GRID_SIZE];
         selectedGrid = new boolean[GRID_SIZE][GRID_SIZE];
+        selectedX = -1;
+        selectedY = -1;
+        score = 0;
+        animations.clear();
 
         // 随机填充游戏网格，避免初始匹配
         randomFillAvoidingMatches();
@@ -122,7 +126,7 @@ public class Match3GameScreen extends Screen {
     }
 
     private void calcDynamicLayout() {
-        CELL_SIZE = Math.max(16, Math.min((width - 80) / GRID_SIZE, (height - 100) / GRID_SIZE));
+        CELL_SIZE = Math.max(1, Math.min(Math.max(1, (width - 20) / GRID_SIZE), Math.max(1, (height - 40) / GRID_SIZE)));
         GRID_START_X = (width - GRID_SIZE * CELL_SIZE) / 2;
         GRID_START_Y = (height - GRID_SIZE * CELL_SIZE) / 2;
     }
@@ -177,7 +181,9 @@ public class Match3GameScreen extends Screen {
                 guiGraphics.fill(screenX + 1, screenY + 1, screenX + CELL_SIZE - 1, screenY + CELL_SIZE - 1, 0xFF222222);
                 
                 // 渲染物品（复用缓存栈，只读不修改）
-                guiGraphics.renderItem(cachedStack(gameGrid[x][y]), screenX + 8, screenY + 8);
+                if (gameGrid[x][y] >= 0 && gameGrid[x][y] < GAME_ITEMS.length) {
+                    guiGraphics.renderItem(cachedStack(gameGrid[x][y]), screenX + Math.max(0, (CELL_SIZE - 16) / 2), screenY + Math.max(0, (CELL_SIZE - 16) / 2));
+                }
             }
         }
     }

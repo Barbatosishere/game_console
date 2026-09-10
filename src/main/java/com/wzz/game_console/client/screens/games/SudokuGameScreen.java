@@ -192,12 +192,18 @@ public class SudokuGameScreen extends Screen {
         }
         Collections.shuffle(candidates, random);
 
+        int targetFilled = currentDifficulty.filledCells;
+        int removed = 0;
+        int targetRemoved = GRID_SIZE * GRID_SIZE - targetFilled;
         for (int[] cell : candidates) {
+            if (removed >= targetRemoved) break;
             int row = cell[0], col = cell[1];
             int backup = puzzle[row][col];
             puzzle[row][col] = 0;
             if (countSolutions(puzzle, 2) > 1) {
                 puzzle[row][col] = backup; // 出现多解，回填该格
+            } else {
+                removed++;
             }
         }
 

@@ -44,6 +44,9 @@ public interface ChessAI {
      */
     void setMaxDepth(int depth);
 
+    /** 请求当前搜索尽快停止。实现不得阻塞调用线程。 */
+    default void cancelSearch() {}
+
     /** 释放 AI 引擎占用的资源（如外部进程）。默认空实现，子类按需覆盖。 */
     default void shutdown() {}
 

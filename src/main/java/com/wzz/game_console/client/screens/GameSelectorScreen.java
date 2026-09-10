@@ -288,7 +288,13 @@ public class GameSelectorScreen extends Screen {
                 if (filePath == null || dirPath == null) return; // 用户取消
 
                 File srcFile = new File(dirPath, filePath);
-                if (!srcFile.exists() || !srcFile.getName().endsWith(".json")) return;
+                if (!srcFile.isFile() || !srcFile.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".json")) {
+                    Minecraft.getInstance().execute(() -> {
+                        importMessage = "导入失败：请选择 JSON 文件";
+                        importMessageTime = System.currentTimeMillis();
+                    });
+                    return;
+                }
 
                 Path srcPath = srcFile.toPath();
                 // 回到 MC 主线程执行导入与界面提示

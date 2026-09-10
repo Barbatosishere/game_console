@@ -220,12 +220,13 @@ public class MemoryCardScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) {
+            if (button != 0) return true;
             int click = GameRenderHelper.getExitConfirmClick((int)mouseX, (int)mouseY, width, height);
             if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
             if (click == 2) { resumeFromExitConfirm(); return true; }
             return true;
         }
-        if (gameWon || waitingForFlipBack) return super.mouseClicked(mouseX, mouseY, button);
+        if (gameWon || waitingForFlipBack || button != 0) return super.mouseClicked(mouseX, mouseY, button);
 
         // 检查是否点击了卡片
         for (int y = 0; y < GRID_ROWS; y++) {
@@ -294,6 +295,7 @@ public class MemoryCardScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
+        if (!minecraft.isWindowActive()) showExitConfirm = false;
         if (showExitConfirm) return; // 弹窗期间暂停翻回倒计时与计时器
         // 延迟倒计时结束后将两张未匹配的卡片翻回
         if (waitingForFlipBack && flipBackDelay > 0) {

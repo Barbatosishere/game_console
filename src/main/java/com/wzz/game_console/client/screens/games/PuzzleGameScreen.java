@@ -32,9 +32,7 @@ public class PuzzleGameScreen extends Screen {
     private int emptyX, emptyY;
     private boolean gameWon;
     private int moves;
-    private long startTime;
-    /** 游戏完成瞬间的耗时（秒），用于在 render 中冻结显示；-1 表示未完成 */
-    private long completedElapsedSeconds = -1;
+    private final PuzzleElapsedTimer elapsedTimer = new PuzzleElapsedTimer();
     private ResourceLocation puzzleImage;
     private int startX, startY;
     private final Random random = new Random();
@@ -111,7 +109,7 @@ public class PuzzleGameScreen extends Screen {
         
         gameWon = false;
         moves = 0;
-        startTime = System.currentTimeMillis();
+        elapsedTimer.restart(System.currentTimeMillis());
         
         // 计算绘制起始位置，使拼图居中
         startX = (this.width - (PUZZLE_COLS * PIECE_SIZE)) / 2;
@@ -165,6 +163,7 @@ public class PuzzleGameScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button != 0) return super.mouseClicked(mouseX, mouseY, button);
         if (showExitConfirm) {
             int click = GameRenderHelper.getExitConfirmClick((int)mouseX, (int)mouseY, width, height);
             if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
@@ -218,8 +217,7 @@ public class PuzzleGameScreen extends Screen {
         }
         if (!gameWon) {
             gameWon = true;
-            // ★ Bug修复：通关瞬间冻结时间,render 用 completedElapsedSeconds 而非实时计算
-            completedElapsedSeconds = (System.currentTimeMillis() - startTime) / 1000;
+            elapsedTimer.complete(System.currentTimeMillis());
             if (Minecraft.getInstance().player != null) {
                 Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
             }
@@ -297,10 +295,7 @@ public class PuzzleGameScreen extends Screen {
         }
         
         // 显示游戏信息
-        // ★ Bug修复：通关后用 completedElapsedSeconds 冻结时间,不再每帧重算
-        long elapsedSeconds = completedElapsedSeconds >= 0
-                ? completedElapsedSeconds
-                : (System.currentTimeMillis() - startTime) / 1000;
+        long elapsedSeconds = elapsedTimer.elapsedSeconds(System.currentTimeMillis());
         graphics.drawString(font, "移动次数: " + moves, 10, 10, 0xFFFFFF, false);
         graphics.drawString(font, "时间: " + elapsedSeconds + "秒", 10, 25, 0xFFFFFF, false);
         
@@ -317,9 +312,9 @@ public class PuzzleGameScreen extends Screen {
     /** 弹窗打开时间戳：关闭时据此平移 startTime，补偿暂停期间流逝的墙钟时间 */
     private long pauseStartTime = 0;
 
-    /** 关闭弹窗恢复游戏：平移 startTime，避免"用时"把弹窗停留时长也算进去 */
+    /** 关闭弹窗恢复游戏：平移计时基准，避免"用时"把弹窗停留时长也算进去 */
     private void resumeFromExitConfirm() {
-        startTime += System.currentTimeMillis() - pauseStartTime;
+        elapsedTimer.offsetStart(System.currentTimeMillis() - pauseStartTime);
         showExitConfirm = false;
     }
 

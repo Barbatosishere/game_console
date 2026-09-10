@@ -1,1 +1,10 @@
 /.zcode/
+.gradle/
+.idea/
+.vscode/
+build/
+run/
+logs/
+data/
+cuda/
+/.bench/

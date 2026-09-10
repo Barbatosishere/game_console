@@ -37,6 +37,47 @@ public record MultiplayerGamePacket(
     private static final int MAX_DATA_BYTES = 32767;
     private static final int MAX_NAME_BYTES = 256;
 
+    /**
+     * GAME_* data envelope.  It is deliberately kept inside the existing UTF-8
+     * data field, so the payload type, codec field order, and PacketType ordinals
+     * remain wire compatible with old clients.  Legacy clients may still send a
+     * bare data string; parseData() then returns a legacy envelope.
+     *
+     * Format: MGP1|session UUID|sequence|base64url(body)
+     */
+    public record DataEnvelope(UUID sessionId, long sequence, String body, boolean legacy) {
+        public DataEnvelope {
+            body = body == null ? "" : body;
+        }
+
+        public static DataEnvelope of(UUID sessionId, long sequence, String body) {
+            return fromValue(MultiplayerGameDataEnvelope.of(sessionId, sequence, body));
+        }
+
+        /** Safe, non-throwing parser. Bare data is legacy; malformed envelopes are rejected. */
+        public static DataEnvelope parse(String data) {
+            return fromValue(MultiplayerGameDataEnvelope.parse(data));
+        }
+
+        public String encode() {
+            return MultiplayerGameDataEnvelope.encode(
+                    new MultiplayerGameDataEnvelope.Value(sessionId, sequence, body, legacy));
+        }
+
+        private static DataEnvelope fromValue(MultiplayerGameDataEnvelope.Value value) {
+            return value == null ? null
+                    : new DataEnvelope(value.sessionId(), value.sequence(), value.body(), value.legacy());
+        }
+    }
+
+    /** Parse a GAME_* data field; bare data from old clients remains usable. */
+    public static DataEnvelope parseData(String data) { return DataEnvelope.parse(data); }
+
+    /** Encode a session/sequence/body envelope for a GAME_* data field. */
+    public static String envelopeData(UUID sessionId, long sequence, String body) {
+        return DataEnvelope.of(sessionId, sequence, body).encode();
+    }
+
     public enum PacketType {
         INVITE,
         ACCEPT_INVITE,
@@ -81,9 +122,13 @@ public record MultiplayerGamePacket(
             boolean hasSender = buf.readBoolean();
             UUID senderUuid = hasSender ? buf.readUUID() : null;
             String senderName = buf.readUtf(MAX_NAME_BYTES);
-
             String gameId = buf.readUtf(MAX_GAME_ID_BYTES);
             String data = buf.readUtf(MAX_DATA_BYTES);
+            if (ByteBufUtil.utf8Bytes(senderName) > MAX_NAME_BYTES
+                    || ByteBufUtil.utf8Bytes(gameId) > MAX_GAME_ID_BYTES
+                    || ByteBufUtil.utf8Bytes(data) > MAX_DATA_BYTES) {
+                throw new IllegalArgumentException("多人游戏包 UTF-8 字节数超过限制");
+            }
             return new MultiplayerGamePacket(type, target, senderUuid, senderName, gameId, data);
         }
 

@@ -65,8 +65,8 @@ public class PipePuzzleScreen extends Screen {
 
     private void recalcLayout() {
         gridSize = difficulty.size;
-        int maxT = Math.min((width-160)/gridSize, (height-100)/gridSize);
-        tileSize = Math.max(28, Math.min(52, maxT));
+        int maxT = Math.min(Math.max(1, (width - 20) / gridSize), Math.max(1, (height - 60) / gridSize));
+        tileSize = Math.max(1, Math.min(52, maxT));
         startX = (width  - gridSize * tileSize) / 2;
         startY = (height - gridSize * tileSize) / 2 + 10;
     }
@@ -209,6 +209,7 @@ public class PipePuzzleScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
+        if (btn != 0) return super.mouseClicked(mx, my, btn);
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (state == State.MENU) {
             int cx=width/2, cy=height/2;
@@ -225,7 +226,7 @@ public class PipePuzzleScreen extends Screen {
             int cx=width/2, cardY=height/2-55;
             if (mx>=cx-60&&mx<=cx+60&&my>=cardY+70&&my<=cardY+92) { initPuzzle(); return true; }
         }
-        if (mx>=startX && mx<=startX+gridSize*tileSize && my>=startY && my<=startY+gridSize*tileSize) {
+        if (mx>=startX && mx<startX+gridSize*tileSize && my>=startY && my<startY+gridSize*tileSize) {
             int gx=(int)((mx-startX)/tileSize), gy=(int)((my-startY)/tileSize);
             if (gx>=0&&gx<gridSize&&gy>=0&&gy<gridSize) { rotatePipe(gx,gy); return true; }
         }
@@ -234,7 +235,7 @@ public class PipePuzzleScreen extends Screen {
 
     @Override public void mouseMoved(double mx, double my) {
         hovX=-1; hovY=-1;
-        if (mx>=startX&&mx<=startX+gridSize*tileSize&&my>=startY&&my<=startY+gridSize*tileSize) {
+        if (mx>=startX&&mx<startX+gridSize*tileSize&&my>=startY&&my<startY+gridSize*tileSize) {
             hovX=(int)((mx-startX)/tileSize); hovY=(int)((my-startY)/tileSize);
         }
     }

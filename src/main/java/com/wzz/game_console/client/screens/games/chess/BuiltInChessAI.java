@@ -72,6 +72,7 @@ public class BuiltInChessAI implements ChessAI {
 
     @Override public void setSearchTime(long ms) { this.timeBudgetMs = ms; }
     @Override public void setMaxDepth(int depth) { this.maxDepth = depth; }
+    @Override public void cancelSearch() { activeGen.incrementAndGet(); }
 
     @Override
     public int[] getBestMove(int[][] board, boolean redTurn) {
@@ -448,6 +449,7 @@ public class BuiltInChessAI implements ChessAI {
     }
 
     private boolean shouldStop() {
+        if (Thread.currentThread().isInterrupted()) return true;
         if (myGen.get() != activeGen.get()) return true; // 已被更新的搜索取代
         return (System.nanoTime() - timeStartNs) >= timeBudgetMs * 1_000_000L;
     }

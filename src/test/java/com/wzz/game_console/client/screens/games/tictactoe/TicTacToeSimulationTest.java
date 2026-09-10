@@ -81,6 +81,86 @@ class TicTacToeSimulationTest {
         g.makeMove(2, 2);                          // 玩家落子后游戏翻转为 AI 方
     }
 
+    @Test
+    void playerCannotPlaceAgainWhileAiIsThinking() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.SINGLE_PLAYER);
+        assertTrue(g.makeMove(0, 0));
+        assertFalse(g.makeMove(0, 1));
+        assertEquals(TicTacToeGame.Player.NONE, g.getCell(0, 1));
+        assertEquals(1, countStones(g));
+        g.makeAIMove();
+        assertEquals(2, countStones(g));
+        assertTrue(g.isPlayerTurn());
+    }
+
+    @Test
+    void localTwoPlayerAlternatesWithoutAiAndResets() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.TWO_PLAYER);
+        assertTrue(g.makeMove(0, 0));
+        assertEquals(TicTacToeGame.Player.O, g.getCurrentPlayer());
+        g.makeAIMove();
+        assertEquals(1, countStones(g));
+        assertTrue(g.makeMove(1, 0));
+        assertTrue(g.makeMove(0, 1));
+        assertTrue(g.makeMove(1, 1));
+        assertTrue(g.makeMove(0, 2));
+        assertEquals(TicTacToeGame.Player.X, g.getWinner());
+        assertFalse(g.makeMove(2, 2));
+        g.resetGame();
+        assertEquals(0, countStones(g));
+        assertEquals(TicTacToeGame.Player.X, g.getCurrentPlayer());
+        assertEquals(TicTacToeGame.GameMode.TWO_PLAYER, g.getGameMode());
+    }
+
+    @Test
+    void networkPlayerCannotTakeOpponentsTurn() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.TWO_PLAYER);
+        assertFalse(g.makeMove(0, 0, TicTacToeGame.Player.O));
+        assertTrue(g.makeMove(0, 0, TicTacToeGame.Player.X));
+        assertFalse(g.makeMove(0, 1, TicTacToeGame.Player.X));
+        assertFalse(g.makeMove(0, 1, TicTacToeGame.Player.NONE));
+        assertTrue(g.makeMove(0, 1, TicTacToeGame.Player.O));
+        assertFalse(g.makeMove(0, 2, TicTacToeGame.Player.O));
+        assertEquals(2, countStones(g));
+    }
+
+    @Test
+    void rejectedTwoPlayerMovesPreserveTurn() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.TWO_PLAYER);
+        assertTrue(g.makeMove(1, 1));
+        assertFalse(g.makeMove(1, 1));
+        assertFalse(g.makeMove(-1, 0));
+        assertFalse(g.makeMove(0, 3));
+        assertFalse(g.makeMove(0, 0, null));
+        assertEquals(TicTacToeGame.Player.O, g.getCurrentPlayer());
+        assertEquals(1, countStones(g));
+        assertTrue(g.makeMove(0, 0, TicTacToeGame.Player.O));
+    }
+
+    @Test
+    void twoPlayerDrawRejectsFurtherMoves() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.TWO_PLAYER);
+        int[][] moves = {{0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 0},
+                {1, 2}, {2, 1}, {2, 0}, {2, 2}};
+        for (int[] move : moves) assertTrue(g.makeMove(move[0], move[1]));
+        assertTrue(g.isGameOver());
+        assertEquals(TicTacToeGame.Player.NONE, g.getWinner());
+        assertEquals(9, countStones(g));
+        assertFalse(g.makeMove(0, 0));
+    }
+
+    @Test
+    void resetDuringAiTurnRestoresHumanTurn() {
+        TicTacToeGame g = new TicTacToeGame(TicTacToeGame.GameMode.SINGLE_PLAYER);
+        assertTrue(g.makeMove(0, 0));
+        g.resetGame();
+        g.makeAIMove();
+        assertTrue(g.isPlayerTurn());
+        assertEquals(0, countStones(g));
+        assertTrue(g.makeMove(2, 2));
+        assertEquals(TicTacToeGame.Player.X, g.getCell(2, 2));
+    }
+
     /** 返回 AI 刚落下的格点（唯一的 O） */
     private static int[] aiCell(TicTacToeGame g) {
         for (int r = 0; r < 3; r++)

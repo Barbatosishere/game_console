@@ -90,6 +90,46 @@ class ChessRulesTest {
     }
 
     @Test
+    void checkDetectionSeesGeneralButMovesCannotCaptureIt() {
+        int[][] b = new int[ChessRules.COLS][ChessRules.ROWS];
+        b[4][9] = ChessRules.GENERAL;
+        b[3][0] = -ChessRules.GENERAL;
+        b[4][0] = -ChessRules.CHARIOT;
+
+        assertTrue(ChessRules.inCheckOnBoard(b, true),
+                "黑车直线攻击红帅时必须判定为将军");
+        assertFalse(ChessRules.pseudoMoves(b, 4, 0).stream()
+                        .anyMatch(move -> move[0] == 4 && move[1] == 9),
+                "实际走法生成不得包含直接捕获红帅");
+    }
+
+    @Test
+    void cannonCheckRequiresExactlyOneScreenAndPreservesBoard() {
+        for (boolean red : new boolean[]{true, false}) {
+            for (boolean horizontal : new boolean[]{true, false}) {
+                for (int screens = 0; screens <= 2; screens++) {
+                    int[][] b = new int[ChessRules.COLS][ChessRules.ROWS];
+                    int row = red ? 9 : 0;
+                    int cannonCol = horizontal ? 0 : 4;
+                    int cannonRow = horizontal ? row : 9 - row;
+                    b[4][row] = red ? ChessRules.GENERAL : -ChessRules.GENERAL;
+                    b[3][9 - row] = red ? -ChessRules.GENERAL : ChessRules.GENERAL;
+                    b[cannonCol][cannonRow] = red ? -ChessRules.CANNON : ChessRules.CANNON;
+                    if (screens >= 1) b[horizontal ? 1 : 4][horizontal ? row : 4] = ChessRules.SOLDIER;
+                    if (screens == 2) b[horizontal ? 2 : 4][horizontal ? row : 5] = -ChessRules.SOLDIER;
+                    String before = ChessRules.toFen(b, red);
+
+                    assertEquals(screens == 1, ChessRules.inCheckOnBoard(b, red),
+                            "red=" + red + ", horizontal=" + horizontal + ", screens=" + screens);
+                    assertEquals(before, ChessRules.toFen(b, red));
+                    assertFalse(ChessRules.pseudoMoves(b, cannonCol, cannonRow).stream()
+                            .anyMatch(move -> move[0] == 4 && move[1] == row));
+                }
+            }
+        }
+    }
+
+    @Test
     void testZobristDiffersBySide() {
         // 未覆盖内部 Zobrist（BuiltInChessAI 私有）；此处仅确保 API 稳定可调用
         int[][] b = initialBoard();

@@ -18,10 +18,10 @@ base {
     archivesName = mod_id
 }
 
-// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta7.jar
+// 构建产物命名：Game Console-<version>-<Loader>-<MC版本>-beta6.jar
 var loaderName = "NeoForge"
 tasks.named('jar') {
-    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta7"
+    archiveBaseName = "${mod_name}-${mod_version}-${loaderName}-${minecraft_version}-beta6"
     archiveVersion = ''
     archiveClassifier = ''
 }
@@ -138,6 +138,7 @@ dependencies {
     // ─── 单元测试：JUnit 5 ───
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.slf4j:slf4j-api:2.0.9'
 
     // ─── OpenCL GPU 加速 ───
     // JNA 通过 compileOnly 引入（编译期可见），运行时由玩家环境的 classloader 解析

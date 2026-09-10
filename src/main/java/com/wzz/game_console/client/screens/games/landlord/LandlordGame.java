@@ -27,6 +27,8 @@ public class LandlordGame {
     private final int[] playCounts = new int[3];
     /** 结算前是否有人打出过王炸（火箭），翻倍用 */
     private boolean rocketPlayed = false;
+    /** 普通炸弹次数；每次炸弹独立使底分翻倍。 */
+    private int bombCount = 0;
 
     public LandlordGame() {
         initializeGame();
@@ -65,6 +67,7 @@ public class LandlordGame {
         // scores 不在重发/重开时清零：跨局累计积分
         Arrays.fill(playCounts, 0);
         rocketPlayed = false;
+        bombCount = 0;
     }
 
     private List<Card> createDeck() {
@@ -97,7 +100,7 @@ public class LandlordGame {
             landlordPlayer = player;
             playerHands.get(player).addAll(landlordCards);
             Collections.sort(playerHands.get(player));
-            landlordCards.clear(); // 底牌已分配给地主，清理集合避免联机同步语义不一致
+            // 保留底牌：地主拿到的是副本，底牌仍需随状态报文恢复并显示。
             gameState = GameState.PLAYING;
             currentPlayer = player;
             return true;
@@ -162,11 +165,15 @@ public class LandlordGame {
             lastPlayer = player;
             Arrays.fill(passed, false);
 
-            // 出牌统计：春天/反春天判定与王炸翻倍
+            // 出牌统计：春天/反春天判定与炸弹翻倍
             playCounts[player]++;
             CardPattern played = analyzePattern(cards);
-            if (played != null && played.getType() == CardPattern.Type.JOKER_BOMB) {
-                rocketPlayed = true;
+            if (played != null) {
+                if (played.getType() == CardPattern.Type.JOKER_BOMB) {
+                    rocketPlayed = true;
+                } else if (played.getType() == CardPattern.Type.BOMB) {
+                    bombCount++;
+                }
             }
 
             // 检查是否有人获胜
@@ -393,6 +400,9 @@ public class LandlordGame {
             if (!landlordWins && playCounts[landlordPlayer] == 1) {
                 multiplier *= 2; // 反春天
             }
+            if (bombCount > 0) {
+                multiplier *= 1 << Math.min(bombCount, 30); // 每个普通炸弹翻倍
+            }
             if (rocketPlayed) {
                 multiplier *= 2; // 火箭（王炸）
             }
@@ -420,6 +430,23 @@ public class LandlordGame {
     public int[] getScores() { return scores.clone(); }
     public List<Card> getLandlordCards() { return new ArrayList<>(landlordCards); }
 
+    /** 当前回合获胜者：终局时手牌为空的玩家，累计积分不参与判断。 */
+    public int getRoundWinner() {
+        if (gameState != GameState.ENDED) return -1;
+        for (int player = 0; player < 3; player++) {
+            if (playerHands.get(player).isEmpty()) return player;
+        }
+        return -1;
+    }
+
+    /** 地主胜出时仅地主赢；农民胜出时两名农民同队获胜。 */
+    public static boolean isRoundWinForPlayer(int player, int landlord, int winner) {
+        if (player < 0 || player >= 3 || landlord < 0 || landlord >= 3 || winner < 0 || winner >= 3) {
+            return false;
+        }
+        return player == winner || (winner != landlord && player != landlord);
+    }
+
     // 重新开始游戏
     public void restart() {
         initializeGame();
@@ -427,12 +454,40 @@ public class LandlordGame {
     
     // 在LandlordGame类中添加公共方法来分析牌型
     public CardPattern analyzeCards(List<Card> cards) {
+        if (cards == null || cards.isEmpty()) return null;
         return analyzePattern(cards);
     }
 
     // ═══════════════════════════════════════════════
     //  LAN 序列化工具（供 LandlordGameScreen 使用）
     // ═══════════════════════════════════════════════
+
+    /**
+     * INIT/STATE 的兼容封装。只扩展 GAME_STATE_SYNC 的 data 字段，外层 packet codec
+     * 保持不变；token 隔离不同屏幕实例，sequence 严格单调递增以丢弃重放/乱序状态。
+     */
+    public record NetworkState(long sessionToken, long sequence, String payload) {}
+
+    public static String encodeNetworkState(long sessionToken, long sequence, String payload) {
+        if (sessionToken == 0 || sequence < 0 || payload == null || payload.isEmpty()) {
+            throw new IllegalArgumentException("invalid network state envelope");
+        }
+        return "LG1|" + Long.toUnsignedString(sessionToken) + "|" + sequence + "|" + payload;
+    }
+
+    public static NetworkState decodeNetworkState(String data) {
+        if (data == null) return null;
+        String[] fields = data.split("\\|", 4);
+        if (fields.length != 4 || !"LG1".equals(fields[0]) || fields[3].isEmpty()) return null;
+        try {
+            long token = Long.parseUnsignedLong(fields[1]);
+            long sequence = Long.parseLong(fields[2]);
+            if (token == 0 || sequence < 0) return null;
+            return new NetworkState(token, sequence, fields[3]);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
 
     /** 把牌列表序列化成字符串，格式 "suit_rank,suit_rank,..." */
     public static String serializeCards(List<Card> cards) {
@@ -473,6 +528,8 @@ public class LandlordGame {
      * phase|currentPlayer|landlordPlayer|lastPlayer|myHand|lastPlayed|cnt0,cnt1,cnt2|sc0,sc1,sc2|landlordCards
      */
     public String serializeFor(int forPlayer) {
+        // 底牌只在叫地主后揭示；叫地主阶段仍保留空字段以维持九段协议格式。
+        String visibleBottom = gameState == GameState.BIDDING ? "" : serializeCards(landlordCards);
         return gameState.name() + "|"
                 + currentPlayer + "|"
                 + landlordPlayer + "|"
@@ -481,7 +538,7 @@ public class LandlordGame {
                 + serializeCards(lastPlayedCards) + "|"
                 + playerHands.get(0).size() + "," + playerHands.get(1).size() + "," + playerHands.get(2).size() + "|"
                 + scores[0] + "," + scores[1] + "," + scores[2] + "|"
-                + serializeCards(landlordCards);
+                + visibleBottom;
     }
 
     /**
@@ -520,6 +577,9 @@ public class LandlordGame {
                     || parsedHand.size() > 54 || parsedLastCards.size() > 54 || parsedBottom.size() > 3) {
                 throw new IllegalArgumentException("invalid card list size");
             }
+            validateStatePhase(parsedState, parsedCurrent, parsedLandlord, parsedLast,
+                    parsedCounts, parsedHand, parsedLastCards, parsedBottom);
+            validateNoCardOverlap(parsedHand, parsedLastCards, parsedBottom, parsedLandlord == myPlayerIndex);
 
             List<List<Card>> newHands = new ArrayList<>();
             for (int i = 0; i < 3; i++) newHands.add(new ArrayList<>());
@@ -538,7 +598,8 @@ public class LandlordGame {
             playerHands = newHands;
             lastPlayedCards = parsedLastCards;
             System.arraycopy(parsedScores, 0, scores, 0, scores.length);
-            if (landlordPlayer == -1) landlordCards = parsedBottom;
+            // 底牌是状态的一部分：叫地主后仍需恢复，不能只在 BIDDING 阶段赋值。
+            landlordCards = new ArrayList<>(parsedBottom);
             myHand.clear();
             myHand.addAll(parsedHand);
         } catch (RuntimeException e) {
@@ -546,6 +607,71 @@ public class LandlordGame {
             return false;
         }
         return true;
+    }
+
+    /** 校验状态字段之间的阶段约束，拒绝能让客户端进入不可能阶段的报文。 */
+    private static void validateStatePhase(GameState state, int current, int landlord, int last,
+                                           int[] counts, List<Card> hand, List<Card> lastCards,
+                                           List<Card> bottom) {
+        if (state == GameState.BIDDING) {
+            if (landlord != -1 || last != -1 || !lastCards.isEmpty()
+                    || (bottom.size() != 0 && bottom.size() != 3)) {
+                throw new IllegalArgumentException("inconsistent bidding state");
+            }
+            if (counts[0] + counts[1] + counts[2] != 51) {
+                throw new IllegalArgumentException("invalid bidding hand counts");
+            }
+        } else if (state == GameState.PLAYING || state == GameState.ENDED) {
+            if (landlord < 0 || landlord >= 3) {
+                throw new IllegalArgumentException("missing landlord");
+            }
+            if (bottom.size() != 3) {
+                throw new IllegalArgumentException("invalid bottom cards");
+            }
+            // 已出完的旧牌不会出现在快照中，只能校验可见牌数不超过整副牌。
+            if (counts[0] + counts[1] + counts[2] + lastCards.size() > 54) {
+                throw new IllegalArgumentException("invalid playing card counts");
+            }
+            if (lastCards.isEmpty()) {
+                if (last != -1) throw new IllegalArgumentException("missing last cards");
+            } else if (last < 0 || last >= 3 || (state == GameState.PLAYING && last == current)) {
+                // ENDED 快照保留获胜者为 currentPlayer；PLAYING 才要求回合已切换。
+                throw new IllegalArgumentException("inconsistent last player");
+            }
+            if (state == GameState.ENDED
+                    && counts[0] > 0 && counts[1] > 0 && counts[2] > 0) {
+                throw new IllegalArgumentException("ended game has no winner");
+            }
+        } else {
+            throw new IllegalArgumentException("unsupported game phase");
+        }
+        if (current < 0 || current >= 3 || counts[0] < 0 || counts[1] < 0 || counts[2] < 0) {
+            throw new IllegalArgumentException("invalid phase indexes");
+        }
+    }
+
+    /** 同一牌区内不得重复；手牌与桌面出牌不得重叠。
+     * 地主手牌与底牌允许重叠，因为底牌属于地主；缺失的底牌表示已正常打出，不能拒绝快照。 */
+    private static void validateNoCardOverlap(List<Card> hand, List<Card> lastCards,
+                                              List<Card> bottom, boolean localIsLandlord) {
+        ensureUnique(hand, "hand");
+        ensureUnique(lastCards, "last cards");
+        ensureUnique(bottom, "bottom cards");
+        Set<Card> handSet = new HashSet<>(hand);
+        for (Card card : lastCards) {
+            if (handSet.contains(card)) throw new IllegalArgumentException("hand/last card overlap");
+        }
+        if (!localIsLandlord) {
+            for (Card card : bottom) {
+                if (handSet.contains(card)) throw new IllegalArgumentException("hand/bottom card overlap");
+            }
+        }
+    }
+
+    private static void ensureUnique(List<Card> cards, String area) {
+        if (new HashSet<>(cards).size() != cards.size()) {
+            throw new IllegalArgumentException("duplicate cards in " + area);
+        }
     }
 
     private static int parseInt(String value) {
