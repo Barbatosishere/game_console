@@ -275,52 +275,7 @@ public class Match3GameScreen extends Screen {
     }
     
     private List<int[]> findAllMatches() {
-        List<int[]> matches = new ArrayList<>();
-        boolean[][] checked = new boolean[GRID_SIZE][GRID_SIZE];
-        
-        // 检查水平匹配
-        for (int y = 0; y < GRID_SIZE; y++) {
-            for (int x = 0; x < GRID_SIZE - 2; x++) {
-                if (!checked[x][y] && gameGrid[x][y] == gameGrid[x + 1][y] && 
-                    gameGrid[x][y] == gameGrid[x + 2][y]) {
-                    
-                    int endX = x + 2;
-                    while (endX + 1 < GRID_SIZE && gameGrid[x][y] == gameGrid[endX + 1][y]) {
-                        endX++;
-                    }
-                    
-                    for (int i = x; i <= endX; i++) {
-                        if (!checked[i][y]) {
-                            matches.add(new int[]{i, y});
-                            checked[i][y] = true;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 检查垂直匹配
-        for (int x = 0; x < GRID_SIZE; x++) {
-            for (int y = 0; y < GRID_SIZE - 2; y++) {
-                if (!checked[x][y] && gameGrid[x][y] == gameGrid[x][y + 1] && 
-                    gameGrid[x][y] == gameGrid[x][y + 2]) {
-                    
-                    int endY = y + 2;
-                    while (endY + 1 < GRID_SIZE && gameGrid[x][y] == gameGrid[x][endY + 1]) {
-                        endY++;
-                    }
-                    
-                    for (int i = y; i <= endY; i++) {
-                        if (!checked[x][i]) {
-                            matches.add(new int[]{x, i});
-                            checked[x][i] = true;
-                        }
-                    }
-                }
-            }
-        }
-        
-        return matches;
+        return Match3Matches.findAll(gameGrid);
     }
     
     private void processMatches(List<int[]> matches) {
