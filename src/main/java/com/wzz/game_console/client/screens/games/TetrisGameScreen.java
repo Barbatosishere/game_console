@@ -85,8 +85,10 @@ public class TetrisGameScreen extends Screen {
                 board[0] = new int[GW]; colorBoard[0] = new int[GW];
                 lines++; score += 100 * level;
                 if (lines % 10 == 0) level++;
-                if (Minecraft.getInstance().player != null) Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_BOTTLE_THROW, 1.0F, 1.0F);
                 y--; // 下移后原 y+1 行进入 y 行，需重新检测（连续满行）
+                // 音效放在 y-- 之后，且先缓存 getInstance：player 为空时不得中断连消
+                Minecraft mc = Minecraft.getInstance();
+                if (mc != null && mc.player != null) mc.player.playSound(SoundEvents.EXPERIENCE_BOTTLE_THROW, 1.0F, 1.0F);
             }
         }
     }
