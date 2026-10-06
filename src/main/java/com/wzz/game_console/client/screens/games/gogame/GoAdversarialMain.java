@@ -43,6 +43,12 @@ public final class GoAdversarialMain {
         long seed = longOption(options, "seed", 0x5EEDL);
         Path weights = Path.of(required(options, "weights"));
 
+        String gpuVal = options.get("gpu");
+        if (gpuVal != null) {
+            System.setProperty("go.gpu", gpuVal);
+        }
+        NeuralEvaluator.GpuStatus gpu = NeuralEvaluator.detectGpu();
+        System.out.println("[GPU] " + gpu.describe());
         NeuralEvaluator evaluator = new NeuralEvaluator();
         if (Files.exists(weights)) {
             evaluator.load(weights);
@@ -54,13 +60,16 @@ public final class GoAdversarialMain {
         try {
             for (int gen = 0; gen < generations; gen++) {
                 double frac = generations > 1 ? (double) gen / (generations - 1) : 0.0;
-                double currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
+                double currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)),
+                        learningRate * 0.1);
                 GoAdversarialTrainer.Result result = trainer.runGeneration(
                         games, parallelism, epochs, currentLR, seed + gen);
                 System.out.printf("generation=%d lr=%.6f games=%d completed=%d samples=%d ourWins=%d replay=%d meanLoss=%.8f%n",
                         gen + 1, currentLR, result.games, result.completedGames,
                         result.samples, result.ourWins, trainer.getReplayBufferSize(), result.meanLoss);
             }
+            evaluator.save(weights);
+            System.out.println("saved=" + weights.toAbsolutePath());
         } catch (RuntimeException | Error t) {
             // ★ 崩溃保存：多代训练中途崩（OOM/GTP 异常/引擎崩溃）时，
             //   已训练完的各代权重不能随进程一起丢掉
@@ -71,10 +80,9 @@ public final class GoAdversarialMain {
                 System.err.println("save-on-crash failed: " + saveErr);
             }
             throw t;
+        } finally {
+            evaluator.release();
         }
-
-        evaluator.save(weights);
-        System.out.println("saved=" + weights.toAbsolutePath());
     }
 
     private static Map<String, String> parse(String[] args) {

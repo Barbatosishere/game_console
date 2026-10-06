@@ -21,7 +21,7 @@ public final class GoAdversarialTrainer {
     public static final class Config {
         public int searchTimeMillis = 300;
         public int maxIterations = 500;
-        public int maxMoves = 300;
+        public int maxMoves = 450;
         public int batchSize = 128;
         public double l2 = 1.0e-5;
         public double gradientClip = 5.0;
@@ -108,7 +108,6 @@ public final class GoAdversarialTrainer {
         if (games == 0 || Thread.currentThread().isInterrupted()) return new Result(games, 0, 0, 0, evaluator, 0);
 
         int workers = Math.max(1, Math.min(parallelism <= 0 ? 1 : parallelism, games));
-        final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         List<Future<GameResult>> futures = new ArrayList<>(workers);
         try {
@@ -117,7 +116,7 @@ public final class GoAdversarialTrainer {
             for (; nextGame < workers; nextGame++) {
                 final int gameIndex = nextGame;
                 futures.add(pool.submit(() ->
-                    playAdversarialGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex)));
+                    playAdversarialGame(evaluator, seed + 0x9E3779B97F4A7C15L * gameIndex)));
             }
             int completed = 0;
             int ourWins = 0;
@@ -158,7 +157,7 @@ public final class GoAdversarialTrainer {
                 if (nextGame < games) {
                     final int gameIndex = nextGame++;
                     futures.add(pool.submit(() ->
-                        playAdversarialGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex)));
+                        playAdversarialGame(evaluator, seed + 0x9E3779B97F4A7C15L * gameIndex)));
                 }
             }
 
@@ -211,13 +210,13 @@ public final class GoAdversarialTrainer {
     /**
      * 一局对抗：MCTS AI vs KataGo，随机先后手。
      */
-    private GameResult playAdversarialGame(NeuralEvaluator.ModelWeights model, long seed) {
+    private GameResult playAdversarialGame(NeuralEvaluator sharedEvaluator, long seed) {
         List<Sample> samples = new ArrayList<>();
         Random rnd = new Random(seed);
         boolean ourIsBlack = rnd.nextBoolean();
 
         // 创建己方 AI
-        MCTSGoAI ourAI = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, model);
+        MCTSGoAI ourAI = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, sharedEvaluator, false);
         ourAI.setRandomSeed(seed ^ 0x12345678);
 
         Process process = null;

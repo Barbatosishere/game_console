@@ -8,7 +8,12 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -114,6 +119,101 @@ class GoTrainingRegressionTest {
             assertEquals(1.0, Arrays.stream(result.policy()).sum());
             assertEquals(1, game.moveHistorySize());
             assertEquals(GoPlayer.WHITE, game.getCurrentPlayer());
+        }
+    }
+
+    @Test
+    void detectGpuReportsDisabledWhenPropertyFalse() {
+        String previous = System.getProperty("go.gpu");
+        try {
+            System.setProperty("go.gpu", "false");
+            NeuralEvaluator.GpuStatus status = NeuralEvaluator.detectGpu();
+            assertFalse(status.enabled);
+            assertFalse(status.available);
+            assertEquals("CPU", status.deviceName);
+            assertTrue(status.describe().contains("CPU"));
+        } finally {
+            if (previous == null) System.clearProperty("go.gpu");
+            else System.setProperty("go.gpu", previous);
+        }
+    }
+
+    @Test
+    void cpuAndGpuForwardAgreeWhenGpuAvailable() {
+        String previous = System.getProperty("go.gpu");
+        NeuralEvaluator gpuEval = null;
+        NeuralEvaluator cpuEval = null;
+        try {
+            System.setProperty("go.gpu", "true");
+            gpuEval = new NeuralEvaluator();
+            if (!gpuEval.isGpuActive()) return;
+            NeuralEvaluator.ModelWeights weights = gpuEval.snapshot();
+            GoPlayer[][] board = new GoPlayer[19][19];
+            for (GoPlayer[] row : board) Arrays.fill(row, GoPlayer.NONE);
+            board[3][3] = GoPlayer.BLACK;
+            board[15][15] = GoPlayer.WHITE;
+            double[][][] planes = gpuEval.buildInputPlanes(board, GoPlayer.BLACK, new int[]{3, 3});
+            double[] aux = gpuEval.extractAuxFeatures(board, GoPlayer.BLACK);
+            NeuralEvaluator.ForwardResult gpu = gpuEval.forward(planes, aux);
+            assertEquals(gpu.value, gpuEval.forwardValue(board, GoPlayer.BLACK, new int[]{3, 3}), 1e-5);
+
+            System.setProperty("go.gpu", "false");
+            cpuEval = NeuralEvaluator.fromWeights(weights);
+            NeuralEvaluator.ForwardResult cpu = cpuEval.forward(planes, aux);
+            assertEquals(cpu.value, gpu.value, 1e-5);
+            assertEquals(cpu.policy.length, gpu.policy.length);
+            for (int i = 0; i < cpu.policy.length; i++) {
+                assertEquals(cpu.policy[i], gpu.policy[i], 1e-5, "policy[" + i + "]");
+            }
+        } finally {
+            if (gpuEval != null) gpuEval.release();
+            if (cpuEval != null) cpuEval.release();
+            if (previous == null) System.clearProperty("go.gpu");
+            else System.setProperty("go.gpu", previous);
+        }
+    }
+
+    @Test
+    void concurrentGpuForwardsMatchCpuWhenGpuAvailable() throws Exception {
+        String previous = System.getProperty("go.gpu");
+        NeuralEvaluator gpuEval = null;
+        NeuralEvaluator cpuEval = null;
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            System.setProperty("go.gpu", "true");
+            gpuEval = new NeuralEvaluator();
+            if (!gpuEval.isGpuActive()) return;
+            NeuralEvaluator.ModelWeights weights = gpuEval.snapshot();
+            GoPlayer[][] board = new GoPlayer[19][19];
+            for (GoPlayer[] row : board) Arrays.fill(row, GoPlayer.NONE);
+            board[3][3] = GoPlayer.BLACK;
+            board[15][15] = GoPlayer.WHITE;
+            double[][][] planes = gpuEval.buildInputPlanes(board, GoPlayer.BLACK, new int[]{3, 3});
+            double[] aux = gpuEval.extractAuxFeatures(board, GoPlayer.BLACK);
+            System.setProperty("go.gpu", "false");
+            cpuEval = NeuralEvaluator.fromWeights(weights);
+            NeuralEvaluator.ForwardResult cpu = cpuEval.forward(planes, aux);
+            System.setProperty("go.gpu", "true");
+            NeuralEvaluator gpuRunner = gpuEval;
+
+            List<Future<NeuralEvaluator.ForwardResult>> futures = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                futures.add(pool.submit(() -> gpuRunner.forward(planes, aux)));
+            }
+            for (Future<NeuralEvaluator.ForwardResult> future : futures) {
+                NeuralEvaluator.ForwardResult gpu = future.get();
+                assertEquals(cpu.value, gpu.value, 1e-5);
+                assertEquals(cpu.policy.length, gpu.policy.length);
+                for (int i = 0; i < cpu.policy.length; i++) {
+                    assertEquals(cpu.policy[i], gpu.policy[i], 1e-5, "policy[" + i + "]");
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+            if (gpuEval != null) gpuEval.release();
+            if (cpuEval != null) cpuEval.release();
+            if (previous == null) System.clearProperty("go.gpu");
+            else System.setProperty("go.gpu", previous);
         }
     }
 

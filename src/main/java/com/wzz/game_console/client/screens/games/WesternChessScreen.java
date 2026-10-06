@@ -245,6 +245,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     // ══════════════ TICK ══════════════
     @Override public void tick() {
         tickN++;
+        if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
         if (lanMode != LAN_NONE) return;
         // ★ 关键修复：AI执黑（forWhite=false），仅黑方回合才触发
         if (state==S.PLAYING && vsAI && !whiteTurn && !aiThinking && !promoPending) {
@@ -727,7 +728,7 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             if (c==0) g.drawString(font,String.valueOf(8-r),sx+2,sy+2,light?0xFFB58863:0xFFF0D9B5);
             if (r==7) g.drawString(font,String.valueOf((char)('a'+c)),sx+cellSize-6,sy+cellSize-10,light?0xFFB58863:0xFFF0D9B5);
         }
-        GameRenderHelper.tickAndRenderParticles(g,particles);
+        GameRenderHelper.renderParticles(g,particles);
         GameRenderHelper.drawTopHUD(g,width,height);
         String ts=whiteTurn?"♔ 白方走棋":"♚ 黑方走棋";
         if (vsAI&&!whiteTurn&&aiThinking) ts="AI 思考中...";

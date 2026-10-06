@@ -24,6 +24,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 @OnlyIn(Dist.CLIENT)
@@ -33,6 +34,8 @@ public class GameSelectorScreen extends Screen {
     private record GameEntry(String name, String icon, String description, String category, Supplier<Screen> factory) {}
 
     private final List<GameEntry> games = new ArrayList<>();
+    private List<GameEntry> filteredGames = List.of();
+    private String filteredCategory;
     private int currentPage = 0;
     private int gamesPerPage = 8;
     private long tickCount = 0;
@@ -49,6 +52,7 @@ public class GameSelectorScreen extends Screen {
     /** 导入消息（临时显示） */
     private String importMessage = null;
     private long importMessageTime = 0;
+    private final AtomicBoolean importInProgress = new AtomicBoolean();
 
     public GameSelectorScreen() {
         super(Component.literal("Game Console 游戏机"));
@@ -105,12 +109,19 @@ public class GameSelectorScreen extends Screen {
     }
 
     private List<GameEntry> getFilteredGames() {
-        if ("全部".equals(filterCategory)) return games;
+        if (filterCategory.equals(filteredCategory)) return filteredGames;
+
+        filteredCategory = filterCategory;
+        if ("全部".equals(filterCategory)) {
+            filteredGames = List.copyOf(games);
+            return filteredGames;
+        }
         List<GameEntry> filtered = new ArrayList<>();
         for (GameEntry g : games) {
             if (g.category.equals(filterCategory)) filtered.add(g);
         }
-        return filtered;
+        filteredGames = List.copyOf(filtered);
+        return filteredGames;
     }
 
     @Override
@@ -266,6 +277,7 @@ public class GameSelectorScreen extends Screen {
 
     /** 打开文件对话框导入外部游戏设置 JSON */
     private void importSettingsFromFile() {
+        if (!importInProgress.compareAndSet(false, true)) return;
         // ★ Bug修复：FileDialog.setVisible(true) 是模态阻塞调用，在 MC 主线程直接打开
         //   会冻结整个游戏（停帧、无响应）。改为在后台 daemon 线程弹窗，
         //   用户选完后 mc.execute 回主线程执行实际导入与提示（importMessage 由 render 读取）
@@ -297,9 +309,9 @@ public class GameSelectorScreen extends Screen {
                 }
 
                 Path srcPath = srcFile.toPath();
-                // 回到 MC 主线程执行导入与界面提示
+                // 文件读取、解析和写盘留在后台；仅界面状态在 MC 主线程更新。
+                boolean success = GameSettings.importFromFile(srcPath);
                 Minecraft.getInstance().execute(() -> {
-                    boolean success = GameSettings.importFromFile(srcPath);
                     importMessage = success ? "设置导入成功！" : "导入失败：文件格式不正确";
                     importMessageTime = System.currentTimeMillis();
                 });
@@ -312,6 +324,7 @@ public class GameSelectorScreen extends Screen {
             } finally {
                 // ★ 修复 AWT Frame 泄漏：dispose 移入 finally，异常/用户取消路径也会释放
                 if (frame != null) frame.dispose();
+                importInProgress.set(false);
             }
         }, "GameConsole-SettingsImport");
         picker.setDaemon(true);
@@ -348,12 +361,20 @@ public class GameSelectorScreen extends Screen {
             return true;
         }
 
-        // ─── 游戏卡片点击 ───
+        // ─── 游戏卡片点击：按本次点击坐标判断，不能使用上一帧的悬停结果 ───
         List<GameEntry> filtered = getFilteredGames();
-        if (hoveredIndex >= 0 && hoveredIndex < filtered.size()) {
-            GameEntry entry = filtered.get(hoveredIndex);
-            Minecraft.getInstance().setScreen(entry.factory.get());
-            return true;
+        int cardW = Math.min(280, width - 40);
+        int cardX = cx - cardW / 2;
+        if (mx >= cardX && mx <= cardX + cardW) {
+            int startIdx = currentPage * gamesPerPage;
+            int endIdx = Math.min(startIdx + gamesPerPage, filtered.size());
+            for (int i = startIdx; i < endIdx; i++) {
+                int cardY = 68 + (i - startIdx) * 28;
+                if (my >= cardY && my <= cardY + 26) {
+                    Minecraft.getInstance().setScreen(filtered.get(i).factory.get());
+                    return true;
+                }
+            }
         }
 
         // ─── 翻页按钮 ───

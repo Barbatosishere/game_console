@@ -6,7 +6,8 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 
 import java.util.List;
-import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
  * 游戏渲染工具类 - 提供所有游戏共用的美化渲染方法
@@ -30,6 +31,9 @@ public class GameRenderHelper {
     public static final int BTN_NORMAL    = 0xFF2A3D14;
     public static final int BTN_HOVER     = 0xFF446622;
     public static final int BTN_BORDER    = 0xFF88CC44;
+    private static final int MAX_CACHED_CIRCLE_RADIUS = 128;
+    private static final AtomicReferenceArray<int[]> CIRCLE_HALF_WIDTHS =
+            new AtomicReferenceArray<>(MAX_CACHED_CIRCLE_RADIUS + 1);
 
     // ═══════════════ 背景渲染 ═══════════════
 
@@ -212,26 +216,34 @@ public class GameRenderHelper {
 
     // ═══════════════ 绘制形状 ═══════════════
 
-    /** 绘制填充圆 */
     /**
      * 绘制实心圆 —— 扫描线算法，每行一次 fill，性能约为逐像素版的 1/r 倍。
      * 修复：WesternChessScreen 国际象棋卡顿问题（原版每个棋子产生 ~600 次 fill 调用）
      */
     public static void drawCircle(GuiGraphics g, int cx, int cy, int radius, int color) {
+        if (radius < 0) return;
+        int[] widths = radius <= MAX_CACHED_CIRCLE_RADIUS ? circleHalfWidths(radius) : null;
         int r2 = radius * radius;
         for (int dy = -radius; dy <= radius; dy++) {
-            int half = (int) Math.sqrt(r2 - dy * (long) dy);
+            int half = widths != null ? widths[dy + radius] : (int) Math.sqrt(r2 - dy * (long) dy);
             g.fill(cx - half, cy + dy, cx + half + 1, cy + dy + 1, color);
         }
     }
 
     /** 绘制圆形边框（扫描线算法） */
     public static void drawCircleOutline(GuiGraphics g, int cx, int cy, int radius, int color) {
+        if (radius < 0) return;
+        int[] outerWidths = radius <= MAX_CACHED_CIRCLE_RADIUS ? circleHalfWidths(radius) : null;
+        int[] innerWidths = radius > 0 && radius <= MAX_CACHED_CIRCLE_RADIUS
+                ? circleHalfWidths(radius - 1) : null;
         int r2 = radius * radius;
         int ri2 = (radius - 1) * (radius - 1);
         for (int dy = -radius; dy <= radius; dy++) {
-            int half  = (int) Math.sqrt(r2  - dy * (long) dy);
-            int halfI = (int) Math.sqrt(Math.max(0, ri2 - dy * (long) dy));
+            int half = outerWidths != null ? outerWidths[dy + radius]
+                    : (int) Math.sqrt(r2 - dy * (long) dy);
+            int halfI = innerWidths != null && Math.abs(dy) < radius
+                    ? innerWidths[dy + radius - 1]
+                    : (int) Math.sqrt(Math.max(0, ri2 - dy * (long) dy));
             if (half > halfI) {
                 g.fill(cx - half,  cy + dy, cx - halfI,     cy + dy + 1, color);
                 g.fill(cx + halfI, cy + dy, cx + half + 1,  cy + dy + 1, color);
@@ -239,6 +251,18 @@ public class GameRenderHelper {
                 g.fill(cx - half, cy + dy, cx + half + 1, cy + dy + 1, color);
             }
         }
+    }
+
+    static int[] circleHalfWidths(int radius) {
+        int[] cached = CIRCLE_HALF_WIDTHS.get(radius);
+        if (cached != null) return cached;
+        int[] widths = new int[2 * radius + 1];
+        int radiusSquared = radius * radius;
+        for (int dy = -radius; dy <= radius; dy++) {
+            widths[dy + radius] = (int) Math.sqrt(radiusSquared - dy * (long) dy);
+        }
+        return CIRCLE_HALF_WIDTHS.compareAndSet(radius, null, widths)
+                ? widths : CIRCLE_HALF_WIDTHS.get(radius);
     }
 
     /** 绘制分割线 */
@@ -354,7 +378,7 @@ public class GameRenderHelper {
 
     /** 在指定位置生成爆炸粒子 */
     public static void spawnParticles(List<Particle> particles, float x, float y, int count, int color) {
-        Random r = new Random();
+        ThreadLocalRandom r = ThreadLocalRandom.current();
         for (int i = 0; i < count; i++) {
             particles.add(new Particle(x, y,
                     (r.nextFloat() - 0.5f) * 4, -r.nextFloat() * 3,
@@ -364,15 +388,14 @@ public class GameRenderHelper {
 
     /** 仅推进粒子（应从 tick() 调用，固定 20次/秒；暂停时不调用即冻结，不再随渲染帧率变化） */
     public static void tickParticles(List<Particle> particles) {
-        particles.removeIf(p -> !p.alive);
         for (Particle p : particles) {
             p.update();
         }
+        particles.removeIf(p -> !p.alive);
     }
 
-    /** 仅渲染粒子（应从 render() 调用，不再推进物理；顺带清理已死粒子） */
+    /** 仅渲染粒子（应从 render() 调用，不再推进物理或修改列表） */
     public static void renderParticles(GuiGraphics g, List<Particle> particles) {
-        particles.removeIf(p -> !p.alive);
         for (Particle p : particles) {
             p.render(g);
         }

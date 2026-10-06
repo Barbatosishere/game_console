@@ -45,6 +45,13 @@ public final class ExternalFileManager {
             if (initState != InitState.UNINITIALIZED) return;
             try {
                 Path resolvedGameDir = FMLPaths.GAMEDIR.get();
+                if (resolvedGameDir == null) {
+                    gameDir = null;
+                    rootDir = null;
+                    initState = InitState.FAILED;
+                    LOGGER.warn("Game directory is not ready; external file API disabled");
+                    return;
+                }
                 Path resolvedRootDir = resolvedGameDir.resolve(ROOT_FOLDER);
                 Files.createDirectories(resolvedRootDir);
                 Files.createDirectories(resolvedRootDir.resolve(MUSIC_FOLDER));

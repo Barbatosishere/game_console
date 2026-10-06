@@ -31,8 +31,11 @@ public final class GoTrainingMain {
         Path weights = Path.of(required(options, "weights"));
         int checkpointInterval = intOption(options, "checkpoint", 10);
 
+        NeuralEvaluator.GpuStatus gpu = NeuralEvaluator.detectGpu();
+        System.out.println("[GPU] " + gpu.describe());
         NeuralEvaluator evaluator = new NeuralEvaluator();
         if (Files.exists(weights)) evaluator.load(weights);
+        System.out.println("[GPU] evaluator=" + (evaluator.isGpuActive() ? evaluator.gpuDeviceName() : "CPU"));
         GoSelfPlayTrainer trainer = new GoSelfPlayTrainer(config, evaluator);
         GoSelfPlayTrainer.Result result = null;
         try {
@@ -45,7 +48,8 @@ public final class GoTrainingMain {
                     // 余弦退火学习率调度：从初始 LR 平滑衰减
                     int remain = Math.max(1, generations - warmup);
                     double frac = (double) (generation - warmup) / remain;
-                    currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)), 1e-6);
+                    currentLR = Math.max(learningRate * 0.5 * (1.0 + Math.cos(Math.PI * frac)),
+                            learningRate * 0.1);
                 }
                 result = trainer.runGeneration(games, parallelism, epochs, currentLR, seed + generation);
                 System.out.printf("generation=%d lr=%.6f games=%d completed=%d samples=%d replay=%d meanLoss=%.8f%n",
@@ -66,7 +70,11 @@ public final class GoTrainingMain {
                 System.out.println("crash-saved=" + weights.toAbsolutePath());
             } catch (Exception ignored) {}
             t.printStackTrace();
+            // System.exit 不会执行 finally，必须先释放 OpenCL
+            evaluator.release();
             System.exit(1);
+        } finally {
+            evaluator.release();
         }
     }
 

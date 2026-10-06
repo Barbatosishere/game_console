@@ -1,8 +1,14 @@
 package com.wzz.game_console.client.screens.games.gogame;
 
 import java.util.*;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.wzz.game_console.util.GameSettings;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -54,6 +60,8 @@ public class NeuralEvaluator {
     private static final int TOP_INPUT = NUM_BLOCKS * BLOCK_HIDDEN + 24; // 576+24=600
     private static final int TOP_HIDDEN = 256;
     private static final int POLICY_SIZE = 362;  // 361 moves + pass
+    /** Serializes load/save of the same model path inside this JVM. */
+    private static final ConcurrentHashMap<Path, Object> MODEL_IO_LOCKS = new ConcurrentHashMap<>();
     private static final int VALUE_HIDDEN = 128;
 
     // 辅助特征维度（沿用旧版）
@@ -68,6 +76,49 @@ public class NeuralEvaluator {
     private static final int LEGACY_MODEL_MAGIC = 0x4E455632; // NEV2
     private static final int LEGACY_MODEL_FORMAT = 2;
     private static final int MAX_CACHE_SIZE = 10000;
+    private static final AtomicInteger GPU_OWNER_SEQ = new AtomicInteger(1);
+
+    /** Per-caller feature buffers. They are only reused after forward() returns. */
+    private static final ThreadLocal<InputScratch> INPUT_SCRATCH =
+            ThreadLocal.withInitial(InputScratch::new);
+
+    /** Per-thread intermediate buffers; returned policies always own their storage. */
+    private static final ThreadLocal<CpuForwardScratch> CPU_FORWARD_SCRATCH =
+            ThreadLocal.withInitial(CpuForwardScratch::new);
+
+    private static final ThreadLocal<FeatureScratch> FEATURE_SCRATCH =
+            ThreadLocal.withInitial(FeatureScratch::new);
+
+    private static final class InputScratch {
+        final double[][][] planes = new double[PLANES][BOARD_SIZE][BOARD_SIZE];
+        final double[] aux = new double[AUX_SIZE];
+    }
+
+    private static final class CpuForwardScratch {
+        final double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
+        final double[] subInput = new double[SUB_INPUT];
+        final double[][] blockOut = new double[NUM_BLOCKS][BLOCK_HIDDEN];
+        final double[] blockInput = new double[BLOCK_INPUT];
+        final double[] topInput = new double[TOP_INPUT];
+        final double[] shared = new double[TOP_HIDDEN];
+        final double[] valueHidden = new double[VALUE_HIDDEN];
+    }
+
+    /** One analysis per position, shared by the liberty, connection and separation features. */
+    private static final class FeatureScratch {
+        final GoPlayer[] cells = new GoPlayer[BOARD_SIZE * BOARD_SIZE];
+        final int[] groupAt = new int[BOARD_SIZE * BOARD_SIZE];
+        final GoPlayer[] colors = new GoPlayer[BOARD_SIZE * BOARD_SIZE];
+        final int[] sizes = new int[BOARD_SIZE * BOARD_SIZE];
+        final int[] liberties = new int[BOARD_SIZE * BOARD_SIZE];
+        final int[] links = new int[BOARD_SIZE * BOARD_SIZE];
+        final int[] libertySeen = new int[BOARD_SIZE * BOARD_SIZE];
+        final int[] queue = new int[BOARD_SIZE * BOARD_SIZE];
+        final int[] histogram = new int[LIBERTY_HIST_BINS];
+        final int[] adjacentGroups = new int[4];
+        final boolean[] regionSeen = new boolean[BOARD_SIZE * BOARD_SIZE];
+        int groupCount;
+    }
 
     // 四方向
     private static final int[][] DIRS = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
@@ -80,8 +131,23 @@ public class NeuralEvaluator {
     private static final int[][] BLOCK_STARTS = new int[9][2];
     /** 每个一级字块内 9 个二级子块的左上角偏移 (sx, sy) 相对于大块起点 */
     private static final int[][] SUB_OFFSETS = new int[9][2];
+    private static final double[][] INFLUENCE_WEIGHT = new double[7][7];
+    private static final int[][] CELL_NEIGHBORS = new int[BOARD_SIZE * BOARD_SIZE][];
 
     static {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            for (int y = 0; y < BOARD_SIZE; y++) {
+                int[] neighbors = new int[4];
+                int count = 0;
+                for (int[] d : DIRS) {
+                    int nx = x + d[0], ny = y + d[1];
+                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
+                        neighbors[count++] = nx * BOARD_SIZE + ny;
+                    }
+                }
+                CELL_NEIGHBORS[x * BOARD_SIZE + y] = Arrays.copyOf(neighbors, count);
+            }
+        }
         // 一级字块起始位置
         for (int bx = 0; bx < BLOCKS_PER_DIM; bx++) {
             for (int by = 0; by < BLOCKS_PER_DIM; by++) {
@@ -96,6 +162,13 @@ public class NeuralEvaluator {
                 int idx = sx * BLOCKS_PER_DIM + sy;
                 SUB_OFFSETS[idx][0] = sx * SUB_STRIDE;
                 SUB_OFFSETS[idx][1] = sy * SUB_STRIDE;
+            }
+        }
+        for (int dx = -3; dx <= 3; dx++) {
+            for (int dy = -3; dy <= 3; dy++) {
+                int distanceSquared = dx * dx + dy * dy;
+                INFLUENCE_WEIGHT[dx + 3][dy + 3] = distanceSquared == 0
+                        ? 1.0 : 1.0 / Math.sqrt(distanceSquared);
             }
         }
     }
@@ -127,10 +200,14 @@ public class NeuralEvaluator {
     private double valueB2;
 
     private final ReentrantReadWriteLock modelLock = new ReentrantReadWriteLock();
-    /** Serializes forward/train with release so the native backend cannot be closed in use. */
-    private final ReentrantLock lifecycleLock = new ReentrantLock();
+    /**
+     * 与 release 互斥：前向/训练可并发持有读锁，关闭时独占写锁。
+     * 原先用独占 ReentrantLock 会把 30 路自对弈的 GPU 前向串成一条。
+     */
+    private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private volatile boolean released;
     private volatile long modelVersion;
+    private final int gpuOwnerId = GPU_OWNER_SEQ.getAndIncrement();
 
     // 动量缓冲（惰性分配，首次 momentum > 0 训练时创建）
     private double[][][] vSubW1;
@@ -153,6 +230,22 @@ public class NeuralEvaluator {
     private volatile OpenCLBackend opencl;
     /** OpenCL 初始化失败标记：置位后不再反复尝试加载（每次 forward 都调 ensureOpenCL） */
     private volatile boolean openclDisabled;
+    /** 把并发 MCTS 前向收成一批再上 GPU；单线程时不等待。 */
+    private static final int INFER_MAX_BATCH = 64;
+    private static final long INFER_GATHER_NS = 1_500_000L;
+    private final ConcurrentLinkedQueue<GpuInferCall> gpuInferQueue = new ConcurrentLinkedQueue<>();
+    private final AtomicInteger gpuInferWaiters = new AtomicInteger();
+    private final ReentrantLock gpuInferDrain = new ReentrantLock();
+
+    private static final class GpuInferCall {
+        final double[][][] planes;
+        final double[] aux;
+        final CompletableFuture<ForwardResult> done = new CompletableFuture<>();
+        GpuInferCall(double[][][] planes, double[] aux) {
+            this.planes = planes;
+            this.aux = aux;
+        }
+    }
 
     /**
      * 释放 OpenCL native 资源（kernel/program/queue/context）。
@@ -160,7 +253,7 @@ public class NeuralEvaluator {
      * MCTSGoAI 会堆积 native 句柄只能靠 GC 兜底。重复调用安全（幂等）。
      */
     public void release() {
-        lifecycleLock.lock();
+        lifecycleLock.writeLock().lock();
         try {
             if (released) return;
             released = true;
@@ -173,7 +266,7 @@ public class NeuralEvaluator {
                 }
             }
         } finally {
-            lifecycleLock.unlock();
+            lifecycleLock.writeLock().unlock();
         }
     }
 
@@ -277,6 +370,15 @@ public class NeuralEvaluator {
      */
     public double[][][] buildInputPlanes(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
         double[][][] planes = new double[PLANES][BOARD_SIZE][BOARD_SIZE];
+        fillInputPlanes(planes, board, player, lastMove);
+        return planes;
+    }
+
+    private void fillInputPlanes(double[][][] planes, GoPlayer[][] board,
+                                 GoPlayer player, int[] lastMove) {
+        for (double[][] plane : planes) {
+            for (double[] row : plane) Arrays.fill(row, 0.0);
+        }
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
 
         for (int x = 0; x < BOARD_SIZE; x++) {
@@ -298,7 +400,6 @@ public class NeuralEvaluator {
                 }
             }
         }
-        return planes;
     }
 
     /** 计算空点 x,y 周围的气数（仅看相邻空点+同色连通） */
@@ -323,22 +424,22 @@ public class NeuralEvaluator {
      */
     public double[] extractAuxFeatures(GoPlayer[][] board, GoPlayer player) {
         double[] aux = new double[AUX_SIZE];
+        fillAuxFeatures(aux, board, player);
+        return aux;
+    }
+
+    private void fillAuxFeatures(double[] aux, GoPlayer[][] board, GoPlayer player) {
+        Arrays.fill(aux, 0.0);
+        FeatureScratch scratch = FEATURE_SCRATCH.get();
+        analyzeFeatureGroups(board, scratch);
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         int BS = BOARD_SIZE;
 
         // ── 气数直方图 [0..7] ──────────────────────────────────────────
-        int[] libertyHist = new int[LIBERTY_HIST_BINS];
-        boolean[][] visited = new boolean[BS][BS];
-        for (int x = 0; x < BS; x++) {
-            for (int y = 0; y < BS; y++) {
-                if (board[x][y] != GoPlayer.NONE && !visited[x][y]) {
-                    Set<int[]> group = getGroup(board, x, y);
-                    int libs = countGroupLiberties(board, group);
-                    int bin = Math.min(libs, LIBERTY_HIST_BINS - 1);
-                    libertyHist[bin]++;
-                    for (int[] p : group) visited[p[0]][p[1]] = true;
-                }
-            }
+        int[] libertyHist = scratch.histogram;
+        Arrays.fill(libertyHist, 0);
+        for (int group = 0; group < scratch.groupCount; group++) {
+            libertyHist[Math.min(scratch.liberties[group], LIBERTY_HIST_BINS - 1)]++;
         }
         int histSum = 0;
         for (int v : libertyHist) histSum += v;
@@ -414,8 +515,7 @@ public class NeuralEvaluator {
                 for (int dx = -radius; dx <= radius; dx++) for (int dy = -radius; dy <= radius; dy++) {
                     int nx = x + dx, ny = y + dy;
                     if (nx >= 0 && nx < BS && ny >= 0 && ny < BS) {
-                        double w = Math.sqrt(dx * dx + dy * dy);
-                        w = w > 0 ? 1.0 / w : 1.0;
+                        double w = INFLUENCE_WEIGHT[dx + 3][dy + 3];
                         if (board[nx][ny] == player) myInf += w;
                         else if (board[nx][ny] == opponent) oppInf += w;
                     }
@@ -424,13 +524,12 @@ public class NeuralEvaluator {
             }
         }
         aux[17] = (myControl - oppControl) / 100.0;
-        aux[18] = evaluateConnections(board, player) / 20.0;
-        aux[19] = evaluateSeparation(board, player) / 20.0;
+        aux[18] = evaluateConnections(scratch, player) / 20.0;
+        aux[19] = evaluateSeparation(scratch, player) / 20.0;
         aux[20] = evaluateStrategicPoints(board, player) / 10.0;
-        TerritoryResult tr = evaluateTerritory(board, player);
+        TerritoryResult tr = evaluateTerritory(scratch, player);
         aux[21] = (tr.myTerritory - tr.oppTerritory) / 50.0;
 
-        return aux;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -441,19 +540,14 @@ public class NeuralEvaluator {
     private static volatile Boolean gpuEnabledCache = null;
 
     private static boolean isGpuEnabled() {
+        // 系统属性每次重读：训练 CLI / 测试可以在进程内切换，且优先于配置缓存
+        String prop = System.getProperty("go.gpu");
+        if (prop != null) return Boolean.parseBoolean(prop);
         Boolean v = gpuEnabledCache;
         if (v != null) return v;
-        // 1) 系统属性 -Dgo.gpu=false（训练 CLI 用）
-        String prop = System.getProperty("go.gpu");
-        if (prop != null) {
-            v = Boolean.parseBoolean(prop);
-            gpuEnabledCache = v;
-            return v;
-        }
-        // 2) GameSettings 配置文件（MC 对局用）
         try {
             v = GameSettings.getBoolean("go", "gpu", true);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             v = true;
         }
         gpuEnabledCache = v;
@@ -462,87 +556,285 @@ public class NeuralEvaluator {
 
     /**
      * 懒初始化 OpenCL 后端（GPU 启用且成功才使用，失败自动回退 CPU）。
+     * 进程内共享一个上下文，避免每个评估器各自建队列。
      */
     private OpenCLBackend ensureOpenCL() {
         if (openclDisabled || !isGpuEnabled()) return null; // GPU 可选/初始化失败：走 CPU
-        if (opencl == null) {
-            synchronized (this) {
-                if (opencl == null) {
-                    try {
-                        opencl = new OpenCLBackend();
-                    } catch (Throwable t) {
-                        // ★ 兜底：JNA 缺失/UnsatisfiedLinkError 等属于 Error，
-                        //   不能让 GPU 探测失败把整条推理路径炸掉，降级 CPU
-                        System.err.println("[NeuralEvaluator] OpenCL 初始化失败，回退 CPU: " + t);
-                        opencl = null;
-                        openclDisabled = true;
-                    }
+        OpenCLBackend existing = opencl;
+        if (existing != null) {
+            if (existing.isAvailable()) return existing;
+            openclDisabled = true;
+            return null;
+        }
+        synchronized (this) {
+            if (openclDisabled) return null;
+            existing = opencl;
+            if (existing != null) {
+                if (existing.isAvailable()) return existing;
+                openclDisabled = true;
+                return null;
+            }
+            try {
+                OpenCLBackend created = OpenCLBackend.acquireShared();
+                if (created == null || !created.isAvailable()) {
+                    openclDisabled = true;
+                    return null;
                 }
+                opencl = created;
+                return created;
+            } catch (Throwable t) {
+                // ★ 兜底：JNA 缺失/UnsatisfiedLinkError 等属于 Error，
+                //   不能让 GPU 探测失败把整条推理路径炸掉，降级 CPU
+                System.err.println("[NeuralEvaluator] OpenCL 初始化失败，回退 CPU: " + t);
+                opencl = null;
+                openclDisabled = true;
+                return null;
             }
         }
-        return (opencl != null && opencl.isAvailable()) ? opencl : null;
+    }
+
+    /** 当前评估器是否已经拿到可用 GPU。探测失败后保持 false，不会反复加载。 */
+    public boolean isGpuActive() {
+        OpenCLBackend existing = opencl;
+        if (existing != null && existing.isAvailable()) return true;
+        return ensureOpenCL() != null;
+    }
+
+    public String gpuDeviceName() {
+        OpenCLBackend existing = opencl;
+        if (existing != null && existing.isAvailable()) return existing.getDeviceName();
+        OpenCLBackend backend = ensureOpenCL();
+        return backend == null ? "CPU" : backend.getDeviceName();
     }
 
     /**
-     * 完整前向传播：三级分块 → 双头。
+     * 进程级 GPU 探测：打印一次设备名或失败原因，训练入口/探针共用。
+     * 探测本身不长期占用引用；成功时驱动已加载，后续 {@link OpenCLBackend#acquireShared()} 复用。
+     */
+    public static GpuStatus detectGpu() {
+        if (!isGpuEnabled()) return GpuStatus.disabled();
+        try {
+            OpenCLBackend existing = OpenCLBackend.peekShared();
+            if (existing != null) return GpuStatus.available(existing.getDeviceName());
+            OpenCLBackend backend = OpenCLBackend.acquireShared();
+            if (backend != null && backend.isAvailable()) {
+                GpuStatus status = GpuStatus.available(backend.getDeviceName());
+                backend.close();
+                return status;
+            }
+            String fail = OpenCLBackend.lastSharedFailure();
+            return GpuStatus.unavailable(fail == null ? "OpenCL 不可用" : fail);
+        } catch (Throwable t) {
+            return GpuStatus.unavailable(String.valueOf(t));
+        }
+    }
+
+    public static final class GpuStatus {
+        public final boolean enabled;
+        public final boolean available;
+        public final String deviceName;
+        public final String detail;
+
+        private GpuStatus(boolean enabled, boolean available, String deviceName, String detail) {
+            this.enabled = enabled;
+            this.available = available;
+            this.deviceName = deviceName;
+            this.detail = detail;
+        }
+
+        static GpuStatus disabled() {
+            return new GpuStatus(false, false, "CPU", "go.gpu=false");
+        }
+
+        static GpuStatus available(String device) {
+            return new GpuStatus(true, true, device, "ok");
+        }
+
+        static GpuStatus unavailable(String reason) {
+            return new GpuStatus(true, false, "CPU", reason == null ? "unavailable" : reason);
+        }
+
+        public String describe() {
+            if (!enabled) return "GPU 已关闭，使用 CPU (" + detail + ")";
+            if (available) return "GPU 可用: " + deviceName;
+            return "GPU 不可用，回退 CPU (" + detail + ")";
+        }
+    }
+
+    /**
+     * 完整前向传播：三级分块 → 双头。GPU 可用时走 OpenCL，失败回退 CPU。
      */
     public ForwardResult forward(double[][][] planes, double[] auxFeatures) {
         try {
-            lifecycleLock.lockInterruptibly();
+            lifecycleLock.readLock().lockInterruptibly();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ForwardResult(0.0, new double[POLICY_SIZE]);
         }
         try {
             if (released) return new ForwardResult(0.0, new double[POLICY_SIZE]);
+            OpenCLBackend oc = ensureOpenCL();
+            if (oc != null) {
+                ForwardResult gpu = coalesceGpuForward(oc, planes, auxFeatures);
+                if (gpu != null) return gpu;
+            }
             modelLock.readLock().lock();
             try {
+            return cpuForward(planes, auxFeatures);
+            } finally {
+                modelLock.readLock().unlock();
+            }
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    private ForwardResult coalesceGpuForward(OpenCLBackend oc, double[][][] planes, double[] auxFeatures) {
+        GpuInferCall call = new GpuInferCall(planes, auxFeatures);
+        gpuInferWaiters.incrementAndGet();
+        gpuInferQueue.offer(call);
+        try {
+            while (!call.done.isDone()) {
+                if (gpuInferDrain.tryLock()) {
+                    try {
+                        flushGpuInferQueue(oc);
+                    } finally {
+                        gpuInferDrain.unlock();
+                    }
+                    continue;
+                }
+                try {
+                    return call.done.get(5, TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.TimeoutException ignored) {
+                    // 排空线程可能刚好错过本请求，下一轮自己抢锁。
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    call.done.completeExceptionally(e);
+                    return null;
+                } catch (java.util.concurrent.ExecutionException e) {
+                    return null;
+                }
+            }
+            return joinGpuInfer(call);
+        } finally {
+            gpuInferWaiters.decrementAndGet();
+        }
+    }
+
+    private static ForwardResult joinGpuInfer(GpuInferCall call) {
+        try {
+            return call.done.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (java.util.concurrent.ExecutionException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    private void flushGpuInferQueue(OpenCLBackend oc) {
+        while (true) {
+            List<GpuInferCall> batch = new ArrayList<>(INFER_MAX_BATCH);
+            GpuInferCall next;
+            while (batch.size() < INFER_MAX_BATCH && (next = gpuInferQueue.poll()) != null) {
+                batch.add(next);
+            }
+            if (batch.isEmpty()) return;
+            if (batch.size() == 1 && gpuInferWaiters.get() > 1) {
+                long deadline = System.nanoTime() + INFER_GATHER_NS;
+                while (batch.size() < INFER_MAX_BATCH && System.nanoTime() < deadline) {
+                    next = gpuInferQueue.poll();
+                    if (next == null) {
+                        LockSupport.parkNanos(50_000L);
+                        continue;
+                    }
+                    batch.add(next);
+                }
+            }
+            runGpuInferBatch(oc, batch);
+        }
+    }
+
+    private void runGpuInferBatch(OpenCLBackend oc, List<GpuInferCall> batch) {
+        int b = batch.size();
+        modelLock.readLock().lock();
+        try {
+            double[][][][] planes = new double[b][][][];
+            double[][] aux = new double[b][];
+            for (int i = 0; i < b; i++) {
+                GpuInferCall call = batch.get(i);
+                planes[i] = call.planes;
+                aux[i] = call.aux;
+            }
+            double[][] policyOut = new double[b][POLICY_SIZE];
+            double[] valueOut = new double[b];
+            boolean ok = oc.inferForward(planes, aux, b, gpuOwnerId, modelVersion,
+                    subW1, subB1, blockW1, blockB1, topW1, topB1,
+                    policyW, policyB, valueW1, valueB1, valueW2, valueB2,
+                    policyOut, valueOut);
+            if (ok) {
+                for (int i = 0; i < b; i++) {
+                    batch.get(i).done.complete(new ForwardResult(valueOut[i], policyOut[i]));
+                }
+                return;
+            }
+        } catch (Throwable t) {
+            System.err.println("[NeuralEvaluator] GPU 前向失败，回退 CPU: " + t);
+        } finally {
+            modelLock.readLock().unlock();
+        }
+        modelLock.readLock().lock();
+        try {
+            for (GpuInferCall call : batch) {
+                if (call.done.isDone()) continue;
+                try {
+                    call.done.complete(cpuForward(call.planes, call.aux));
+                } catch (Throwable t) {
+                    call.done.completeExceptionally(t);
+                }
+            }
+        } finally {
+            modelLock.readLock().unlock();
+        }
+    }
+
+    private ForwardResult cpuForward(double[][][] planes, double[] auxFeatures) {
+            CpuForwardScratch scratch = CPU_FORWARD_SCRATCH.get();
             // ── 第 1 级：二级子块 ──────────────────────────────────────
             // subOut[b][s][h] — 大块 b 的第 s 个子块的 16 维输出
-            double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
+            double[][][] subOut = scratch.subOut;
             for (int b = 0; b < NUM_BLOCKS; b++) {
                 int bx = BLOCK_STARTS[b][0], by = BLOCK_STARTS[b][1];
-                double[] w1 = null; // flatten subW1[b] for fast access
                 double[] b1 = subB1[b];
                 for (int s = 0; s < SUBS_PER_BLOCK; s++) {
                     int sx = bx + SUB_OFFSETS[s][0], sy = by + SUB_OFFSETS[s][1];
                     // 提取 3×3×4 = 36 个值
-                    double[] input = new double[SUB_INPUT];
+                    double[] input = scratch.subInput;
                     int idx = 0;
                     for (int p = 0; p < PLANES; p++)
                         for (int dx = 0; dx < SUB_SIZE; dx++)
                             for (int dy = 0; dy < SUB_SIZE; dy++)
                                 input[idx++] = planes[p][sx + dx][sy + dy];
                     // FC(36→16) + ReLU
-                    for (int j = 0; j < SUB_HIDDEN; j++) {
-                        double sum = b1[j];
-                        for (int i = 0; i < SUB_INPUT; i++)
-                            sum += subW1[b][i][j] * input[i];
-                        subOut[b][s][j] = Math.max(0, sum);
-                    }
+                    cpuDense(subW1[b], b1, input, subOut[b][s], true);
                 }
             }
 
             // ── 第 2 级：一级字块 ──────────────────────────────────────
-            double[][] blockOut = new double[NUM_BLOCKS][BLOCK_HIDDEN];
+            double[][] blockOut = scratch.blockOut;
             for (int b = 0; b < NUM_BLOCKS; b++) {
                 // 拼接 9 个子块输出 → 144 维
-                double[] input = new double[BLOCK_INPUT];
+                double[] input = scratch.blockInput;
                 int idx = 0;
                 for (int s = 0; s < SUBS_PER_BLOCK; s++)
                     for (int h = 0; h < SUB_HIDDEN; h++)
                         input[idx++] = subOut[b][s][h];
                 // FC(144→64) + ReLU
-                for (int j = 0; j < BLOCK_HIDDEN; j++) {
-                    double sum = blockB1[b][j];
-                    for (int i = 0; i < BLOCK_INPUT; i++)
-                        sum += blockW1[b][i][j] * input[i];
-                    blockOut[b][j] = Math.max(0, sum);
-                }
+                cpuDense(blockW1[b], blockB1[b], input, blockOut[b], true);
             }
 
             // ── 第 3 级：顶级 ──────────────────────────────────────────
-            double[] topInput = new double[TOP_INPUT];
+            double[] topInput = scratch.topInput;
             int idx = 0;
             for (int b = 0; b < NUM_BLOCKS; b++)
                 for (int h = 0; h < BLOCK_HIDDEN; h++)
@@ -551,23 +843,15 @@ public class NeuralEvaluator {
             System.arraycopy(auxFeatures, 0, topInput, NUM_BLOCKS * BLOCK_HIDDEN, AUX_SIZE);
 
             // FC(600→256) + ReLU
-            double[] shared = new double[TOP_HIDDEN];
-            for (int j = 0; j < TOP_HIDDEN; j++) {
-                double sum = topB1[j];
-                for (int i = 0; i < TOP_INPUT; i++)
-                    sum += topW1[i][j] * topInput[i];
-                shared[j] = Math.max(0, sum);
-            }
+            double[] shared = scratch.shared;
+            cpuDense(topW1, topB1, topInput, shared, true);
 
             // ── 策略头 ──────────────────────────────────────────────────
             double[] policy = new double[POLICY_SIZE];
+            cpuDense(policyW, policyB, shared, policy, false);
             double maxLogit = Double.NEGATIVE_INFINITY;
             for (int j = 0; j < POLICY_SIZE; j++) {
-                double sum = policyB[j];
-                for (int i = 0; i < TOP_HIDDEN; i++)
-                    sum += policyW[i][j] * shared[i];
-                if (sum > maxLogit) maxLogit = sum;
-                policy[j] = sum;
+                if (policy[j] > maxLogit) maxLogit = policy[j];
             }
             // softmax（数值稳定版）
             double sumExp = 0;
@@ -579,24 +863,29 @@ public class NeuralEvaluator {
             for (int j = 0; j < POLICY_SIZE; j++) policy[j] *= invSum;
 
             // ── 价值头 ──────────────────────────────────────────────────
-            double[] vh = new double[VALUE_HIDDEN];
-            for (int j = 0; j < VALUE_HIDDEN; j++) {
-                double sum = valueB1[j];
-                for (int i = 0; i < TOP_HIDDEN; i++)
-                    sum += valueW1[i][j] * shared[i];
-                vh[j] = Math.max(0, sum);
-            }
+            double[] vh = scratch.valueHidden;
+            cpuDense(valueW1, valueB1, shared, vh, true);
             double valueSum = valueB2;
             for (int i = 0; i < VALUE_HIDDEN; i++)
                 valueSum += valueW2[i] * vh[i];
             double value = Math.tanh(valueSum);
 
             return new ForwardResult(value, policy);
-            } finally {
-                modelLock.readLock().unlock();
+    }
+
+    /** Read contiguous weight rows while preserving each output's accumulation order. */
+    private static void cpuDense(double[][] weights, double[] bias, double[] input,
+                                 double[] output, boolean relu) {
+        System.arraycopy(bias, 0, output, 0, output.length);
+        for (int i = 0; i < input.length; i++) {
+            double x = input[i];
+            double[] row = weights[i];
+            for (int j = 0; j < output.length; j++) {
+                output[j] += row[j] * x;
             }
-        } finally {
-            lifecycleLock.unlock();
+        }
+        if (relu) {
+            for (int j = 0; j < output.length; j++) output[j] = Math.max(0, output[j]);
         }
     }
 
@@ -605,9 +894,78 @@ public class NeuralEvaluator {
      * 直接返回价值头输出（-1~1），不携带启发式偏差。
      */
     public double forwardValue(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
-        double[][][] planes = buildInputPlanes(board, player, lastMove);
-        double[] aux = extractAuxFeatures(board, player);
-        return forward(planes, aux).value;
+        try {
+            lifecycleLock.readLock().lockInterruptibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return 0.0;
+        }
+        try {
+            if (released) return 0.0;
+            // Configuration can enable GPU even when initialization failed.
+            // Only an available backend needs the complete GPU forward path.
+            if (ensureOpenCL() != null) {
+                double[][][] planes = buildInputPlanes(board, player, lastMove);
+                double[] aux = extractAuxFeatures(board, player);
+                return forward(planes, aux).value;
+            }
+            InputScratch input = INPUT_SCRATCH.get();
+            fillInputPlanes(input.planes, board, player, lastMove);
+            fillAuxFeatures(input.aux, board, player);
+            modelLock.readLock().lock();
+            try {
+                return cpuValueForward(input.planes, input.aux);
+            } finally {
+                modelLock.readLock().unlock();
+            }
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    /** CPU trunk plus value head only. Caller holds modelLock.readLock(). */
+    private double cpuValueForward(double[][][] planes, double[] auxFeatures) {
+        CpuForwardScratch scratch = CPU_FORWARD_SCRATCH.get();
+        double[][][] subOut = scratch.subOut;
+        for (int b = 0; b < NUM_BLOCKS; b++) {
+            int bx = BLOCK_STARTS[b][0], by = BLOCK_STARTS[b][1];
+            double[] b1 = subB1[b];
+            for (int s = 0; s < SUBS_PER_BLOCK; s++) {
+                int sx = bx + SUB_OFFSETS[s][0], sy = by + SUB_OFFSETS[s][1];
+                double[] input = scratch.subInput;
+                int idx = 0;
+                for (int p = 0; p < PLANES; p++)
+                    for (int dx = 0; dx < SUB_SIZE; dx++)
+                        for (int dy = 0; dy < SUB_SIZE; dy++)
+                            input[idx++] = planes[p][sx + dx][sy + dy];
+                cpuDense(subW1[b], b1, input, subOut[b][s], true);
+            }
+        }
+
+        double[][] blockOut = scratch.blockOut;
+        for (int b = 0; b < NUM_BLOCKS; b++) {
+            double[] input = scratch.blockInput;
+            int idx = 0;
+            for (int s = 0; s < SUBS_PER_BLOCK; s++)
+                for (int h = 0; h < SUB_HIDDEN; h++)
+                    input[idx++] = subOut[b][s][h];
+            cpuDense(blockW1[b], blockB1[b], input, blockOut[b], true);
+        }
+
+        double[] topInput = scratch.topInput;
+        int idx = 0;
+        for (int b = 0; b < NUM_BLOCKS; b++)
+            for (int h = 0; h < BLOCK_HIDDEN; h++)
+                topInput[idx++] = blockOut[b][h];
+        System.arraycopy(auxFeatures, 0, topInput, NUM_BLOCKS * BLOCK_HIDDEN, AUX_SIZE);
+        double[] shared = scratch.shared;
+        cpuDense(topW1, topB1, topInput, shared, true);
+
+        double[] valueHidden = scratch.valueHidden;
+        cpuDense(valueW1, valueB1, shared, valueHidden, true);
+        double valueSum = valueB2;
+        for (int i = 0; i < VALUE_HIDDEN; i++) valueSum += valueW2[i] * valueHidden[i];
+        return Math.tanh(valueSum);
     }
 
     /**
@@ -642,7 +1000,7 @@ public class NeuralEvaluator {
         if (batchSize == 0) return 0;
 
         try {
-            lifecycleLock.lockInterruptibly();
+            lifecycleLock.writeLock().lockInterruptibly();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return 0;
@@ -689,7 +1047,7 @@ public class NeuralEvaluator {
                 bPolicyOut = new double[batchSize][POLICY_SIZE];
                 bValueOut = new double[batchSize];
                 // 整个 batch 的前向在 GPU 上完成（子块→字块→顶级→策略头→价值头）
-                boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize,
+                boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize, gpuOwnerId, modelVersion,
                         subW1, subB1, blockW1, blockB1, topW1, topB1,
                         policyW, policyB, valueW1, valueB1, valueW2, valueB2,
                         bSubIn, bSubZ, bBlkIn, bBlkZ, bTopIn, bShared, bShZ,
@@ -960,7 +1318,7 @@ public class NeuralEvaluator {
                 modelLock.writeLock().unlock();
             }
         } finally {
-            lifecycleLock.unlock();
+            lifecycleLock.writeLock().unlock();
         }
     }
 
@@ -1084,56 +1442,81 @@ public class NeuralEvaluator {
         return info;
     }
 
-    private double evaluateConnections(GoPlayer[][] board, GoPlayer player) {
-        boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
-        double bonus = 0;
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] == player && !visited[x][y]) {
-                Set<int[]> group = getGroup(board, x, y);
-                int size = group.size();
-                if (size >= 5) bonus += size * 0.3;
-                for (int[] p : group) {
-                    for (int[] d : DIRS) {
-                        int nx = p[0] + d[0], ny = p[1] + d[1];
-                        if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == player)
-                            bonus += 0.5;
+    private static void analyzeFeatureGroups(GoPlayer[][] board, FeatureScratch scratch) {
+        for (int x = 0; x < BOARD_SIZE; x++) {
+            System.arraycopy(board[x], 0, scratch.cells, x * BOARD_SIZE, BOARD_SIZE);
+        }
+        Arrays.fill(scratch.groupAt, -1);
+        Arrays.fill(scratch.libertySeen, -1);
+        scratch.groupCount = 0;
+        for (int cell = 0; cell < scratch.cells.length; cell++) {
+            GoPlayer color = scratch.cells[cell];
+            if (color == GoPlayer.NONE || scratch.groupAt[cell] >= 0) continue;
+            int group = scratch.groupCount++;
+            scratch.colors[group] = color;
+            int head = 0, tail = 1, liberties = 0, links = 0;
+            scratch.queue[0] = cell;
+            scratch.groupAt[cell] = group;
+            while (head < tail) {
+                int current = scratch.queue[head++];
+                for (int neighbor : CELL_NEIGHBORS[current]) {
+                    if (scratch.cells[neighbor] == GoPlayer.NONE) {
+                        if (scratch.libertySeen[neighbor] != group) {
+                            scratch.libertySeen[neighbor] = group;
+                            liberties++;
+                        }
+                    } else if (scratch.cells[neighbor] == color) {
+                        links++;
+                        if (scratch.groupAt[neighbor] < 0) {
+                            // Mark on enqueue: the queue is bounded by the board's 361 cells.
+                            scratch.groupAt[neighbor] = group;
+                            scratch.queue[tail++] = neighbor;
+                        }
                     }
                 }
-                int libs = countGroupLiberties(board, group);
-                if (libs >= 5) bonus += 2;
-                for (int[] p : group) visited[p[0]][p[1]] = true;
+            }
+            scratch.sizes[group] = tail;
+            scratch.liberties[group] = liberties;
+            scratch.links[group] = links;
+        }
+    }
+
+    private double evaluateConnections(FeatureScratch scratch, GoPlayer player) {
+        double bonus = 0;
+        for (int group = 0; group < scratch.groupCount; group++) {
+            if (scratch.colors[group] == player) {
+                int size = scratch.sizes[group];
+                if (size >= 5) bonus += size * 0.3;
+                bonus += scratch.links[group] * 0.5;
+                if (scratch.liberties[group] >= 5) bonus += 2;
             }
         }
         return bonus;
     }
 
-    private double evaluateSeparation(GoPlayer[][] board, GoPlayer player) {
+    private double evaluateSeparation(FeatureScratch scratch, GoPlayer player) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         double threat = 0;
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] == GoPlayer.NONE) {
-                // getGroup 返回的 Set<int[]> 中 int[] 是 identity 相等，同一棋群从多方向
-                // 相邻会被 Set<Set<int[]>> 当成多个。用棋群最小坐标的 Long 键规范化去重。
-                Set<Long> groupKeys = new HashSet<>();
-                for (int[] d : DIRS) {
-                    int nx = x + d[0], ny = y + d[1];
-                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == opponent) {
-                        Set<int[]> g = getGroup(board, nx, ny);
-                        long minKey = Long.MAX_VALUE;
-                        for (int[] p : g) {
-                            long key = (long) p[0] * BOARD_SIZE + p[1];
-                            if (key < minKey) minKey = key;
+        for (int cell = 0; cell < scratch.cells.length; cell++) {
+            if (scratch.cells[cell] == GoPlayer.NONE) {
+                int groupCount = 0, minLibs = Integer.MAX_VALUE;
+                for (int neighbor : CELL_NEIGHBORS[cell]) {
+                    if (scratch.cells[neighbor] == opponent) {
+                        int group = scratch.groupAt[neighbor];
+                        boolean duplicate = false;
+                        for (int i = 0; i < groupCount; i++) {
+                            if (scratch.adjacentGroups[i] == group) {
+                                duplicate = true;
+                                break;
+                            }
                         }
-                        groupKeys.add(minKey);
+                        if (!duplicate) {
+                            scratch.adjacentGroups[groupCount++] = group;
+                            minLibs = Math.min(minLibs, scratch.liberties[group]);
+                        }
                     }
                 }
-                if (groupKeys.size() >= 2) {
-                    int minLibs = Integer.MAX_VALUE;
-                    for (long key : groupKeys) {
-                        int px = (int)(key / BOARD_SIZE), py = (int)(key % BOARD_SIZE);
-                        int libs = countGroupLiberties(board, getGroup(board, px, py));
-                        minLibs = Math.min(minLibs, libs);
-                    }
+                if (groupCount >= 2) {
                     threat += minLibs <= 3 ? 3.0 : 1.0;
                 }
             }
@@ -1162,36 +1545,32 @@ public class NeuralEvaluator {
 
     private static class TerritoryResult { double myTerritory, oppTerritory; }
 
-    private TerritoryResult evaluateTerritory(GoPlayer[][] board, GoPlayer player) {
+    private TerritoryResult evaluateTerritory(FeatureScratch scratch, GoPlayer player) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         TerritoryResult result = new TerritoryResult();
-        boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] == GoPlayer.NONE && !visited[x][y]) {
-                List<int[]> region = new ArrayList<>();
-                Queue<int[]> queue = new LinkedList<>();
-                queue.add(new int[]{x, y}); visited[x][y] = true;
-                while (!queue.isEmpty()) {
-                    int[] pos = queue.poll();
-                    region.add(pos);
-                    for (int[] d : DIRS) {
-                        int nx = pos[0] + d[0], ny = pos[1] + d[1];
-                        if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE
-                                && board[nx][ny] == GoPlayer.NONE && !visited[nx][ny]) {
-                            visited[nx][ny] = true;
-                            queue.add(new int[]{nx, ny});
+        Arrays.fill(scratch.regionSeen, false);
+        for (int cell = 0; cell < scratch.cells.length; cell++) {
+            if (scratch.cells[cell] == GoPlayer.NONE && !scratch.regionSeen[cell]) {
+                int head = 0, tail = 1, myBorder = 0, oppBorder = 0;
+                scratch.queue[0] = cell;
+                scratch.regionSeen[cell] = true;
+                while (head < tail) {
+                    int current = scratch.queue[head++];
+                    for (int neighbor : CELL_NEIGHBORS[current]) {
+                        GoPlayer color = scratch.cells[neighbor];
+                        if (color == GoPlayer.NONE) {
+                            if (!scratch.regionSeen[neighbor]) {
+                                scratch.regionSeen[neighbor] = true;
+                                scratch.queue[tail++] = neighbor;
+                            }
+                        } else if (color == player) {
+                            myBorder++;
+                        } else if (color == opponent) {
+                            oppBorder++;
                         }
                     }
                 }
-                int myBorder = 0, oppBorder = 0;
-                for (int[] p : region) for (int[] d : DIRS) {
-                    int nx = p[0] + d[0], ny = p[1] + d[1];
-                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                        if (board[nx][ny] == player) myBorder++;
-                        else if (board[nx][ny] == opponent) oppBorder++;
-                    }
-                }
-                double tv = region.size();
+                double tv = tail;
                 if (myBorder > oppBorder) result.myTerritory += tv;
                 else if (oppBorder > myBorder) result.oppTerritory += tv;
                 else { result.myTerritory += tv * 0.5; result.oppTerritory += tv * 0.5; }
@@ -1235,8 +1614,7 @@ public class NeuralEvaluator {
                 for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) {
                     int nx = x + dx, ny = y + dy;
                     if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                        double w = Math.sqrt(dx * dx + dy * dy);
-                        w = w > 0 ? 1.0 / w : 1.0;
+                        double w = INFLUENCE_WEIGHT[dx + 3][dy + 3];
                         if (board[nx][ny] == player) myInf += w;
                         else if (board[nx][ny] == opponent) oppInf += w;
                     }
@@ -1438,36 +1816,48 @@ public class NeuralEvaluator {
 
     public void save(Path path) throws IOException {
         Path absolute = path.toAbsolutePath();
-        Path parent = absolute.getParent();
-        if (parent != null) Files.createDirectories(parent);
-        Path temp = Files.createTempFile(parent == null ? Path.of(".") : parent,
-                absolute.getFileName().toString() + ".", ".tmp");
-        try {
-            ModelWeights m = snapshot();
-            // 缓冲流：模型 ~37 万 float 逐值写出，无缓冲时每次 writeFloat 都是一次系统调用
-            try (DataOutputStream out = new DataOutputStream(new java.io.BufferedOutputStream(
-                    Files.newOutputStream(temp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING),
-                    1 << 16))) {
-                out.writeInt(MODEL_MAGIC);
-                out.writeInt(MODEL_FORMAT);
-                out.writeLong(m.version);
-                // 9 套子块权重
-                for (int b = 0; b < NUM_BLOCKS; b++) {
-                    writeMatrix(out, m.subW1[b]); writeVector(out, m.subB1[b]);
+        synchronized (modelIoLock(absolute)) {
+            Path parent = absolute.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Path temp = Files.createTempFile(parent == null ? Path.of(".") : parent,
+                    absolute.getFileName().toString() + ".", ".tmp");
+            try {
+                ModelWeights m = snapshot();
+                // 缓冲流：模型 ~37 万 float 逐值写出，无缓冲时每次 writeFloat 都是一次系统调用
+                try (DataOutputStream out = new DataOutputStream(new java.io.BufferedOutputStream(
+                        Files.newOutputStream(temp, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING),
+                        1 << 16))) {
+                    out.writeInt(MODEL_MAGIC);
+                    out.writeInt(MODEL_FORMAT);
+                    out.writeLong(m.version);
+                    for (int b = 0; b < NUM_BLOCKS; b++) {
+                        writeMatrix(out, m.subW1[b]); writeVector(out, m.subB1[b]);
+                    }
+                    for (int b = 0; b < NUM_BLOCKS; b++) {
+                        writeMatrix(out, m.blockW1[b]); writeVector(out, m.blockB1[b]);
+                    }
+                    writeMatrix(out, m.topW1); writeVector(out, m.topB1);
+                    writeMatrix(out, m.policyW); writeVector(out, m.policyB);
+                    writeMatrix(out, m.valueW1); writeVector(out, m.valueB1);
+                    writeVector(out, m.valueW2); out.writeFloat((float)m.valueB2);
                 }
-                // 9 套字块权重
-                for (int b = 0; b < NUM_BLOCKS; b++) {
-                    writeMatrix(out, m.blockW1[b]); writeVector(out, m.blockB1[b]);
-                }
-                writeMatrix(out, m.topW1); writeVector(out, m.topB1);
-                writeMatrix(out, m.policyW); writeVector(out, m.policyB);
-                writeMatrix(out, m.valueW1); writeVector(out, m.valueB1);
-                writeVector(out, m.valueW2); out.writeFloat((float)m.valueB2);
+                replaceFile(temp, absolute);
+            } finally {
+                Files.deleteIfExists(temp);
             }
-            replaceFile(temp, absolute);
-        } finally {
-            Files.deleteIfExists(temp);
         }
+    }
+
+    /** Builds one position's features into a thread-local buffer and evaluates it. */
+    public ForwardResult forwardPosition(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
+        InputScratch scratch = INPUT_SCRATCH.get();
+        fillInputPlanes(scratch.planes, board, player, lastMove);
+        fillAuxFeatures(scratch.aux, board, player);
+        return forward(scratch.planes, scratch.aux);
+    }
+
+    private static Object modelIoLock(Path absolute) {
+        return MODEL_IO_LOCKS.computeIfAbsent(absolute.normalize(), ignored -> new Object());
     }
 
     /**
@@ -1499,9 +1889,11 @@ public class NeuralEvaluator {
     }
 
     public void load(Path path) throws IOException {
-        // 缓冲流：与 save 对称，避免 ~37 万次逐 float 读取的系统调用开销
-        try (DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(
-                Files.newInputStream(path), 1 << 16))) {
+        Path absolute = path.toAbsolutePath();
+        synchronized (modelIoLock(absolute)) {
+            // 缓冲流：与 save 对称，避免 ~37 万次逐 float 读取的系统调用开销
+            try (DataInputStream in = new DataInputStream(new java.io.BufferedInputStream(
+                    Files.newInputStream(absolute), 1 << 16))) {
             int magic = in.readInt();
             int fmt = in.readInt();
             boolean currentFormat = magic == MODEL_MAGIC && fmt == MODEL_FORMAT;
@@ -1535,7 +1927,8 @@ public class NeuralEvaluator {
             ModelWeights m = new ModelWeights(lSubW1, lSubB1, lBlockW1, lBlockB1,
                     lTopW1, lTopB1, lPolicyW, lPolicyB,
                     lValueW1, lValueB1, lValueW2, lValueB2, ver);
-            apply(m);
+                apply(m);
+            }
         }
     }
 

@@ -9,7 +9,12 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -89,6 +94,48 @@ class MCTSGoAIRegressionTest {
     }
 
     @Test
+    void selfPlayPassesImmediatelyAfterOpponentPass() {
+        MCTSGoAI searchAi = new MCTSGoAI(1_000, 8, 1);
+        try (GoGame game = GoGame.rulesOnly()) {
+            searchAi.setSelfPlayMode(true);
+            game.pass();
+            assertTrue(game.canPlaceStone(0, 0));
+            assertNull(searchAi.getBestMove(game));
+            assertEquals(1.0, searchAi.getVisitDistribution()[361]);
+            GoTrainingMove.apply(game, null, searchAi.getVisitDistribution());
+            assertTrue(game.isGameOver());
+        } finally {
+            searchAi.shutdown();
+        }
+    }
+
+    @Test
+    void selfPlaySearchTimeHonorsTrainerBudget() throws Exception {
+        MCTSGoAI searchAi = new MCTSGoAI(300, 8, 1);
+        try {
+            var method = MCTSGoAI.class.getDeclaredMethod("calculateDynamicSearchTime", int.class, int.class);
+            method.setAccessible(true);
+            searchAi.setSelfPlayMode(true);
+            assertEquals(300, (int) method.invoke(searchAi, 10, 200));
+            searchAi.setSelfPlayMode(false);
+            assertTrue((int) method.invoke(searchAi, 10, 200) >= 500);
+        } finally {
+            searchAi.shutdown();
+        }
+    }
+
+    @Test
+    void searchMovesAlwaysIncludePassInOpening() throws Exception {
+        var method = MCTSGoAI.class.getDeclaredMethod("getSearchMoves",
+                long.class, GoPlayer[][].class, GoPlayer.class, int.class);
+        method.setAccessible(true);
+        GoPlayer[][] board = emptyBoard();
+        @SuppressWarnings("unchecked")
+        List<int[]> moves = (List<int[]>) method.invoke(ai, GoGame.boardHash(board), board, GoPlayer.BLACK, 0);
+        assertTrue(moves.stream().anyMatch(move -> move[0] < 0 && move[1] < 0));
+    }
+
+    @Test
     void invalidLegalMoveProbeDoesNotOverwriteBoard() throws Exception {
         GoPlayer[][] board = emptyBoard();
         board[3][4] = GoPlayer.BLACK;
@@ -152,6 +199,216 @@ class MCTSGoAIRegressionTest {
             assertEquals(1.0, (double) getField(root, "visits"));
         } finally {
             searchAi.shutdown();
+        }
+    }
+
+    @Test
+    void cachedStatisticsRefreshVisitsAndNewChildrenWithoutChangingEarlyStopOrPassPolicy() throws Exception {
+        GoPlayer[][] board = emptyBoard();
+        Object root = node(board, null, null);
+        Object first = node(board, root, new int[]{3, 3});
+        Object second = node(board, root, new int[]{4, 4});
+        List<Object> children = new ArrayList<>(List.of(first, second));
+        setField(root, "children", children);
+        setField(ai, "currentRoot", root);
+        var early = MCTSGoAI.class.getDeclaredMethod("shouldTerminateEarly", long.class);
+        var winRate = MCTSGoAI.class.getDeclaredMethod("getCurrentWinRate");
+        var best = MCTSGoAI.class.getDeclaredMethod("getBestMCTSMove", root.getClass());
+        early.setAccessible(true);
+        winRate.setAccessible(true);
+        best.setAccessible(true);
+        assertFalse((boolean) early.invoke(ai, 200L));
+        assertEquals(0.0, winRate.invoke(ai));
+        setField(first, "visits", 31.0);
+        setField(first, "totalScore", -31.0);
+        assertFalse((boolean) early.invoke(ai, 200L)); // Require enough visits to trust an advantage.
+        Object originalSnapshot = getField(root, "selectionSnapshot");
+        setField(first, "visits", 32.0);
+        setField(first, "totalScore", -32.0);
+        assertFalse((boolean) early.invoke(ai, 49L));
+        assertTrue((boolean) early.invoke(ai, 50L));
+        assertEquals(1.0, winRate.invoke(ai));
+        assertSame(originalSnapshot, getField(root, "selectionSnapshot"));
+        setField(first, "totalScore", -19.2);
+        assertFalse((boolean) early.invoke(ai, 200L)); // One visited branch cannot establish a margin.
+        setField(second, "visits", 32.0);
+        setField(second, "totalScore", -3.2);
+        assertFalse((boolean) early.invoke(ai, 100L));
+        assertTrue((boolean) early.invoke(ai, 101L));
+        assertArrayEquals(new int[]{3, 3}, (int[]) best.invoke(ai, root)); // Equal visits keep first.
+        Object pass = node(board, root, new int[]{-1, -1});
+        setField(pass, "visits", 64.0);
+        setField(pass, "totalScore", -44.8);
+        synchronized (root) { children.add(pass); }
+        assertArrayEquals(new int[]{-1, -1}, (int[]) best.invoke(ai, root));
+        assertEquals(0.7, (double) winRate.invoke(ai), 1e-12);
+        double[] distribution = ai.getVisitDistribution();
+        assertEquals(0.25, distribution[3 * 19 + 3]);
+        assertEquals(0.25, distribution[4 * 19 + 4]);
+        assertEquals(0.5, distribution[361]);
+        assertNotSame(originalSnapshot, getField(root, "selectionSnapshot"));
+        setField(root, "children", new ArrayList<>());
+        assertFalse((boolean) early.invoke(ai, 200L));
+        assertEquals(0.0, winRate.invoke(ai));
+        assertNull(best.invoke(ai, root));
+        assertEquals(1.0, ai.getVisitDistribution()[361]);
+    }
+
+    @Test
+    void primitiveSamplingMatchesSeededReferenceAcrossTemperaturesAndChangingCandidateCounts() throws Exception {
+        GoPlayer[][] board = emptyBoard();
+        Object root = node(board, null, null);
+        int[][] moves = {{3, 3}, {4, 4}, {-1, -1}, {5, 5}, {6, 6}};
+        double[] visits = {1, 0, 16, 64, 4};
+        List<Object> children = new ArrayList<>();
+        for (int i = 0; i < moves.length; i++) {
+            Object child = node(board, root, moves[i]);
+            setField(child, "visits", visits[i]);
+            children.add(child);
+        }
+        var sample = MCTSGoAI.class.getDeclaredMethod("sampleMCTSMove", root.getClass(), int.class);
+        sample.setAccessible(true);
+        Random actualRandom = new Random(7943), referenceRandom = new Random(7943);
+        setField(ai, "random", actualRandom);
+        for (double exploration : new double[]{1.0, 0.0, 0.4}) {
+            setField(ai, "explorationScale", exploration);
+            for (int count : new int[]{5, 1, 4, 2, 5}) {
+                setField(root, "children", new ArrayList<>(children.subList(0, count)));
+                for (int moveCount : new int[]{0, 29, 30, 100}) {
+                    double temperature = moveCount < 30 ? 0.9 * exploration + 0.1 : 0.3 * exploration + 0.05;
+                    List<Integer> indices = new ArrayList<>();
+                    List<Double> weights = new ArrayList<>();
+                    double sum = 0;
+                    for (int i = 0; i < count; i++) {
+                        if (visits[i] <= 0) continue;
+                        double weight = temperature <= 0.01 ? visits[i] : Math.pow(visits[i], 1.0 / temperature);
+                        indices.add(i);
+                        weights.add(weight);
+                        sum += weight;
+                    }
+                    for (int repeat = 0; repeat < 50; repeat++) {
+                        double threshold = referenceRandom.nextDouble() * sum, cumulative = 0;
+                        int expected = indices.getLast();
+                        for (int i = 0; i < indices.size(); i++) {
+                            cumulative += weights.get(i);
+                            if (cumulative >= threshold) { expected = indices.get(i); break; }
+                        }
+                        assertArrayEquals(moves[expected], (int[]) sample.invoke(ai, root, moveCount));
+                    }
+                }
+            }
+        }
+        for (Object child : children) setField(child, "visits", 0.0);
+        setField(root, "children", children);
+        assertArrayEquals(moves[0], (int[]) sample.invoke(ai, root, 0));
+        assertEquals(referenceRandom.nextDouble(), actualRandom.nextDouble()); // Fallback consumes no randomness.
+    }
+
+    @Test
+    void childSelectionPreservesScoresAndRefreshesOnlyChangedSnapshots() throws Exception {
+        GoPlayer[][] board = emptyBoard();
+        Object root = node(board, null, null);
+        Object winning = node(board, root, new int[]{3, 3});
+        Object losing = node(board, root, new int[]{4, 4});
+        Object unexplored = node(board, root, new int[]{5, 5});
+        setField(root, "visits", 100.0);
+        setField(winning, "visits", 10.0);
+        setField(winning, "totalScore", -8.0);
+        setField(winning, "prior", 0.0);
+        setField(losing, "visits", 10.0);
+        setField(losing, "totalScore", 8.0);
+        setField(losing, "prior", 0.0);
+        setField(unexplored, "prior", 0.0);
+        setField(root, "children", new ArrayList<>(List.of(losing, winning, unexplored)));
+        var select = MCTSGoAI.class.getDeclaredMethod("selectBestChild", root.getClass());
+        select.setAccessible(true);
+        assertSame(winning, select.invoke(ai, root));
+        Object[] originalSnapshot = (Object[]) getField(root, "selectionSnapshot");
+        setField(unexplored, "prior", 1.0);
+        assertSame(unexplored, select.invoke(ai, root));
+        setField(unexplored, "prior", 0.0);
+        setField(winning, "totalScore", 8.0);
+        assertSame(unexplored, select.invoke(ai, root)); // Unvisited value is zero.
+        setField(winning, "totalScore", 0.0);
+        setField(losing, "totalScore", 0.0);
+        assertSame(losing, select.invoke(ai, root)); // First child wins equal scores.
+        setField(root, "visits", 0.0);
+        setField(unexplored, "prior", 1.0);
+        assertSame(unexplored, select.invoke(ai, root)); // Exploration works at zero parent visits.
+        assertSame(originalSnapshot, getField(root, "selectionSnapshot"));
+        setField(root, "children", new ArrayList<>(List.of(winning)));
+        assertSame(winning, select.invoke(ai, root));
+        Object[] singleSnapshot = (Object[]) getField(root, "selectionSnapshot");
+        assertNotSame(originalSnapshot, singleSnapshot);
+        setField(root, "children", new ArrayList<>(List.of(losing)));
+        assertSame(losing, select.invoke(ai, root)); // A replaced list can have the same size.
+        assertNotSame(singleSnapshot, getField(root, "selectionSnapshot"));
+        assertSame(winning, singleSnapshot[0]); // Older snapshots remain immutable for readers.
+        assertSame(unexplored, originalSnapshot[2]);
+        setField(root, "children", new ArrayList<>());
+        assertNull(select.invoke(ai, root));
+        assertNull(getField(root, "selectionSnapshot"));
+        assertNull(getField(root, "selectionSource"));
+    }
+
+    @Test
+    void childSelectionSnapshotsStayIsolatedWhileOtherThreadsExpandParents() throws Exception {
+        GoPlayer[][] board = emptyBoard();
+        Object[] roots = {node(board, null, null), node(board, null, null)};
+        Object[] winners = {node(board, roots[0], new int[]{3, 3}), node(board, roots[1], new int[]{4, 4})};
+        List<List<Object>> children = new ArrayList<>();
+        for (int n = 0; n < roots.length; n++) {
+            setField(roots[n], "visits", 100.0);
+            setField(winners[n], "visits", 1.0);
+            setField(winners[n], "totalScore", -1.0);
+            setField(winners[n], "prior", 0.0);
+            children.add(new ArrayList<>(List.of(winners[n])));
+            setField(roots[n], "children", children.get(n));
+        }
+        List<Object> additional = new ArrayList<>();
+        for (int n = 0; n < 256; n++) {
+            Object child = node(board, roots[0], new int[]{n / 19, n % 19});
+            setField(child, "visits", 1.0);
+            setField(child, "totalScore", 0.5);
+            setField(child, "prior", 0.0);
+            additional.add(child);
+        }
+        children.get(0).addAll(additional.subList(0, 64));
+        var select = MCTSGoAI.class.getDeclaredMethod("selectBestChild", roots[0].getClass());
+        select.setAccessible(true);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        try {
+            List<Future<?>> tasks = new ArrayList<>();
+            tasks.add(pool.submit(() -> {
+                start.await();
+                for (Object child : additional.subList(64, additional.size())) {
+                    synchronized (roots[0]) { children.get(0).add(child); }
+                }
+                return null;
+            }));
+            for (int reader = 0; reader < 4; reader++) {
+                tasks.add(pool.submit(() -> {
+                    start.await();
+                    for (int repeat = 0; repeat < 500; repeat++) {
+                        int parent = repeat % 2; // Alternate wide and narrow snapshots.
+                        assertSame(winners[parent], select.invoke(ai, roots[parent]));
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> task : tasks) task.get(10, TimeUnit.SECONDS);
+            assertEquals(257, children.get(0).size());
+            assertEquals(1, children.get(1).size());
+            for (int parent = 0; parent < roots.length; parent++) {
+                assertSame(winners[parent], select.invoke(ai, roots[parent]));
+                assertEquals(children.get(parent).size(),
+                        ((Object[]) getField(roots[parent], "selectionSnapshot")).length);
+            }
+        } finally {
+            pool.shutdownNow();
+            pool.awaitTermination(10, TimeUnit.SECONDS);
         }
     }
 
@@ -266,6 +523,81 @@ class MCTSGoAIRegressionTest {
         Object reused = reuse.invoke(ai, board, GoPlayer.WHITE);
         assertNotNull(reused);
         assertEquals(17.5, (double) getField(reused, "prior"));
+    }
+
+    @Test
+    void treeCopyRebuildsCaptureAndPassBranchesWithIndependentBoardsAndMoveLists() throws Exception {
+        GoPlayer[][] board = emptyBoard();
+        board[0][0] = GoPlayer.WHITE;
+        board[1][0] = GoPlayer.BLACK;
+        Object root = node(board, GoPlayer.BLACK, null, null, List.of(new int[]{7, 7, 0}));
+        GoPlayer[][] captureBoard = copy(board);
+        captureBoard[0][0] = GoPlayer.NONE;
+        captureBoard[0][1] = GoPlayer.BLACK;
+        Object captured = node(captureBoard, GoPlayer.WHITE, root, new int[]{0, 1},
+                List.of(new int[]{8, 8, 0}, new int[]{-1, -1, 0}));
+        GoPlayer[][] replyBoard = copy(captureBoard);
+        replyBoard[4][4] = GoPlayer.WHITE;
+        Object reply = node(replyBoard, GoPlayer.BLACK, captured, new int[]{4, 4},
+                List.of(new int[]{9, 9, 0}));
+        Object passed = node(copy(board), GoPlayer.WHITE, root, new int[]{-1, -1}, List.of());
+        setField(root, "children", new ArrayList<>(List.of(captured, passed)));
+        setField(captured, "children", new ArrayList<>(List.of(reply)));
+        setField(captured, "visits", 12.0);
+        setField(captured, "totalScore", -3.0);
+        setField(captured, "prior", 2.5);
+        setField(captured, "hash", 123L); // Copies must compute hashes from rebuilt boards.
+        setField(captured, "valueCache", 0.25);
+        setField(captured, "valueCached", true);
+        double[] policy = new double[362];
+        policy[7] = 0.75;
+        setField(captured, "policyCache", policy);
+        setField(passed, "consecutivePasses", 1);
+        setField(reply, "terminal", true);
+
+        var clone = MCTSGoAI.class.getDeclaredMethod("deepCopyNode", root.getClass(), GoPlayer[][].class);
+        clone.setAccessible(true);
+        Object copied = clone.invoke(ai, root, board);
+        List<?> children = (List<?>) getField(copied, "children");
+        Object copiedCapture = children.get(0), copiedPass = children.get(1);
+        Object copiedReply = ((List<?>) getField(copiedCapture, "children")).getFirst();
+        assertNull(getField(copied, "parent"));
+        assertSame(copied, getField(copiedCapture, "parent"));
+        assertSame(copied, getField(copiedPass, "parent"));
+        assertSame(copiedCapture, getField(copiedReply, "parent"));
+        assertEquals(12.0, getField(copiedCapture, "visits"));
+        assertEquals(-3.0, getField(copiedCapture, "totalScore"));
+        assertEquals(2.5, getField(copiedCapture, "prior"));
+        assertEquals(0.25, getField(copiedCapture, "valueCache"));
+        assertEquals(true, getField(copiedCapture, "valueCached"));
+        assertSame(policy, getField(copiedCapture, "policyCache"));
+        assertEquals(1, getField(copiedPass, "consecutivePasses"));
+        assertEquals(true, getField(copiedReply, "terminal"));
+
+        List<Object> originals = List.of(root, captured, passed, reply);
+        List<Object> copies = List.of(copied, copiedCapture, copiedPass, copiedReply);
+        Set<GoPlayer[]> rows = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Object original : originals) {
+            for (GoPlayer[] row : (GoPlayer[][]) getField(original, "board")) assertTrue(rows.add(row));
+        }
+        for (int i = 0; i < copies.size(); i++) {
+            GoPlayer[][] actual = (GoPlayer[][]) getField(copies.get(i), "board");
+            assertBoardEquals((GoPlayer[][]) getField(originals.get(i), "board"), actual);
+            assertEquals(GoGame.boardHash(actual), getField(copies.get(i), "hash"));
+            for (GoPlayer[] row : actual) assertTrue(rows.add(row), "board rows must be independent");
+            List<?> originalMoves = (List<?>) getField(originals.get(i), "untriedMoves");
+            List<?> copiedMoves = (List<?>) getField(copies.get(i), "untriedMoves");
+            assertNotSame(originalMoves, copiedMoves);
+            int originalSize = originalMoves.size();
+            assertEquals(originalSize, copiedMoves.size());
+            copiedMoves.clear();
+            assertEquals(originalSize, originalMoves.size());
+        }
+        ((GoPlayer[][]) getField(copiedCapture, "board"))[1][0] = GoPlayer.NONE;
+        assertEquals(GoPlayer.BLACK, board[1][0]);
+        assertEquals(GoPlayer.BLACK, captureBoard[1][0]);
+        assertEquals(GoPlayer.BLACK, ((GoPlayer[][]) getField(copiedPass, "board"))[1][0]);
+        assertEquals(GoPlayer.BLACK, ((GoPlayer[][]) getField(copiedReply, "board"))[1][0]);
     }
 
     @Test

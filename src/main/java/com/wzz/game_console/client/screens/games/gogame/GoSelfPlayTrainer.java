@@ -15,7 +15,7 @@ public final class GoSelfPlayTrainer {
         public int searchTimeMillis = 300;
         public int maxIterations = 500;
         public int parallelism = 30;
-        public int maxMoves = 300;
+        public int maxMoves = 450;
         public int batchSize = 128;
         public double l2 = 1.0e-5;
         public double gradientClip = 5.0;
@@ -126,7 +126,6 @@ public final class GoSelfPlayTrainer {
         // 探索强度随训练代次衰减：gen 1→1.0, gen 41→0.2（下限 0.2）
         final double expScale = Math.max(0.2, 1.0 - 0.02 * (generation - 1));
         int workers = Math.max(1, Math.min(parallelism <= 0 ? config.parallelism : parallelism, games));
-        final NeuralEvaluator.ModelWeights snapshot = evaluator.snapshot();
         ExecutorService pool = Executors.newFixedThreadPool(workers);
         List<Future<GameSamples>> futures = new ArrayList<>(workers);
         try {
@@ -134,7 +133,7 @@ public final class GoSelfPlayTrainer {
             int nextGame = 0;
             for (; nextGame < workers; nextGame++) {
                 final int gameIndex = nextGame;
-                futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
+                futures.add(pool.submit(() -> playGame(evaluator, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
             }
             int completed = 0;
             while (!futures.isEmpty()) {
@@ -149,7 +148,7 @@ public final class GoSelfPlayTrainer {
                     }
                     if (nextGame < games) {
                         final int gameIndex = nextGame++;
-                        futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
+                        futures.add(pool.submit(() -> playGame(evaluator, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
                     }
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
@@ -170,7 +169,7 @@ public final class GoSelfPlayTrainer {
                     System.err.println("[SelfPlay] game failed: " + cause);
                     if (nextGame < games) {
                         final int gameIndex = nextGame++;
-                        futures.add(pool.submit(() -> playGame(snapshot, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
+                        futures.add(pool.submit(() -> playGame(evaluator, seed + 0x9E3779B97F4A7C15L * gameIndex, expScale)));
                     }
                 }
             }
@@ -223,10 +222,10 @@ public final class GoSelfPlayTrainer {
         return initialLr * 0.5 * (1.0 + Math.cos(Math.PI * ratio));
     }
 
-    private GameSamples playGame(NeuralEvaluator.ModelWeights model, long seed, double explorationScale) {
+    private GameSamples playGame(NeuralEvaluator sharedEvaluator, long seed, double explorationScale) {
         List<Sample> samples = new ArrayList<>();
         GoGame game = GoGame.rulesOnly();
-        MCTSGoAI ai = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, model);
+        MCTSGoAI ai = new MCTSGoAI(config.searchTimeMillis, config.maxIterations, 1, sharedEvaluator, false);
         ai.setRandomSeed(seed);
         double roundKomi = GoGame.getConfiguredKomi();
         // 自对弈模式：开启根节点 Dirichlet 噪声 + 访问分布温度采样（增强探索）
