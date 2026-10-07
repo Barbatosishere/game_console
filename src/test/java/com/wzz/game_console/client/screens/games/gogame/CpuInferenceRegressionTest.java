@@ -50,6 +50,10 @@ class CpuInferenceRegressionTest {
             disabled.setAccessible(true);
             disabled.setBoolean(first, true);
             disabled.setBoolean(second, true);
+            var failureAt = NeuralEvaluator.class.getDeclaredField("openclFailureAt");
+            failureAt.setAccessible(true);
+            failureAt.setLong(first, System.nanoTime());
+            failureAt.setLong(second, System.nanoTime());
             System.setProperty("go.gpu", "true");
             assertFalse(first.isGpuActive());
             assertFalse(second.isGpuActive());

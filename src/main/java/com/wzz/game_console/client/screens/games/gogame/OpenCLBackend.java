@@ -8,6 +8,7 @@ import com.sun.jna.ptr.IntByReference;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 /**
  * OpenCL GPU 加速后端。CPU 负责构建输入，GPU 负责矩阵运算。
@@ -23,6 +24,8 @@ public class OpenCLBackend implements AutoCloseable {
     private static final Object SHARED_LOCK = new Object();
     private static OpenCLBackend shared;
     private static String sharedFailure;
+    static final long RETRY_DELAY_NANOS = 30_000_000_000L;
+    private static long sharedFailureAt;
 
     private volatile boolean available = false;
     private volatile boolean closed;
@@ -40,6 +43,12 @@ public class OpenCLBackend implements AutoCloseable {
     private Pointer aSubIn, aSubOut, aBlkIn, aBlkOut, aTopIn, aShared, aAux, aPol, aVal;
 
     public OpenCLBackend() {
+        this(true);
+    }
+
+    // Lifecycle tests can exercise sharing without loading a native driver.
+    OpenCLBackend(boolean initialize) {
+        if (!initialize) return;
         // ★ catch Throwable：JNA 缺失/UnsatisfiedLinkError 是 Error 不是 Exception，
         //   原版 catch (Exception) 拦不住，GPU 探测失败会直接炸掉调用方
         try { init(); available = true; }
@@ -50,10 +59,14 @@ public class OpenCLBackend implements AutoCloseable {
     }
 
     /**
-     * 进程级共享后端。失败只探测一次，避免每个评估器都重新加载 OpenCL。
+     * 进程级共享后端。失败后冷却 30 秒再探测，避免每次推理重新加载 OpenCL。
      * 调用方必须 {@link #close()}（内部按引用计数释放）。
      */
     public static OpenCLBackend acquireShared() {
+        return acquireShared(OpenCLBackend::new, System.nanoTime());
+    }
+
+    static OpenCLBackend acquireShared(Supplier<OpenCLBackend> factory, long now) {
         synchronized (SHARED_LOCK) {
             if (shared != null) {
                 if (shared.isAvailable()) {
@@ -62,13 +75,15 @@ public class OpenCLBackend implements AutoCloseable {
                 }
                 shared = null;
             }
-            if (sharedFailure != null) return null;
-            OpenCLBackend created = new OpenCLBackend();
+            if (sharedFailure != null && now - sharedFailureAt < RETRY_DELAY_NANOS) return null;
+            OpenCLBackend created = factory.get();
             if (!created.isAvailable()) {
                 sharedFailure = "unavailable";
+                sharedFailureAt = now;
                 created.destroyNative();
                 return null;
             }
+            sharedFailure = null;
             created.retainCount.set(1);
             shared = created;
             return created;
@@ -310,8 +325,8 @@ public class OpenCLBackend implements AutoCloseable {
                                double[][] valW1, double[] valB1, double[] valW2) throws Exception {
         if (dSubW == null) {
             try {
-                dSubW = alloc(81L * 36 * 16 * 8);
-                dSubB = alloc(81L * 16 * 8);
+                dSubW = alloc(9L * 36 * 16 * 8);
+                dSubB = alloc(9L * 16 * 8);
                 dBlkW = alloc(9L * 144 * 64 * 8);
                 dBlkB = alloc(9L * 64 * 8);
                 dTopW = alloc(600L * 256 * 8);
@@ -329,15 +344,9 @@ public class OpenCLBackend implements AutoCloseable {
             uploadedOwnerId = 0;
         }
         if (version == uploadedVersion && ownerId == uploadedOwnerId) return;
-        double[][][] subWGpu = new double[81][][];
-        double[][] subBGpu = new double[81][];
-        for (int si = 0; si < 81; si++) {
-            int b = si / 9;
-            subWGpu[si] = subW[b];
-            subBGpu[si] = subB[b];
-        }
-        try (Memory m = flatten3D(subWGpu)) { writeG(dSubW, m); }
-        try (Memory m = flatten2D(subBGpu)) { writeG(dSubB, m); }
+        // Each block's nine subregions share one weight/bias set on the device.
+        try (Memory m = flatten3D(subW)) { writeG(dSubW, m); }
+        try (Memory m = flatten2D(subB)) { writeG(dSubB, m); }
         try (Memory m = flatten3D(blkW)) { writeG(dBlkW, m); }
         try (Memory m = flatten2D(blkB)) { writeG(dBlkB, m); }
         try (Memory m = flatten2D(topW)) { writeG(dTopW, m); }
@@ -600,8 +609,10 @@ public class OpenCLBackend implements AutoCloseable {
         synchronized (SHARED_LOCK) {
             if (this == shared) {
                 if (retainCount.decrementAndGet() > 0) return;
-                // 引用归零后仍保留上下文，下一次 acquireShared 直接复用已编译内核。
-                // 进程退出由 JVM 回收 native 句柄；评估器在对局结束时仍会走到这里。
+                // The last evaluator releases device buffers and native handles.
+                // Finish teardown before another acquire creates a new context.
+                shared = null;
+                destroyNative();
                 return;
             }
         }
@@ -636,8 +647,8 @@ public class OpenCLBackend implements AutoCloseable {
     private static final String KERNEL_SOURCE = "" +
     "__kernel void sub_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +
     "  int s=get_global_id(0), r=get_global_id(1), c=get_global_id(2);\n" +
-    "  if(s>=81||r>=B||c>=16)return; double sum=b[s*16+c];\n" +
-    "  for(int k=0;k<36;k++) sum+=in[(s*B+r)*36+k]*w[s*36*16+k*16+c];\n" +
+    "  if(s>=81||r>=B||c>=16)return; int block=s/9; double sum=b[block*16+c];\n" +
+    "  for(int k=0;k<36;k++) sum+=in[(s*B+r)*36+k]*w[block*36*16+k*16+c];\n" +
     "  out[(s*B+r)*16+c] = sum>0?sum:0;\n" +
     "}\n" +
     "__kernel void block_fwd(__global double* in, __global double* w, __global double* b, __global double* out, int B) {\n" +

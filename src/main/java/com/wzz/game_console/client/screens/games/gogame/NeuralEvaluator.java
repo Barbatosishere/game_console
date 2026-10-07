@@ -228,8 +228,9 @@ public class NeuralEvaluator {
 
     /** OpenCL GPU 加速后端（懒初始化，失败自动回退 CPU） */
     private volatile OpenCLBackend opencl;
-    /** OpenCL 初始化失败标记：置位后不再反复尝试加载（每次 forward 都调 ensureOpenCL） */
+    /** OpenCL 初始化失败后在冷却期内直接走 CPU。 */
     private volatile boolean openclDisabled;
+    private volatile long openclFailureAt;
     /** 把并发 MCTS 前向收成一批再上 GPU；单线程时不等待。 */
     private static final int INFER_MAX_BATCH = 64;
     private static final long INFER_GATHER_NS = 1_500_000L;
@@ -559,68 +560,78 @@ public class NeuralEvaluator {
      * 进程内共享一个上下文，避免每个评估器各自建队列。
      */
     private OpenCLBackend ensureOpenCL() {
-        if (openclDisabled || !isGpuEnabled()) return null; // GPU 可选/初始化失败：走 CPU
+        if (released || !isGpuEnabled() || isOpenCLCoolingDown()) return null;
         OpenCLBackend existing = opencl;
-        if (existing != null) {
-            if (existing.isAvailable()) return existing;
-            openclDisabled = true;
-            return null;
-        }
+        if (existing != null && existing.isAvailable()) return existing;
         synchronized (this) {
-            if (openclDisabled) return null;
+            if (released || isOpenCLCoolingDown()) return null;
             existing = opencl;
             if (existing != null) {
                 if (existing.isAvailable()) return existing;
-                openclDisabled = true;
-                return null;
+                opencl = null;
+                existing.close();
             }
             try {
                 OpenCLBackend created = OpenCLBackend.acquireShared();
                 if (created == null || !created.isAvailable()) {
-                    openclDisabled = true;
+                    if (created != null) created.close();
+                    recordOpenCLFailure();
                     return null;
                 }
                 opencl = created;
+                openclDisabled = false;
                 return created;
             } catch (Throwable t) {
                 // ★ 兜底：JNA 缺失/UnsatisfiedLinkError 等属于 Error，
                 //   不能让 GPU 探测失败把整条推理路径炸掉，降级 CPU
                 System.err.println("[NeuralEvaluator] OpenCL 初始化失败，回退 CPU: " + t);
                 opencl = null;
-                openclDisabled = true;
+                recordOpenCLFailure();
                 return null;
             }
         }
     }
 
-    /** 当前评估器是否已经拿到可用 GPU。探测失败后保持 false，不会反复加载。 */
+    private boolean isOpenCLCoolingDown() {
+        return openclDisabled && System.nanoTime() - openclFailureAt < OpenCLBackend.RETRY_DELAY_NANOS;
+    }
+
+    private void recordOpenCLFailure() {
+        openclFailureAt = System.nanoTime();
+        openclDisabled = true;
+    }
+
+    /** 当前评估器能否使用 GPU；失败后冷却重试，已释放的评估器不会重新获取资源。 */
     public boolean isGpuActive() {
-        OpenCLBackend existing = opencl;
-        if (existing != null && existing.isAvailable()) return true;
-        return ensureOpenCL() != null;
+        lifecycleLock.readLock().lock();
+        try {
+            return ensureOpenCL() != null;
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
     }
 
     public String gpuDeviceName() {
-        OpenCLBackend existing = opencl;
-        if (existing != null && existing.isAvailable()) return existing.getDeviceName();
-        OpenCLBackend backend = ensureOpenCL();
-        return backend == null ? "CPU" : backend.getDeviceName();
+        lifecycleLock.readLock().lock();
+        try {
+            OpenCLBackend backend = ensureOpenCL();
+            return backend == null ? "CPU" : backend.getDeviceName();
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
     }
 
     /**
      * 进程级 GPU 探测：打印一次设备名或失败原因，训练入口/探针共用。
-     * 探测本身不长期占用引用；成功时驱动已加载，后续 {@link OpenCLBackend#acquireShared()} 复用。
+     * 探测本身不长期占用引用；最后一个使用者关闭时释放上下文。
      */
     public static GpuStatus detectGpu() {
         if (!isGpuEnabled()) return GpuStatus.disabled();
         try {
-            OpenCLBackend existing = OpenCLBackend.peekShared();
-            if (existing != null) return GpuStatus.available(existing.getDeviceName());
-            OpenCLBackend backend = OpenCLBackend.acquireShared();
-            if (backend != null && backend.isAvailable()) {
-                GpuStatus status = GpuStatus.available(backend.getDeviceName());
-                backend.close();
-                return status;
+            try (OpenCLBackend backend = OpenCLBackend.acquireShared()) {
+                if (backend != null && backend.isAvailable()) {
+                    return GpuStatus.available(backend.getDeviceName());
+                }
             }
             String fail = OpenCLBackend.lastSharedFailure();
             return GpuStatus.unavailable(fail == null ? "OpenCL 不可用" : fail);
@@ -677,6 +688,9 @@ public class NeuralEvaluator {
             if (oc != null) {
                 ForwardResult gpu = coalesceGpuForward(oc, planes, auxFeatures);
                 if (gpu != null) return gpu;
+                if (Thread.currentThread().isInterrupted()) {
+                    return new ForwardResult(0.0, new double[POLICY_SIZE]);
+                }
             }
             modelLock.readLock().lock();
             try {
@@ -709,8 +723,14 @@ public class NeuralEvaluator {
                     // 排空线程可能刚好错过本请求，下一轮自己抢锁。
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    call.done.completeExceptionally(e);
-                    return null;
+                    // Removing a queued call proves no batch owns its input buffers.
+                    if (gpuInferQueue.remove(call)) {
+                        call.done.cancel(false);
+                        return null;
+                    }
+                    // An active batch may still read thread-local inputs. Wait for
+                    // it to finish before allowing the caller to reuse them.
+                    return joinGpuInfer(call);
                 } catch (java.util.concurrent.ExecutionException e) {
                     return null;
                 }
@@ -723,11 +743,8 @@ public class NeuralEvaluator {
 
     private static ForwardResult joinGpuInfer(GpuInferCall call) {
         try {
-            return call.done.get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (java.util.concurrent.ExecutionException | RuntimeException e) {
+            return call.done.join();
+        } catch (RuntimeException e) {
             return null;
         }
     }
