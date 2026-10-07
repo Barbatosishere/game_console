@@ -229,6 +229,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
 
     public void tick() {
         this.tickCount++;
+        if (!showExitConfirm) GameRenderHelper.tickParticles(this.particles);
         if (this.lanMode == 0 && !this.localTwoPlayer && !showExitConfirm) {
             if (this.state == State.PLAYING && !this.playerTurn && this.winner == 0) {
                 this.tickAiTurn();
@@ -589,7 +590,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
             }
         }
 
-        GameRenderHelper.tickAndRenderParticles(g, this.particles);
+        GameRenderHelper.renderParticles(g, this.particles);
         GameRenderHelper.drawTopHUD(g, this.width, this.height);
         String modeTag = this.localTwoPlayer ? " [本地双人]" : " [" + this.difficulty.label + "]";
         String turnText;

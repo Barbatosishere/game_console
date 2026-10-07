@@ -56,6 +56,7 @@ public class SnakeGameScreen extends Screen {
     @Override public void tick() {
         tickCount++;
         floats.removeIf(f -> { f.update(); return !f.isAlive(); });
+        if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
         if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
         tickCounter++;
         int speed = Math.max(1, 4 - score / 15);
@@ -196,7 +197,7 @@ public class SnakeGameScreen extends Screen {
         }
 
         // 粒子
-        GameRenderHelper.tickAndRenderParticles(g, particles);
+        GameRenderHelper.renderParticles(g, particles);
         // 浮动文字
         for (GameRenderHelper.FloatingText ft : floats) ft.render(g, font);
 
