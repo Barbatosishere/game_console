@@ -344,6 +344,10 @@ public class OpenCLBackend implements AutoCloseable {
             uploadedOwnerId = 0;
         }
         if (version == uploadedVersion && ownerId == uploadedOwnerId) return;
+        // Uploads overwrite buffers in place. A failed upload must invalidate the
+        // previous model too, even if the next request switches back to its key.
+        uploadedVersion = Long.MIN_VALUE;
+        uploadedOwnerId = 0;
         // Each block's nine subregions share one weight/bias set on the device.
         try (Memory m = flatten3D(subW)) { writeG(dSubW, m); }
         try (Memory m = flatten2D(subB)) { writeG(dSubB, m); }

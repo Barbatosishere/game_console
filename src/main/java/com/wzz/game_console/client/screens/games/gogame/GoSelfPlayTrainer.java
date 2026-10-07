@@ -114,7 +114,9 @@ public final class GoSelfPlayTrainer {
 
     /** Runs one generation, then trains the shared model on the collected positions. */
     public Result runGeneration(int games, int parallelism, int epochs, double learningRate, long seed) {
-        if (games < 0 || epochs < 0 || learningRate <= 0) throw new IllegalArgumentException("Invalid generation parameters");
+        if (games < 0 || epochs < 0 || !Double.isFinite(learningRate) || learningRate <= 0)
+            throw new IllegalArgumentException("Invalid generation parameters");
+        NeuralEvaluator.validateTrainingParameters(learningRate, config.l2, config.gradientClip, config.momentum);
         synchronized (generationLock) {
             return runGenerationLocked(games, parallelism, epochs, learningRate, seed);
         }

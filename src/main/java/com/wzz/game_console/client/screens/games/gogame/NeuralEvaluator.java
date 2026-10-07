@@ -207,6 +207,8 @@ public class NeuralEvaluator {
     private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private volatile boolean released;
     private volatile long modelVersion;
+    /** Guarded by modelLock; checkpoint versions can repeat, device revisions cannot. */
+    private long gpuWeightRevision;
     private final int gpuOwnerId = GPU_OWNER_SEQ.getAndIncrement();
 
     // 动量缓冲（惰性分配，首次 momentum > 0 训练时创建）
@@ -785,7 +787,7 @@ public class NeuralEvaluator {
             }
             double[][] policyOut = new double[b][POLICY_SIZE];
             double[] valueOut = new double[b];
-            boolean ok = oc.inferForward(planes, aux, b, gpuOwnerId, modelVersion,
+            boolean ok = oc.inferForward(planes, aux, b, gpuOwnerId, gpuWeightRevision,
                     subW1, subB1, blockW1, blockB1, topW1, topB1,
                     policyW, policyB, valueW1, valueB1, valueW2, valueB2,
                     policyOut, valueOut);
@@ -996,6 +998,16 @@ public class NeuralEvaluator {
     //  训练（反向传播）
     // ══════════════════════════════════════════════════════════════════════
 
+    static void validateTrainingParameters(double learningRate, double l2, double gradientClip, double momentum) {
+        if (!Double.isFinite(learningRate) || learningRate < 0
+                || !Double.isFinite(l2) || l2 < 0
+                || !Double.isFinite(gradientClip) || gradientClip <= 0
+                || !Double.isFinite(momentum) || momentum < 0 || momentum >= 1) {
+            throw new IllegalArgumentException("Training requires finite learningRate/l2 >= 0, "
+                    + "gradientClip > 0 and momentum in [0, 1)");
+        }
+    }
+
     /**
      * 训练一个 mini-batch（双头 loss：value MSE + policy cross-entropy）。
      *
@@ -1013,6 +1025,7 @@ public class NeuralEvaluator {
                                   double[] valueTargets, double[][] policyTargets,
                                   double learningRate, double l2, double gradientClip,
                                   double momentum) {
+        validateTrainingParameters(learningRate, l2, gradientClip, momentum);
         int batchSize = planes.length;
         if (batchSize == 0) return 0;
 
@@ -1064,7 +1077,7 @@ public class NeuralEvaluator {
                 bPolicyOut = new double[batchSize][POLICY_SIZE];
                 bValueOut = new double[batchSize];
                 // 整个 batch 的前向在 GPU 上完成（子块→字块→顶级→策略头→价值头）
-                boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize, gpuOwnerId, modelVersion,
+                boolean ranGpu = oc.batchPass0Forward(planes, auxFeatures, batchSize, gpuOwnerId, gpuWeightRevision,
                         subW1, subB1, blockW1, blockB1, topW1, topB1,
                         policyW, policyB, valueW1, valueB1, valueW2, valueB2,
                         bSubIn, bSubZ, bBlkIn, bBlkZ, bTopIn, bShared, bShZ,
@@ -1329,6 +1342,7 @@ public class NeuralEvaluator {
             }
 
             modelVersion++;
+            gpuWeightRevision++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
             return totalLoss / batchSize;
             } finally {
@@ -1813,6 +1827,7 @@ public class NeuralEvaluator {
             // 恢复持久化版本号（避免加载 checkpoint 后版本被重置为 1，
             // 导致模型版本与缓存键不一致）
             modelVersion = m.version;
+            gpuWeightRevision++;
             synchronized (evaluationCache) { evaluationCache.clear(); }
             // 加载新权重后重置动量缓冲，避免旧动量污染新权重
             resetVelocities();

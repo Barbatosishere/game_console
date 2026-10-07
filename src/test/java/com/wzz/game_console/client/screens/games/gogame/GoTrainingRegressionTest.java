@@ -20,6 +20,59 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 class GoTrainingRegressionTest {
     @Test
+    void nonFiniteLearningRateCannotCorruptModel() {
+        String previous = System.getProperty("go.gpu");
+        NeuralEvaluator evaluator = new NeuralEvaluator();
+        try {
+            System.setProperty("go.gpu", "false");
+            NeuralEvaluator.ModelWeights before = evaluator.snapshot();
+            boolean rejected = false;
+            try {
+                evaluator.trainMiniBatch(new double[1][4][19][19], new double[1][24],
+                        new double[]{1.0}, new double[1][362], Double.NaN, 1e-5, 5.0, 0.9);
+            } catch (IllegalArgumentException expected) {
+                rejected = true;
+            }
+            NeuralEvaluator.ModelWeights after = evaluator.snapshot();
+            assertEquals(before.valueB2, after.valueB2, "invalid learning rate must not poison model weights");
+            assertEquals(before.subW1[0][0][0], after.subW1[0][0][0]);
+            assertEquals(before.version, after.version);
+            assertTrue(rejected, "invalid learning rate must be reported to the caller");
+        } finally {
+            evaluator.release();
+            if (previous == null) System.clearProperty("go.gpu");
+            else System.setProperty("go.gpu", previous);
+        }
+    }
+
+    @Test
+    void invalidOptimizerParametersAndGenerationRatesAreRejected() {
+        NeuralEvaluator evaluator = new NeuralEvaluator();
+        try {
+            double[][] invalid = {
+                    {Double.POSITIVE_INFINITY, 0, 5, 0}, {-1, 0, 5, 0},
+                    {0.01, Double.NaN, 5, 0}, {0.01, Double.POSITIVE_INFINITY, 5, 0}, {0.01, -1, 5, 0},
+                    {0.01, 0, Double.NaN, 0}, {0.01, 0, Double.POSITIVE_INFINITY, 0}, {0.01, 0, 0, 0},
+                    {0.01, 0, 5, Double.NaN}, {0.01, 0, 5, Double.POSITIVE_INFINITY},
+                    {0.01, 0, 5, -0.1}, {0.01, 0, 5, 1.0}
+            };
+            for (double[] parameters : invalid) {
+                assertThrows(IllegalArgumentException.class, () -> evaluator.trainMiniBatch(
+                        new double[1][4][19][19], new double[1][24], new double[]{1.0}, new double[1][362],
+                        parameters[0], parameters[1], parameters[2], parameters[3]));
+            }
+            GoSelfPlayTrainer selfPlay = new GoSelfPlayTrainer(new GoSelfPlayTrainer.Config(), evaluator);
+            GoAdversarialTrainer adversarial = new GoAdversarialTrainer(new GoAdversarialTrainer.Config(), evaluator);
+            for (double rate : new double[]{Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0, -1}) {
+                assertThrows(IllegalArgumentException.class, () -> selfPlay.runGeneration(0, 1, 1, rate, 1));
+                assertThrows(IllegalArgumentException.class, () -> adversarial.runGeneration(0, 1, 1, rate, 1));
+            }
+        } finally {
+            evaluator.release();
+        }
+    }
+
+    @Test
     void fallbackCoordinatesAndPolicyMatchExecutedMove() {
         try (GoGame game = GoGame.rulesOnly()) {
             assertTrue(game.placeStone(0, 0));
