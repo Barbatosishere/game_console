@@ -295,7 +295,6 @@ public class MemoryCardScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        if (!minecraft.isWindowActive()) showExitConfirm = false;
         if (showExitConfirm) return; // 弹窗期间暂停翻回倒计时与计时器
         // 延迟倒计时结束后将两张未匹配的卡片翻回
         if (waitingForFlipBack && flipBackDelay > 0) {

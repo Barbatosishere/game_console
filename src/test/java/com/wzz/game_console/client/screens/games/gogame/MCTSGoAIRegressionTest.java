@@ -81,6 +81,47 @@ class MCTSGoAIRegressionTest {
     }
 
     @Test
+    void oneIterationSelfPlayDoesNotForceAnOpeningPass() {
+        MCTSGoAI searchAi = new MCTSGoAI(1_000, 1, 1);
+        try (GoGame game = GoGame.rulesOnly()) {
+            searchAi.setSelfPlayMode(true);
+            searchAi.setRandomSeed(42);
+            int[] move = searchAi.getBestMove(game);
+            assertNotNull(move, "A single expansion must not force a pass on an empty board");
+            assertTrue(game.placeStone(move[0], move[1]));
+            double[] policy = searchAi.getVisitDistribution();
+            assertEquals(1.0, policy[move[0] * 19 + move[1]]);
+            assertEquals(0.0, policy[361]);
+        } finally {
+            searchAi.shutdown();
+        }
+    }
+
+    @Test
+    void openingSearchPreservesPassThroughPolicyPruning() throws Exception {
+        NeuralEvaluator evaluator = new NeuralEvaluator() {
+            @Override
+            public ForwardResult forwardPosition(GoPlayer[][] board, GoPlayer player, int[] lastMove) {
+                double[] policy = new double[362];
+                policy[3 * 19 + 3] = 1.0;
+                return new ForwardResult(0.0, policy);
+            }
+        };
+        MCTSGoAI searchAi = new MCTSGoAI(1_000, 1, 1, evaluator, false);
+        try (GoGame game = GoGame.rulesOnly()) {
+            searchAi.setSelfPlayMode(true);
+            assertNotNull(searchAi.getBestMove(game));
+            @SuppressWarnings("unchecked")
+            List<int[]> remaining = (List<int[]>) getField(getField(searchAi, "currentRoot"), "untriedMoves");
+            assertTrue(remaining.stream().anyMatch(move -> move[0] < 0 && move[1] < 0),
+                    "PASS must remain available after the first board move is expanded");
+        } finally {
+            searchAi.shutdown();
+            evaluator.release();
+        }
+    }
+
+    @Test
     void zeroIterationSearchPassesAfterOpponentPass() {
         try (GoGame game = GoGame.rulesOnly()) {
             game.pass();

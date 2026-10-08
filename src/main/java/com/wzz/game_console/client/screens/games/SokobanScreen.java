@@ -12,8 +12,6 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.Random;
-
 @OnlyIn(Dist.CLIENT)
 public class SokobanScreen extends Screen {
     boolean showExitConfirm = false;
@@ -32,201 +30,25 @@ public class SokobanScreen extends Screen {
     }
 
     private void generateLevel(int levelNum) {
-        // ★ 修复零箱局：打乱收尾可能把全部 '+' 转 '.' 且 boxCount 递减到 0，
-        //   生成没有箱子的死局。收尾 boxCount<=0 时不再接受该结果，改为整关
-        //   重新生成（最多 10 次，仍失败保留最后一次）。首次尝试种子与原版
-        //   一致，正常关卡生成的地图不变。
-        for (int attempt = 0; attempt < 24; attempt++) {
-            if (generateLevelOnce(levelNum, attempt)) return;
-        }
-        forcePlayableLevel(Math.min(5 + (levelNum - 1) * 2 / 3, 14));
-    }
-
-    /** 24 次启发式生成都失败时，写入一箱一目标的可玩关，禁止零箱局落到玩家手里。 */
-    private void forcePlayableLevel(int gridSize) {
-        gridSize = Math.max(5, gridSize);
-        char[][] grid = new char[gridSize][gridSize];
-        for (int y = 0; y < gridSize; y++)
-            for (int x = 0; x < gridSize; x++)
-                grid[y][x] = (x == 0 || x == gridSize - 1 || y == 0 || y == gridSize - 1) ? '#' : ' ';
-        grid[1][2] = '$';
-        grid[1][3] = '.';
-        grid[2][1] = '@';
-        playerX = 1;
-        playerY = 2;
-        levelWidth = gridSize;
-        levelHeight = gridSize;
-        level = grid;
-    }
-
-    /** 生成一关并写入 level 字段；返回 false 表示本次生成出零箱局，需要重试 */
-    private boolean generateLevelOnce(int levelNum, int attempt) {
-        // 种子混入重开盐：按 R 重开时盐值变化，同一关可生成不同布局，帮助玩家逃离死局
-        Random rand = new Random(levelNum * 7919L + 271L + attempt * 104729L + reshuffleSalt);
-
-        // ★ Bug修复：原版关卡参数增速过缓（gridSize 每 3 关 +1，boxCount 每 4 关 +1），
-        //   玩家通关 5~6 关仍感觉不到明显难度提升。重新调参为：
-        //     gridSize   = 5 + (levelNum-1)/1.5   → 第 1 关 5x5，第 5 关 8x8，第 10 关 11x11
-        //     boxCount   = 1 + (levelNum-1)/2     → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
-        //     obstacleCount = 1 + (levelNum-1)/2  → 第 1 关 1 个，第 5 关 3 个，第 10 关 5 个
-        int gridSize = Math.min(5 + (levelNum - 1) * 2 / 3, 14);
-        int boxCount = Math.min(1 + (levelNum - 1) / 2, 6);
-        int obstacleCount = Math.min(1 + (levelNum - 1) / 2, 8);
-
-        // 创建网格
-        char[][] grid = new char[gridSize][gridSize];
-        levelWidth = gridSize;
-        levelHeight = gridSize;
-
-        // 填充边界墙
-        for (int y = 0; y < gridSize; y++)
-            for (int x = 0; x < gridSize; x++)
-                grid[y][x] = (x == 0 || x == gridSize - 1 || y == 0 || y == gridSize - 1) ? '#' : ' ';
-
-        // 放置内部障碍物
-        for (int i = 0; i < obstacleCount; i++) {
-            for (int o = 0; o < 30; o++) {
-                int wx = 1 + rand.nextInt(gridSize - 2);
-                int wy = 1 + rand.nextInt(gridSize - 2);
-                if (grid[wy][wx] == ' ') {
-                    grid[wy][wx] = '#';
-                    break;
-                }
-            }
-        }
-
-        // 初始状态：箱子全部在目标点上（已解决状态 '+'）
-        int placed = 0;
-        boolean[][] originalPlus = new boolean[gridSize][gridSize];
-        for (int p = 0; p < 500 && placed < boxCount; p++) {
-            int bx = 1 + rand.nextInt(gridSize - 2);
-            int by = 1 + rand.nextInt(gridSize - 2);
-            if (grid[by][bx] == ' ') {
-                grid[by][bx] = '+';
-                originalPlus[by][bx] = true;
-                placed++;
-            }
-        }
-        boxCount = Math.max(placed, 1);
-        if (placed == 0) {
-            grid[gridSize / 2][gridSize / 2] = '+';
-            boxCount = 1;
-        }
-
-        // 放置玩家：只落在空地，禁止覆盖箱子/目标（否则少箱且可能开局即通）
+        level = SokobanLevelGenerator.generate(levelNum, reshuffleSalt);
+        levelHeight = level.length;
+        levelWidth = level[0].length;
         playerX = -1;
         playerY = -1;
-        if (grid[1][1] == ' ') {
-            playerX = 1;
-            playerY = 1;
-        } else {
-            outer:
-            for (int y = 1; y < gridSize - 1; y++)
-                for (int x = 1; x < gridSize - 1; x++)
-                    if (grid[y][x] == ' ') { playerX = x; playerY = y; break outer; }
-        }
-        if (playerX < 0) {
-            level = grid;
-            return false;
-        }
-        grid[playerY][playerX] = '@';
-
-        // 打乱阶段：随机移动玩家来推动箱子离开目标点
-        // 启发式生成 + 死角校验重试，并不保证一定可解，极端情况仍可能需按 R 重开换一张布局
-        // 种子 = 关卡号 + attempt + 重开盐（盐在 loadLevel 时变化，按 R 可换布局）
-        int[] dx = {1, -1, 0, 0};
-        int[] dy = {0, 0, 1, -1};
-        int pushes = 0;
-        // ★ Bug修复：原版用固定 300 步上限，大关卡（gridSize=14 + boxCount=6）下
-        //   玩家推不完所有箱子，最终被安全处理降为少箱关，玩家感觉"难度没有递增"。
-        //   改为 1500 + boxCount*500 步（最大 ~4500 步），覆盖所有当前关卡配置；
-        //   同时若仍推不完，则按"实际推动的箱子数"动态下调 boxCount 目标点，
-        //   保持"已生成箱子 == 已设置目标点"，不会出现开局即通也不会无解。
-        int maxSteps = 1500 + boxCount * 500;
-        for (int step = 0; step < maxSteps && pushes < boxCount; step++) {
-            int dir = rand.nextInt(4);
-            int nx = playerX + dx[dir];
-            int ny = playerY + dy[dir];
-            if (nx <= 0 || nx >= gridSize - 1 || ny <= 0 || ny >= gridSize - 1) continue;
-            if (grid[ny][nx] == '#') continue;
-
-            if (grid[ny][nx] == '+' || grid[ny][nx] == '$') {
-                boolean wasOnTarget = (grid[ny][nx] == '+');
-                int bx = nx + dx[dir];
-                int by = ny + dy[dir];
-                if (bx <= 0 || bx >= gridSize - 1 || by <= 0 || by >= gridSize - 1) continue;
-                if (grid[by][bx] == '#' || grid[by][bx] == '+' || grid[by][bx] == '$') continue;
-
-                // 死角：跳过这次推动，不要整关作废。小地图上几乎每次随机推都可能擦到墙角，
-                // 整关 return false 会把 24 次机会耗尽，落到零箱局。
-                if (grid[by][bx] != '.' && isDeadCorner(grid, gridSize, bx, by)) {
-                    continue;
-                }
-
-                char oldPos = grid[playerY][playerX];
-                char boxDest = grid[by][bx];
-                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
-                grid[ny][nx] = wasOnTarget ? '*' : '@';
-                grid[by][bx] = (boxDest == '.') ? '+' : '$';
-                playerX = nx;
-                playerY = ny;
-                if (wasOnTarget) pushes++;
-            } else if (grid[ny][nx] == '.') {
-                char oldPos = grid[playerY][playerX];
-                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
-                playerX = nx;
-                playerY = ny;
-                grid[playerY][playerX] = '*';
-            } else if (grid[ny][nx] == ' ') {
-                char oldPos = grid[playerY][playerX];
-                grid[playerY][playerX] = (oldPos == '*') ? '.' : ' ';
-                playerX = nx;
-                playerY = ny;
-                grid[playerY][playerX] = '@';
-            }
-        }
-
-        // 从未推动过的原始 '+'：箱子和目标一起撤掉。打乱过程中压上别人目标点的 '+' 保留。
-        for (int y = 1; y < gridSize - 1; y++) {
-            for (int x = 1; x < gridSize - 1; x++) {
-                if (originalPlus[y][x] && grid[y][x] == '+') {
-                    grid[y][x] = ' ';
+        for (int y = 0; y < levelHeight; y++) {
+            for (int x = 0; x < levelWidth; x++) {
+                if (level[y][x] == '@' || level[y][x] == '*') {
+                    playerX = x;
+                    playerY = y;
                 }
             }
         }
-
-        // 按盘面重数：箱子($/+) 必须等于目标(./ * /+)，且至少有一个未进目标的箱子，
-        // 否则开局即通或永远通不了。
-        int boxes = 0, targets = 0, offTarget = 0, players = 0;
-        for (int y = 0; y < gridSize; y++) {
-            for (int x = 0; x < gridSize; x++) {
-                switch (grid[y][x]) {
-                    case '$' -> { boxes++; offTarget++; }
-                    case '.' -> targets++;
-                    case '+' -> { boxes++; targets++; }
-                    case '*' -> { targets++; players++; }
-                    case '@' -> players++;
-                    default -> {}
-                }
-            }
-        }
-        level = grid;
-        return boxes > 0 && boxes == targets && offTarget > 0 && players == 1;
-    }
-
-    /** 死角判定：箱子四周存在一组正交相邻方向（上/下/左/右）均为墙或边界（调用前需确认箱子不在目标点上） */
-    private boolean isDeadCorner(char[][] grid, int gridSize, int bx, int by) {
-        boolean up = by - 1 < 0 || grid[by - 1][bx] == '#';
-        boolean down = by + 1 >= gridSize || grid[by + 1][bx] == '#';
-        boolean left = bx - 1 < 0 || grid[by][bx - 1] == '#';
-        boolean right = bx + 1 >= gridSize || grid[by][bx + 1] == '#';
-        return (up && left) || (up && right) || (down && left) || (down && right);
     }
 
     private void loadLevel(int levelNum) {
         if (levelNum < 1) levelNum = 1;
         currentLevel = levelNum;
-        // 更新重开盐：按 R 重开同一关时种子随之变化，可生成不同布局逃离死局
+        // 更新重开盐：按 R 重开同一关时生成不同布局。
         reshuffleSalt += System.nanoTime();
         generateLevel(currentLevel);
         // ★ Bug修复：generateLevel 会随关卡数增大 levelWidth/levelHeight，
