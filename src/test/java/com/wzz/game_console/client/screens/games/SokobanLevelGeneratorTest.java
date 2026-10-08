@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -57,6 +58,59 @@ class SokobanLevelGeneratorTest {
             layouts.add(Arrays.deepToString(first));
         }
         assertTrue(layouts.size() > 1);
+    }
+
+    @Test
+    void repeatedRandomChoicesStillPlaceEveryRequestedObstacle() throws Exception {
+        var generate = SokobanLevelGenerator.class.getDeclaredMethod("generateOnce",
+                int.class, int.class, int.class, int.class, Random.class);
+        generate.setAccessible(true);
+        for (int seed = 0; seed < 32; seed++) {
+            Random random = new Random(seed) {
+                private int draws;
+                @Override public int nextInt(int bound) {
+                    // Repeated coordinates exhaust the old 30-retry placement loop.
+                    return draws++ < 62 ? 0 : super.nextInt(bound);
+                }
+            };
+            char[][] grid = (char[][]) generate.invoke(null, 6, 1, 2, 3, random);
+            if (grid == null) continue; // Reverse scrambling may leave a solved board.
+            assertValid(grid);
+            assertEquals(2, interiorWalls(grid), "Repeated random choices must not omit obstacles");
+            assertTrue(hasPushSolution(grid));
+            return;
+        }
+        fail("The controlled random source did not produce an unfinished board");
+    }
+
+    @Test
+    void successfulScramblesPreserveRequestedObstacleCounts() throws Exception {
+        var generate = SokobanLevelGenerator.class.getDeclaredMethod("generateOnce",
+                int.class, int.class, int.class, int.class, Random.class);
+        generate.setAccessible(true);
+        int accepted = 0;
+        for (int level = 1; level <= 25; level++) {
+            int size = Math.min(5 + (level - 1) * 2 / 3, 14);
+            int boxes = Math.min(1 + (level - 1) / 2, 6);
+            int obstacles = Math.min(1 + (level - 1) / 2, 8);
+            for (int seed = 0; seed < 32; seed++) {
+                char[][] grid = (char[][]) generate.invoke(null, size, boxes, obstacles, level,
+                        new Random(level * 7919L + seed));
+                if (grid == null) continue;
+                accepted++;
+                assertValid(grid);
+                assertEquals(obstacles, interiorWalls(grid), "level=" + level + " seed=" + seed);
+            }
+        }
+        assertTrue(accepted > 500);
+    }
+
+    private static int interiorWalls(char[][] grid) {
+        int walls = 0;
+        for (int y = 1; y < grid.length - 1; y++)
+            for (int x = 1; x < grid[y].length - 1; x++)
+                if (grid[y][x] == '#') walls++;
+        return walls;
     }
 
     private static void assertValid(char[][] grid) {

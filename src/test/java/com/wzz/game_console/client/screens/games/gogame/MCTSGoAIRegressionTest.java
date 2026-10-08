@@ -122,6 +122,26 @@ class MCTSGoAIRegressionTest {
     }
 
     @Test
+    void firstOpeningExpansionPrefersBoardMoveWithPassAtAnyListPosition() throws Exception {
+        for (int passIndex = 0; passIndex < 3; passIndex++) {
+            List<int[]> moves = new ArrayList<>(List.of(new int[]{3, 3}, new int[]{15, 15}));
+            moves.add(passIndex, new int[]{-1, -1});
+            Object root = node(emptyBoard(), GoPlayer.BLACK, null, null, moves);
+            var expand = MCTSGoAI.class.getDeclaredMethod("expand", root.getClass());
+            expand.setAccessible(true);
+            Object child = expand.invoke(ai, root);
+            assertNotNull(child);
+            int[] move = (int[]) getField(child, "move");
+            assertTrue(move[0] >= 0 && move[1] >= 0, "PASS position=" + passIndex);
+            GoPlayer[][] board = (GoPlayer[][]) getField(child, "board");
+            assertEquals(GoPlayer.BLACK, board[move[0]][move[1]]);
+            @SuppressWarnings("unchecked")
+            List<int[]> remaining = (List<int[]>) getField(root, "untriedMoves");
+            assertTrue(remaining.stream().anyMatch(candidate -> candidate[0] < 0 && candidate[1] < 0));
+        }
+    }
+
+    @Test
     void zeroIterationSearchPassesAfterOpponentPass() {
         try (GoGame game = GoGame.rulesOnly()) {
             game.pass();

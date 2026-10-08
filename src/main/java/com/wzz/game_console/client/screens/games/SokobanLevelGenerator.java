@@ -31,12 +31,16 @@ final class SokobanLevelGenerator {
     private static char[][] generateOnce(int size, int boxCount, int obstacleCount,
                                          int levelNum, Random random) {
         char[][] grid = emptyGrid(size);
+        int innerSize = size - 2;
+        int remaining = innerSize * innerSize;
+        int[] emptyCells = new int[remaining];
+        for (int i = 0; i < remaining; i++) emptyCells[i] = i;
+        // 从剩余空位中抽取，重复的随机值也不会漏放障碍。
         for (int i = 0; i < obstacleCount; i++) {
-            for (int retry = 0; retry < 30; retry++) {
-                int x = 1 + random.nextInt(size - 2);
-                int y = 1 + random.nextInt(size - 2);
-                if (grid[y][x] == ' ') { grid[y][x] = '#'; break; }
-            }
+            int index = random.nextInt(remaining);
+            int cell = emptyCells[index];
+            emptyCells[index] = emptyCells[--remaining];
+            grid[1 + cell / innerSize][1 + cell % innerSize] = '#';
         }
 
         int placed = 0;

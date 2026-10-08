@@ -363,7 +363,6 @@ public class MazeGameScreen extends Screen {
                     int[] nextStep = ghostPath.get(1);
                     ghostX = nextStep[0];
                     ghostY = nextStep[1];
-                    ghostPath.remove(0); // 消耗已离开的节点，让缓存起点跟随鬼魂。
                 } else {
                     // 随机走，让玩家有机会脱身
                     List<int[]> moves = getAvailableMoves();
@@ -372,6 +371,11 @@ public class MazeGameScreen extends Screen {
                         ghostX = move[0];
                         ghostY = move[1];
                     }
+                }
+                // 随机游走也可能恰好沿路径前进，此时同样消耗已离开的节点。
+                int[] reachedStep = ghostPath.get(1);
+                if (reachedStep[0] == ghostX && reachedStep[1] == ghostY) {
+                    ghostPath.remove(0);
                 }
             } else {
                 simpleChase();
