@@ -184,10 +184,29 @@ public class GameSelectorScreen extends Screen {
 
         // ─── 导入消息（3秒后消失） ───
         if (importMessage != null && System.currentTimeMillis() - importMessageTime < 3000) {
-            int msgColor = importFailed ? 0xFFFF4444 : 0xFF44FF44;
-            g.drawCenteredString(font, importMessage, cx, height - 40, msgColor);
+            renderImportMessage(g, mouseX, mouseY);
         } else {
             importMessage = null;
+        }
+    }
+
+    private void renderImportMessage(GuiGraphics g, int mouseX, int mouseY) {
+        // Keep the status beside the import button and above the pagination row.
+        int x = 73, y = height - 40;
+        int available = width - x - 8;
+        if (available <= 0) return;
+        String message = importMessage;
+        boolean shortened = font.width(message) > available;
+        if (shortened) {
+            String suffix = "...";
+            if (available < font.width(suffix)) return;
+            message = font.plainSubstrByWidth(message, available - font.width(suffix)) + suffix;
+        }
+        int color = importFailed ? 0xFFFF4444 : 0xFF44FF44;
+        g.drawString(font, message, x, y, color);
+        if (shortened && mouseX >= x && mouseX < x + font.width(message)
+                && mouseY >= y && mouseY < y + font.lineHeight) {
+            g.renderTooltip(font, Component.literal(importMessage), mouseX, mouseY);
         }
     }
 

@@ -54,6 +54,8 @@ public abstract class ControlledGameScreen extends Screen {
             return true;
         }
         if (showExitConfirm || !Minecraft.getInstance().isWindowActive()) {
+            // Discard keys pressed during a pause and require release before a new action.
+            // This prevents a held movement key or OS repeat from firing when play resumes.
             input.press(key);
             input.clear();
             return true;

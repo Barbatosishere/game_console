@@ -1,5 +1,6 @@
 package com.wzz.game_console.util;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -20,6 +21,7 @@ import java.util.UUID;
 /** Personal records indexed by player, stable game ID and mode. No network authority is implied. */
 public final class GameScoreStore {
     private static final Logger LOGGER = LoggerFactory.getLogger("GameConsole");
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final long MAX_BYTES = 1024 * 1024;
     private final Path file;
     private final Object dataLock = new Object();
@@ -79,7 +81,7 @@ public final class GameScoreStore {
             root.add("players", jsonPlayers);
             Path temp = null;
             try {
-                byte[] content = new GsonBuilder().setPrettyPrinting().create().toJson(root).getBytes(StandardCharsets.UTF_8);
+                byte[] content = GSON.toJson(root).getBytes(StandardCharsets.UTF_8);
                 if (content.length > MAX_BYTES) throw new IOException("Record file exceeds size limit");
                 Path target = file.toAbsolutePath();
                 Files.createDirectories(target.getParent());
