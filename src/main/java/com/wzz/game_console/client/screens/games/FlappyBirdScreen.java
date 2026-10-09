@@ -1,22 +1,25 @@
 package com.wzz.game_console.client.screens.games;
 
-import com.wzz.game_console.client.screens.GameSelectorScreen;
+import com.wzz.game_console.client.GameScores;
+import com.wzz.game_console.client.GameText;
+import com.wzz.game_console.client.graphics.SpriteImage;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
-import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
 @OnlyIn(Dist.CLIENT)
-public class FlappyBirdScreen extends Screen {
-    boolean showExitConfirm = false;
+public class FlappyBirdScreen extends ControlledGameScreen {
     private static final int BIRD_SIZE = 16;
+    private static final SpriteImage BIRD_IMAGE = new SpriteImage(
+            ResourceLocation.fromNamespaceAndPath("game_console", "textures/games/flappy_bird.png"),
+            18, 16, 0, 0, 18, 16);
     private static final int PIPE_WIDTH = 40;
     private static final int PIPE_GAP = 100;
 
@@ -25,13 +28,18 @@ public class FlappyBirdScreen extends Screen {
     private float birdY, birdVel;
     private final List<int[]> pipes = new ArrayList<>(); // {x, gapY}
     private int score, tickCounter;
+    private int bestScore;
     private long tickCount;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final Random random = new Random();
 
-    public FlappyBirdScreen() { super(Component.literal("像素鸟")); }
+    public FlappyBirdScreen() {
+        super(Component.translatable("game.game_console.flappybird.name"));
+        bestScore = GameScores.best("flappybird");
+    }
 
     private void startGame() {
+        resetControls();
         birdY = height / 2f; birdVel = 0; score = 0; tickCounter = 0;
         pipes.clear(); particles.clear();
         state = State.PLAYING;
@@ -44,7 +52,7 @@ public class FlappyBirdScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        if (!canAdvance(state == State.PLAYING)) return;
         // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
         GameRenderHelper.tickParticles(particles);
         birdVel += 0.35f;
@@ -74,26 +82,29 @@ public class FlappyBirdScreen extends Screen {
             }
             // 穿越判定：本帧右边缘已越过小鸟，且上一帧(移动前3px)还在其右侧，
             // 恰好在移动那一tick得分一次(替代整数精确相等，避免窗口宽度不满足模3时永远无法得分)
-            if (p[0] + PIPE_WIDTH <= bx && p[0] + PIPE_WIDTH + 3 > bx) score++;
+            if (p[0] + PIPE_WIDTH <= bx && p[0] + PIPE_WIDTH + 3 > bx) {
+                score++;
+                if (score > bestScore) {
+                    bestScore = score;
+                    GameScores.record("flappybird", score);
+                }
+            }
         }
 
         if (birdY > height || birdY < 0) state = State.GAME_OVER;
     }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
-        if (key == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
-            if (state != State.MENU) { showExitConfirm = true; return true; }
-            Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
-        }
-        if (showExitConfirm) return true;
-        if (key == GLFW.GLFW_KEY_R && state != State.MENU) { startGame(); return true; }
-        if (state == State.PLAYING && (key == GLFW.GLFW_KEY_SPACE || key == GLFW.GLFW_KEY_W || key == GLFW.GLFW_KEY_UP)) flap();
+        if (handleExitKey(key, state != State.MENU)) return true;
+        GameInput.Action action = input.press(key);
+        if (action == null) return true;
+        if (action == GameInput.Action.RESTART && state != State.MENU) { startGame(); return true; }
+        if (state == State.PLAYING && (action == GameInput.Action.PRIMARY || action == GameInput.Action.UP)) flap();
         return true;
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (handleExitClick(mx, my)) return true;
         int cx = width/2, cy = height/2;
         if (state == State.MENU) {
             if (mx >= cx-60 && mx <= cx+60 && my >= cy+40 && my <= cy+62) { startGame(); return true; }
@@ -162,15 +173,13 @@ public class FlappyBirdScreen extends Screen {
         GameRenderHelper.drawTopHUD(g, width, height);
         // ★ 修复：🐦 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
         g.drawString(font, "分数: " + score, 8, 7, 0xFFDD44);
+        String best = GameText.text("gui.game_console.best", bestScore);
+        g.drawString(font, best, width - font.width(best) - 8, 7, 0xFFDD44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "空格/点击 飞  ESC 菜单  R 重开");
     }
 
     private void drawBird(GuiGraphics g, int x, int y) {
-        g.fill(x, y, x + BIRD_SIZE, y + BIRD_SIZE, 0xFFFFDD22);
-        g.fill(x, y, x + BIRD_SIZE, y + 2, 0xFFFFEE66);
-        g.fill(x + BIRD_SIZE - 4, y + 4, x + BIRD_SIZE + 2, y + 8, 0xFFFF8800);
-        g.fill(x + 3, y + 4, x + 6, y + 7, 0xFFFFFFFF);
-        g.fill(x + 4, y + 5, x + 6, y + 7, 0xFF000000);
+        BIRD_IMAGE.draw(g, x, y);
     }
 
     private void renderGameOver(GuiGraphics g, int mx, int my) {

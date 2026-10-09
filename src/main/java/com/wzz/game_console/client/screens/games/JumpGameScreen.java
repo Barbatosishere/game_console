@@ -1,6 +1,7 @@
 package com.wzz.game_console.client.screens.games;
 
 import com.wzz.game_console.client.screens.GameSelectorScreen;
+import com.wzz.game_console.client.GameScores;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -169,6 +170,7 @@ public class JumpGameScreen extends Screen {
     // ══════════════════════════════════════════════
     public JumpGameScreen() {
         super(Component.literal("跳一跳"));
+        bestScore = GameScores.best("jump");
     }
 
     @Override
@@ -388,7 +390,10 @@ public class JumpGameScreen extends Screen {
                     "+"+pts, 0xFFFFFFFF));
             }
             score += pts;
-            if (score > bestScore) bestScore = score;
+            if (score > bestScore) {
+                bestScore = score;
+                GameScores.record("jump", score);
+            }
 
             updateDirToNext();
             // 点亮下一个平台

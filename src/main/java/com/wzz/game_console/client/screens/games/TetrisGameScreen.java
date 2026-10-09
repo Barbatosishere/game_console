@@ -1,21 +1,19 @@
 package com.wzz.game_console.client.screens.games;
 
-import com.wzz.game_console.client.screens.GameSelectorScreen;
+import com.wzz.game_console.client.GameScores;
+import com.wzz.game_console.client.GameText;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
-import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
 @OnlyIn(Dist.CLIENT)
-public class TetrisGameScreen extends Screen {
-    boolean showExitConfirm = false;
+public class TetrisGameScreen extends ControlledGameScreen {
     private static final int GW = 10, GH = 20;
     private static final int[][][] SHAPES = {
             {{1,1,1,1}}, {{1,1},{1,1}}, {{0,1,0},{1,1,1}},
@@ -30,14 +28,19 @@ public class TetrisGameScreen extends Screen {
     private int[][] board; private int[][] colorBoard;
     private int[][] current; private int currentColor;
     private int cx, cy, tickCounter, score, lines, level;
+    private int bestScore;
     private long tickCount;
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final Random random = new Random();
     private int cellSize, offsetX, offsetY;
 
-    public TetrisGameScreen() { super(Component.literal("俄罗斯方块")); }
+    public TetrisGameScreen() {
+        super(Component.translatable("game.game_console.tetris.name"));
+        bestScore = GameScores.best("tetris");
+    }
 
     private void startGame() {
+        resetControls();
         board = new int[GH][GW]; colorBoard = new int[GH][GW];
         score = 0; lines = 0; level = 1;
         tickCounter = 0;
@@ -92,6 +95,10 @@ public class TetrisGameScreen extends Screen {
                 if (mc != null && mc.player != null) mc.player.playSound(SoundEvents.EXPERIENCE_BOTTLE_THROW, 1.0F, 1.0F);
             }
         }
+        if (score > bestScore) {
+            bestScore = score;
+            GameScores.record("tetris", score);
+        }
     }
 
     private int[][] rotate(int[][] s) {
@@ -104,7 +111,10 @@ public class TetrisGameScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
+        if (!canAdvance(state == State.PLAYING)) return;
+        if (input.repeats(GameInput.Action.LEFT, 6, 2) && canPlace(current, cx - 1, cy)) cx--;
+        if (input.repeats(GameInput.Action.RIGHT, 6, 2) && canPlace(current, cx + 1, cy)) cx++;
+        if (input.repeats(GameInput.Action.DOWN, 6, 2) && canPlace(current, cx, cy + 1)) cy++;
         // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
         GameRenderHelper.tickParticles(particles);
         tickCounter++;
@@ -117,20 +127,18 @@ public class TetrisGameScreen extends Screen {
     }
 
     @Override public boolean keyPressed(int key, int scan, int mods) {
-        if (key == GLFW.GLFW_KEY_ESCAPE) {
-            if (showExitConfirm) { showExitConfirm = false; return true; }
-            if (state != State.MENU) { showExitConfirm = true; return true; }
-            Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true;
-        }
-        if (showExitConfirm) return true;
-        if (state != State.MENU && key == GLFW.GLFW_KEY_R) { startGame(); return true; }
+        if (handleExitKey(key, state != State.MENU)) return true;
+        GameInput.Action action = input.press(key);
+        if (action == null) return true;
+        if (state != State.MENU && action == GameInput.Action.RESTART) { startGame(); return true; }
         if (state != State.PLAYING) return true;
-        switch (key) {
-            case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (canPlace(current, cx-1, cy)) cx--; }
-            case GLFW.GLFW_KEY_D, GLFW.GLFW_KEY_RIGHT -> { if (canPlace(current, cx+1, cy)) cx++; }
-            case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN  -> { if (canPlace(current, cx, cy+1)) cy++; }
-            case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { int[][] r = rotate(current); if (canPlace(r, cx, cy)) current = r; }
-            case GLFW.GLFW_KEY_SPACE -> { while (canPlace(current, cx, cy+1)) cy++; placePiece(); }
+        switch (action) {
+            case LEFT -> { if (canPlace(current, cx-1, cy)) cx--; }
+            case RIGHT -> { if (canPlace(current, cx+1, cy)) cx++; }
+            case DOWN -> { if (canPlace(current, cx, cy+1)) cy++; }
+            case UP -> { int[][] r = rotate(current); if (canPlace(r, cx, cy)) current = r; }
+            case PRIMARY -> { while (canPlace(current, cx, cy+1)) cy++; placePiece(); }
+            default -> {}
         }
         return true;
     }
@@ -207,6 +215,8 @@ public class TetrisGameScreen extends Screen {
         // HUD
         GameRenderHelper.drawTopHUD(g, width, height);
         g.drawString(font, "分数: " + score, 8, 7, 0x00FFFF);
+        String best = GameText.text("gui.game_console.best", bestScore);
+        g.drawString(font, best, width - font.width(best) - 8, 7, 0x00FFFF);
         g.drawCenteredString(font, "等级 " + level + "  消除 " + lines + " 行", width / 2, 7, 0xFFFF44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  R 重开  WASD 操作  空格 硬降");
     }
@@ -230,7 +240,7 @@ public class TetrisGameScreen extends Screen {
     }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
-        if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
+        if (handleExitClick(mx, my)) return true;
         int cx = width / 2, cy = height / 2;
         if (state == State.MENU && mx >= cx - 60 && mx <= cx + 60 && my >= cy + 48 && my <= cy + 70) { startGame(); return true; }
         if (state == State.GAME_OVER) {

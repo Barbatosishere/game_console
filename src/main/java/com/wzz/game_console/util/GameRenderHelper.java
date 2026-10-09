@@ -1,5 +1,6 @@
 package com.wzz.game_console.util;
 
+import com.wzz.game_console.client.GameText;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.neoforged.api.distmarker.Dist;
@@ -451,16 +452,16 @@ public class GameRenderHelper {
         g.fill(wx, wy + wh - 1, wx + ww, wy + wh, 0xFFFFAA00);
         g.fill(wx, wy, wx + 1, wy + wh, 0xFFFFAA00);
         g.fill(wx + ww - 1, wy, wx + ww, wy + wh, 0xFFFFAA00);
-        g.drawCenteredString(font, "确定要退出当前游戏吗？", cx, wy + 16, 0xFFFFDD44);
+        g.drawCenteredString(font, GameText.text("gui.game_console.exit_question"), cx, wy + 16, 0xFFFFDD44);
         boolean h1 = mx >= cx - 105 && mx <= cx - 9 && my >= cy + 10 && my <= cy + 34;
         g.fill(cx - 105, cy + 10, cx - 9, cy + 34, h1 ? 0xFF553322 : 0xFF331A10);
         g.fill(cx - 105, cy + 10, cx - 9, cy + 11, 0xFFFF4444);
-        g.drawCenteredString(font, "确认退出", cx - 57, cy + 18, h1 ? 0xFFFF6644 : 0xFFCC4444);
+        g.drawCenteredString(font, GameText.text("gui.game_console.exit_confirm"), cx - 57, cy + 18, h1 ? 0xFFFF6644 : 0xFFCC4444);
         boolean h2 = mx >= cx + 9 && mx <= cx + 105 && my >= cy + 10 && my <= cy + 34;
         g.fill(cx + 9, cy + 10, cx + 105, cy + 34, h2 ? 0xFF224422 : 0xFF112211);
         g.fill(cx + 9, cy + 10, cx + 105, cy + 11, 0xFF44CC44);
-        g.drawCenteredString(font, "继续游戏", cx + 57, cy + 18, h2 ? 0xFF66FF66 : 0xFF44AA44);
-        g.drawCenteredString(font, "再按 ESC 取消", cx, wy + wh - 14, 0xFF666666);
+        g.drawCenteredString(font, GameText.text("gui.game_console.exit_continue"), cx + 57, cy + 18, h2 ? 0xFF66FF66 : 0xFF44AA44);
+        g.drawCenteredString(font, GameText.text("gui.game_console.exit_hint"), cx, wy + wh - 14, 0xFF666666);
     }
 
     /**
