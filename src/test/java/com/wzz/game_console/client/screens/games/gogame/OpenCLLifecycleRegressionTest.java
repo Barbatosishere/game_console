@@ -150,6 +150,33 @@ class OpenCLLifecycleRegressionTest {
     }
 
     @Test
+    void partialNativeInitializationStillReleasesCreatedHandles() throws Exception {
+        for (int stage = 0; stage < 4; stage++) {
+            OpenCLBackend initialized = new OpenCLBackend();
+            OpenCLBackend partial = new OpenCLBackend(false);
+            try {
+                assumeTrue(initialized.isAvailable(), "OpenCL GPU unavailable; cleanup requires real handles");
+                backendField("cl").set(partial, backendField("cl").get(initialized));
+                String[] handles = {"context", "queue", "program"};
+                // Transfer ownership to model failure after each native allocation.
+                for (int i = 0; i < stage; i++) {
+                    backendField(handles[i]).set(partial, backendField(handles[i]).get(initialized));
+                    backendField(handles[i]).set(initialized, null);
+                }
+                initialized.close();
+                partial.close();
+                assertTrue(backendField("closed").getBoolean(partial));
+                assertFalse(partial.isAvailable());
+                assertNull(backendField("cl").get(partial));
+                for (String handle : handles) assertNull(backendField(handle).get(partial));
+            } finally {
+                initialized.close();
+                partial.close();
+            }
+        }
+    }
+
+    @Test
     void interruptedInFlightRequestKeepsInputsAliveAndReturnsCompletedResult() throws Exception {
         exerciseInterruptedRequest(true);
     }

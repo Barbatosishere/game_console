@@ -797,7 +797,22 @@ public class MCTSGoAI implements GoAI {
         int[] moveFull;
         synchronized (node) {
             if (node.terminal || node.untriedMoves.isEmpty()) return null;
-            moveFull = node.untriedMoves.remove(node.untriedMoves.size() - 1);
+            int index = node.untriedMoves.size() - 1;
+            // PASS is appended to the candidate list. Expanding it first makes
+            // a cold or one-iteration search stop immediately, regardless of
+            // the policy. Give a board move the first visit before endgame;
+            // subsequent visits can still evaluate and select PASS normally.
+            if ((node.children == null || node.children.isEmpty())
+                    && isPass(node.untriedMoves.get(index))
+                    && node.consecutivePasses == 0 && countStones(node.board) < ENDGAME_STONES) {
+                for (int i = index - 1; i >= 0; i--) {
+                    if (!isPass(node.untriedMoves.get(i))) {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+            moveFull = node.untriedMoves.remove(index);
         }
         int[] move = new int[]{moveFull[0], moveFull[1]};
 

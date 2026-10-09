@@ -40,6 +40,7 @@ public class TetrisGameScreen extends Screen {
     private void startGame() {
         board = new int[GH][GW]; colorBoard = new int[GH][GW];
         score = 0; lines = 0; level = 1;
+        tickCounter = 0;
         spawnPiece(); state = State.PLAYING; particles.clear();
     }
 

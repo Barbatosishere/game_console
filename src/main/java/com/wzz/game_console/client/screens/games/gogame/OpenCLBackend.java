@@ -631,6 +631,9 @@ public class OpenCLBackend implements AutoCloseable {
             if (closed) return;
             closed = true;
             available = false;
+            // No native handles exist when loading JNA itself failed. Avoid
+            // resolving Pointer arrays during cleanup in that environment.
+            if (cl == null) return;
             freeActs();
             freeWeights();
             for (Pointer k : kernels.values()) safe("clReleaseKernel", k);

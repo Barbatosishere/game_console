@@ -289,7 +289,6 @@ public class MemoryGameScreen extends Screen {
     @Override
     public void tick() {
         super.tick();
-        if (!minecraft.isWindowActive()) showExitConfirm = false;
         if (showExitConfirm) return;
         long currentTime = System.currentTimeMillis();
         if (highlightedCell != -1) {

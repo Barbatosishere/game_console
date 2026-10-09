@@ -41,6 +41,7 @@ public class SnakeGameScreen extends Screen {
         snake.add(new int[]{GRID_W / 2, GRID_H / 2});
         dx = 1; dy = 0; score = 0;
         lastDx = 1; lastDy = 0;
+        tickCounter = 0;
         spawnFood();
         state = State.PLAYING;
         particles.clear(); floats.clear();
@@ -106,10 +107,10 @@ public class SnakeGameScreen extends Screen {
         if (state == State.PLAYING) {
             switch (key) {
                 // 与 lastDx/lastDy（上一次实际移动方向）比较，同 tick 内连按两键也不会 180° 掉头
-                case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { if (lastDy != 1) { dx=0; dy=-1; } }
-                case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN  -> { if (lastDy != -1) { dx=0; dy=1; } }
-                case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (lastDx != -1) { dx=-1; dy=0; } }
-                case GLFW.GLFW_KEY_D, GLFW.GLFW_KEY_RIGHT -> { if (lastDx != 1) { dx=1; dy=0; } }
+                case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP    -> { if (SnakeDirection.canTurn(lastDx, lastDy, 0, -1)) { dx=0; dy=-1; } }
+                case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN  -> { if (SnakeDirection.canTurn(lastDx, lastDy, 0, 1)) { dx=0; dy=1; } }
+                case GLFW.GLFW_KEY_A, GLFW.GLFW_KEY_LEFT  -> { if (SnakeDirection.canTurn(lastDx, lastDy, -1, 0)) { dx=-1; dy=0; } }
+                case GLFW.GLFW_KEY_D, GLFW.GLFW_KEY_RIGHT -> { if (SnakeDirection.canTurn(lastDx, lastDy, 1, 0)) { dx=1; dy=0; } }
             }
         }
         return true;

@@ -6,6 +6,25 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class MiniGameRegressionTest {
     @Test
+    void snakeTurnsRejectOnlyTheOppositeOfTheLastMovement() {
+        int[][] directions = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int[] last : directions) {
+            for (int[] next : directions) {
+                boolean reverse = last[0] + next[0] == 0 && last[1] + next[1] == 0;
+                assertEquals(!reverse, SnakeDirection.canTurn(last[0], last[1], next[0], next[1]));
+            }
+        }
+    }
+
+    @Test
+    void snakeRapidTurnsKeepUsingTheLastActualMovement() {
+        assertTrue(SnakeDirection.canTurn(1, 0, 0, -1));
+        assertFalse(SnakeDirection.canTurn(1, 0, -1, 0));
+        assertTrue(SnakeDirection.canTurn(-1, 0, 0, 1));
+        assertFalse(SnakeDirection.canTurn(-1, 0, 1, 0));
+    }
+
+    @Test
     void mouseTunnelAppliesAllScheduledDifficultyIncreasesBeforeVictory() {
         MouseTunnelProgress.Snapshot progress = MouseTunnelProgress.calculate(10_000, 10_000);
 

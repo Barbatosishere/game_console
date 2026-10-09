@@ -342,7 +342,10 @@ public class MazeGameScreen extends Screen {
         if (distance <= ghostVisionRange) {
             // 玩家在视野范围内：追击模式
             long now = System.currentTimeMillis();
-            boolean shouldRecalculate = ghostPath.isEmpty() || (now - lastPathFindTime > PATH_FIND_INTERVAL);
+            // 游走后旧路径的起点不再是当前位置，必须重新寻路，避免跳回旧路径。
+            boolean shouldRecalculate = ghostPath == null || ghostPath.isEmpty()
+                    || ghostPath.get(0)[0] != ghostX || ghostPath.get(0)[1] != ghostY
+                    || now - lastPathFindTime > PATH_FIND_INTERVAL;
 
             if (shouldRecalculate) {
                 ghostPath = findPath(ghostX, ghostY, playerX, playerY);
@@ -368,6 +371,11 @@ public class MazeGameScreen extends Screen {
                         ghostX = move[0];
                         ghostY = move[1];
                     }
+                }
+                // 随机游走也可能恰好沿路径前进，此时同样消耗已离开的节点。
+                int[] reachedStep = ghostPath.get(1);
+                if (reachedStep[0] == ghostX && reachedStep[1] == ghostY) {
+                    ghostPath.remove(0);
                 }
             } else {
                 simpleChase();
