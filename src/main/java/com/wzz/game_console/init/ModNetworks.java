@@ -24,12 +24,8 @@ public class ModNetworks {
     private static volatile Method handleGameSelectorMethod;
     private static volatile Method handleMultiplayerClientMethod;
 
-    /** 兼容旧代码的 PACKET_HANDLER（委托到 PacketDistributor） */
-    public static final PacketHandlerCompat PACKET_HANDLER = new PacketHandlerCompat();
-
     public static void register(final RegisterPayloadHandlersEvent event) {
-        // ★ Bug修复：新增 INVITE_CANCELLED/PLAYER_QUIT 包类型后未升协议版本，
-        //   新旧客户端混连时可能因 codec 校验被服务端拒收，这里同步升版
+        // 变更报文格式或类型顺序时须同步升级协议版本。
         final PayloadRegistrar registrar = event.registrar(ModMain.MODID).versioned("1.3.0");
 
         // GameSelectorPacket: 服务端→客户端（打开游戏选择器）
@@ -91,20 +87,4 @@ public class ModNetworks {
         );
     }
 
-    /**
-     * 兼容旧代码中 ModNetworks.PACKET_HANDLER.sendToServer(...) 的调用方式
-     */
-    public static class PacketHandlerCompat {
-        public void sendToServer(Object packet) {
-            if (packet instanceof MultiplayerGamePacket mp) {
-                net.neoforged.neoforge.network.PacketDistributor.sendToServer(mp);
-            }
-        }
-
-        public void sendToPlayer(Object target, Object packet) {
-            if (target instanceof net.minecraft.server.level.ServerPlayer sp && packet instanceof MultiplayerGamePacket mp) {
-                net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(sp, mp);
-            }
-        }
-    }
 }

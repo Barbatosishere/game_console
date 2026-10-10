@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @OnlyIn(Dist.CLIENT)
 public class GameSelectorScreen extends Screen {
 
-    // ─── 游戏信息记录 ───
     private final List<GameCatalog.Entry> games = GameCatalog.all();
     private List<GameCatalog.Entry> filteredGames = List.of();
     private GameCatalog.Category filteredCategory;
@@ -53,13 +52,6 @@ public class GameSelectorScreen extends Screen {
 
     public GameSelectorScreen() {
         super(Component.translatable("gui.game_console.title"));
-    }
-
-    @Override
-    public void onClose() {
-        super.onClose();
-        // 本界面自身没有播放任何声音，不需要停止声音
-        // （原先的 getSoundManager().stop() 会误停唱片、环境音等所有声音，已移除）
     }
 
     private List<GameCatalog.Entry> getFilteredGames() {
@@ -93,11 +85,9 @@ public class GameSelectorScreen extends Screen {
     public void render(@NotNull GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         int cx = width / 2;
 
-        // ─── 背景 ───
         GameRenderHelper.fillGradientBackground(g, width, height, 0xFF0A0A18, 0xFF151530);
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x002244);
 
-        // ─── 标题区域 ───
         GameRenderHelper.drawShadowedCenteredText(g, font, GameText.text("gui.game_console.title"), cx, 12, 0xFFDD44, 2);
         g.drawCenteredString(font, "Game Console", cx, 32, 0x556688);
 
@@ -117,7 +107,6 @@ public class GameSelectorScreen extends Screen {
             g.drawString(font,label,button.x()+6,button.y()+3,lobby?0x44AA88:selected?0xFFFFFF:0x888888);
         }
 
-        // ─── 游戏列表 ───
         List<GameCatalog.Entry> filtered = getFilteredGames();
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
         if (currentPage >= totalPages) currentPage = totalPages - 1;
@@ -158,7 +147,6 @@ public class GameSelectorScreen extends Screen {
             g.drawString(font, catLabel, cardX + cardW - font.width(catLabel) - 5, cardY + (cardH - 8) / 2, 0x666666);
         }
 
-        // ─── 翻页控制 ───
         int navY = this.height - 24;
         if (currentPage > 0) {
             GameRenderHelper.drawSecondaryButton(g, font, GameText.text("gui.game_console.previous"),
@@ -171,10 +159,8 @@ public class GameSelectorScreen extends Screen {
                     cx + 30, navY, 60, 18, mouseX, mouseY);
         }
 
-        // ─── 底部信息 ───
         g.drawCenteredString(font, GameText.text("gui.game_console.game_count", filtered.size()), cx, height - 10, 0x444444);
 
-        // ─── 导入设置按钮 ───
         GameRenderHelper.drawButton(g, font, GameText.text("gui.game_console.import"), 5, height - 46, 60, 18, mouseX, mouseY,
                 0xFF222233, 0xFF333355, 0xFF666688);
 
@@ -182,7 +168,6 @@ public class GameSelectorScreen extends Screen {
             g.renderTooltip(font, Component.translatable(filtered.get(hoveredIndex).descriptionKey()), mouseX, mouseY);
         }
 
-        // ─── 导入消息（3秒后消失） ───
         if (importMessage != null && System.currentTimeMillis() - importMessageTime < 3000) {
             renderImportMessage(g, mouseX, mouseY);
         } else {
@@ -230,17 +215,13 @@ public class GameSelectorScreen extends Screen {
     /** 打开文件对话框导入外部游戏设置 JSON */
     private void importSettingsFromFile() {
         if (!importInProgress.compareAndSet(false, true)) return;
-        // ★ Bug修复：FileDialog.setVisible(true) 是模态阻塞调用，在 MC 主线程直接打开
-        //   会冻结整个游戏（停帧、无响应）。改为在后台 daemon 线程弹窗，
-        //   用户选完后 mc.execute 回主线程执行实际导入与提示（importMessage 由 render 读取）
+        // 模态文件对话框在后台打开；导入结果回到客户端线程处理。
         Thread picker = new Thread(() -> {
             Frame frame = null;
             try {
                 frame = new Frame();
                 frame.setAlwaysOnTop(true);
-                // ★ Bug修复：原版不设位置,Windows 多显示器/扩展屏(主屏 x<0 或 y<0)
-                //   时 FileDialog 会落在不可见区域,玩家看不见但模态阻塞,只能 Alt+F4。
-                //   setLocationRelativeTo(null) 强制居中到主屏可视区
+                // 居中显示，避免多显示器下对话框落在可视区域外。
                 frame.setLocationRelativeTo(null);
                 FileDialog dialog = new FileDialog(frame, GameText.text("gui.game_console.import_picker"), FileDialog.LOAD);
                 dialog.setFile("*.json");
@@ -277,7 +258,6 @@ public class GameSelectorScreen extends Screen {
                     importMessageTime = System.currentTimeMillis();
                 });
             } finally {
-                // ★ 修复 AWT Frame 泄漏：dispose 移入 finally，异常/用户取消路径也会释放
                 if (frame != null) frame.dispose();
                 importInProgress.set(false);
             }
@@ -302,7 +282,6 @@ public class GameSelectorScreen extends Screen {
             return true;
         }
 
-        // ─── 游戏卡片点击：按本次点击坐标判断，不能使用上一帧的悬停结果 ───
         List<GameCatalog.Entry> filtered = getFilteredGames();
         int cardW = Math.min(280, width - 40);
         int cardX = cx - cardW / 2;
@@ -318,7 +297,6 @@ public class GameSelectorScreen extends Screen {
             }
         }
 
-        // ─── 翻页按钮 ───
         int navY = this.height - 24;
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
         if (mx >= cx - 90 && mx <= cx - 30 && my >= navY && my <= navY + 18 && currentPage > 0) {
@@ -330,7 +308,6 @@ public class GameSelectorScreen extends Screen {
             return true;
         }
 
-        // ─── 导入设置按钮 ───
         if (mx >= 5 && mx <= 65 && my >= height - 46 && my <= height - 28) {
             importSettingsFromFile();
             return true;

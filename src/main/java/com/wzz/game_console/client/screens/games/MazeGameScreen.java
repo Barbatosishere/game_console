@@ -198,27 +198,17 @@ public class MazeGameScreen extends Screen {
             }
         }
 
-        // 绘制鬼魂路径(调试用)
-        /*
-        for (int[] pos : ghostPath) {
-            int pathX = startX + pos[0] * TILE_SIZE + TILE_SIZE/2 - 2;
-            int pathY = startY + pos[1] * TILE_SIZE + TILE_SIZE/2 - 2;
-            graphics.fill(pathX, pathY, pathX + 4, pathY + 4, 0x44FF0000);
-        }
-        */
-
         // 绘制玩家
         int playerPosX = startX + playerX * TILE_SIZE;
         int playerPosY = startY + playerY * TILE_SIZE;
         graphics.fill(playerPosX + 3, playerPosY + 3, playerPosX + TILE_SIZE - 3, playerPosY + TILE_SIZE - 3, 0xFFFF0000);
 
-        // 绘制鬼魂(带眼睛更恐怖)
+        // 绘制鬼魂
         int ghostPosX = startX + ghostX * TILE_SIZE;
         int ghostPosY = startY + ghostY * TILE_SIZE;
         graphics.fill(ghostPosX + 2, ghostPosY + 2, ghostPosX + TILE_SIZE - 2, ghostPosY + TILE_SIZE - 2, 0xFF0000FF);
         // 眼睛(看向玩家方向)
         int eyeOffsetX = playerX > ghostX ? 4 : -4;
-        int eyeOffsetY = playerY > ghostY ? 4 : -4;
         graphics.fill(ghostPosX + TILE_SIZE/2 + eyeOffsetX/2 - 2, ghostPosY + TILE_SIZE/2 - 2,
                 ghostPosX + TILE_SIZE/2 + eyeOffsetX/2 + 2, ghostPosY + TILE_SIZE/2 + 2, 0xFFFFFFFF);
         graphics.fill(ghostPosX + TILE_SIZE/2 - eyeOffsetX/2 - 2, ghostPosY + TILE_SIZE/2 - 2,
@@ -353,9 +343,7 @@ public class MazeGameScreen extends Screen {
             }
 
             if (ghostPath != null && ghostPath.size() > 1) {
-                // ★ Bug修复：原 30% 概率随机走概率过低，鬼魂几乎必追到玩家。
-                //   改为 50% 概率走最优路径 + 50% 随机游走，让玩家有"躲鬼"机会。
-                //   距离越近概率越偏向追击，但即便贴身仍有 1/4 的机会脱身。
+                // 混合追击和随机游走，让玩家有机会避开鬼魂。
                 double r = random.nextDouble();
                 double chaseProb = 0.5;
                 if (r < chaseProb) {
@@ -409,19 +397,7 @@ public class MazeGameScreen extends Screen {
     }
 
     private void simpleChase() {
-        // 简单追踪作为备用方案
-        List<int[]> possibleMoves = new ArrayList<>();
-        int[][] directions = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
-
-        for (int[] dir : directions) {
-            int nx = ghostX + dir[0];
-            int ny = ghostY + dir[1];
-
-            if (nx >= 0 && nx < MAZE_WIDTH && ny >= 0 && ny < MAZE_HEIGHT && maze[ny][nx] != '#') {
-                possibleMoves.add(new int[]{nx, ny});
-            }
-        }
-
+        List<int[]> possibleMoves = getAvailableMoves();
         if (!possibleMoves.isEmpty()) {
             // 选择最接近玩家的方向
             possibleMoves.sort(Comparator.comparingInt(move ->

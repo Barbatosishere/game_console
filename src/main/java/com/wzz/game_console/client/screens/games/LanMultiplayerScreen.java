@@ -1,6 +1,6 @@
 package com.wzz.game_console.client.screens.games;
 
-import com.wzz.game_console.init.ModNetworks;
+import net.neoforged.neoforge.network.PacketDistributor;
 import com.wzz.game_console.network.MultiplayerGamePacket;
 
 import java.util.UUID;
@@ -9,13 +9,7 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * 所有支持局域网联机的游戏 Screen 都实现此接口。
- * 设计原则：
- * ─ 轮制棋类（五子棋/围棋/井字/中象/国象）：只传「走了哪步」(GAME_MOVE)
- * ─ 实时类（冰火人/颜色追逐）：每 tick 传「完整/差量状态」(GAME_STATE_SYNC)
- * MultiplayerLobbyScreen 收到包后用 instanceof 路由，无需在路由层感知具体游戏。
- */
+/** 联机界面的报文入口：GAME_MOVE 传走法或输入，GAME_STATE_SYNC 传状态快照。 */
 public interface LanMultiplayerScreen {
 
     /** Per-screen transport state; WeakHashMap avoids retaining closed screens. */
@@ -23,7 +17,7 @@ public interface LanMultiplayerScreen {
             java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
     final class SessionSequencer {
-        private UUID sessionId = UUID.randomUUID();
+        private final UUID sessionId = UUID.randomUUID();
         private final AtomicLong nextSequence = new AtomicLong();
         private final Map<ReceiveKey, ReceivedSequence> received = new java.util.HashMap<>();
         private final Map<ReceiveKey, Set<UUID>> retiredSessions = new java.util.HashMap<>();
@@ -34,22 +28,9 @@ public interface LanMultiplayerScreen {
         public synchronized UUID sessionId() { return sessionId; }
         public synchronized long nextSequence() { return nextSequence.getAndIncrement(); }
 
-        /**
-         * Start a new locally-originated transport session. A restart must
-         * use sequence zero in a fresh session so later moves cannot overtake
-         * the restart and apply to the previous board.
-         */
-        public synchronized UUID rotateSession() {
-            sessionId = UUID.randomUUID();
-            nextSequence.set(0L);
-            return sessionId;
-        }
-
         public synchronized boolean accept(UUID sender, MultiplayerGamePacket.PacketType type,
                                             MultiplayerGamePacket.DataEnvelope envelope) {
-            // null 判定必须先于 legacy()（防御性；生产入口 acceptLanEnvelope 已先判空，
-            // 但本方法为公开 API，不得对 null 信封抛 NPE）。测试源码集无 Minecraft 类路径，
-            // PacketType 不可引用，该路径由压测 harness 覆盖。
+
             if (envelope == null) return false;
             if (envelope.legacy()) return true;
             if (sender == null || type == null || envelope.sessionId() == null) return false;
@@ -90,9 +71,7 @@ public interface LanMultiplayerScreen {
         }
 
         private void retireSession(ReceiveKey key, UUID sessionId) {
-            // LinkedHashSet 保证按插入序 FIFO 淘汰（HashSet 迭代序不定）。
-            // 被淘汰的极旧会话若被重放会再次被接受一次——这是有界内存的既定取舍：
-            // 重放防护窗口 = 最近 64 次会话轮换，正常对局每局至多轮换数次，窗口远超需要。
+            // 按插入序淘汰最旧会话；重放防护仅覆盖最近 64 次轮换。
             Set<UUID> retired = retiredSessions.computeIfAbsent(key, ignored -> new java.util.LinkedHashSet<>());
             while (retired.size() >= MAX_RETIRED_SESSIONS_PER_KEY) {
                 java.util.Iterator<UUID> eldest = retired.iterator();
@@ -140,12 +119,11 @@ public interface LanMultiplayerScreen {
                 ? envelope : null;
     }
 
-    /** Envelope local game data without changing existing sendMove/sendState callers. */
+    /** 为本地游戏数据添加会话和序号。 */
     default String envelopeLanData(String body) {
         return MultiplayerGamePacket.envelopeData(getLanSessionId(), nextLanSequence(), body);
     }
 
-    // ── 联机角色常量 ─────────────────────────────────────────────────
     int LAN_NONE   = 0;  // 单机
     int LAN_HOST   = 1;  // 主机（先手/发起方）
     int LAN_CLIENT = 2;  // 客机（后手/接受方）
@@ -156,48 +134,26 @@ public interface LanMultiplayerScreen {
     /** 获取游戏 id（如 "gomoku"），用于填 gameId 字段 */
     String getLanGameId();
 
-    /**
-     * 收到对方的 GAME_MOVE 包（轮制游戏：对方的走法字符串）。
-     * 实时游戏不必实现此方法（提供默认空实现即可）。
-     */
+    /** 接收走法或实时输入。 */
     default void onRemoteMove(String moveData) {}
 
-    /**
-     * 收到对方的 GAME_MOVE 包（携带服务端盖章的发送者 UUID）。
-     * 需要按「报文来源 → 座位/身份」做安全校验的游戏应重写此方法，
-     * 不要信任走法字符串中客户端自报的玩家索引。
-     * 默认实现转发到旧签名，保持其他游戏行为不变。
-     */
+    /** 接收服务端盖章的发送者 UUID；多方对局按此身份校验，不能信任报文自报的座位。 */
     default void onRemoteMove(java.util.UUID senderUuid, String moveData) {
         onRemoteMove(moveData);
     }
 
-    /**
-     * 收到对方的 GAME_STATE_SYNC 包（实时游戏：完整状态快照）。
-     * 轮制游戏不必实现此方法。
-     */
+    /** 接收状态快照。 */
     default void onRemoteState(String stateData) {}
 
-    /**
-     * 收到对方的 GAME_STATE_SYNC 包（携带服务端盖章的发送者 UUID）。
-     * 需要按「报文来源 → 身份」做安全校验的游戏应重写此方法，
-     * 不要信任状态字符串中客户端自报的玩家索引。
-     * 默认实现转发到旧签名，保持其他游戏行为不变。
-     */
+    /** 按服务端盖章的发送者身份接收快照。 */
     default void onRemoteState(UUID senderUuid, String state) {
         onRemoteState(state);
     }
 
-    /**
-     * 收到 GAME_OVER 包（可选，游戏结束通知）。
-     */
+    /** 接收游戏结束通知。 */
     default void onRemoteGameOver(String data) {}
 
-    /**
-     * 收到 GAME_OVER 包（携带服务端盖章的发送者 UUID）。
-     * 需要按来源校验胜负结算的游戏应重写此方法。
-     * 默认实现转发到旧签名，保持其他游戏行为不变。
-     */
+    /** 按服务端盖章的发送者身份接收结算。 */
     default void onRemoteGameOver(UUID senderUuid, String data) {
         onRemoteGameOver(data);
     }
@@ -215,35 +171,13 @@ public interface LanMultiplayerScreen {
         return peer != null && sender != null && peer.equals(sender);
     }
 
-    // ── 便捷发包工具方法（接口 default，子类直接调用）─────────────────
-
-    /** 向对方发送走法（轮制游戏用） */
-    default void sendMove(String moveData) {
-        UUID peer = getLanPeer();
-        if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.GAME_MOVE,
-                peer, getLanGameId(), moveData
-        ));
-    }
-
-    /** 向对方发送带 session/sequence envelope 的走法。 */
+    /** 发送带会话和序号的 GAME_MOVE（走法或实时输入）。 */
     default void sendMoveEnvelope(String moveData) {
         UUID peer = getLanPeer();
         if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
                 MultiplayerGamePacket.PacketType.GAME_MOVE,
                 peer, getLanGameId(), envelopeLanData(moveData)
-        ));
-    }
-
-    /** 向对方发送完整状态（实时游戏用，HOST 调用） */
-    default void sendState(String stateData) {
-        UUID peer = getLanPeer();
-        if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.GAME_STATE_SYNC,
-                peer, getLanGameId(), stateData
         ));
     }
 
@@ -251,39 +185,9 @@ public interface LanMultiplayerScreen {
     default void sendStateEnvelope(String stateData) {
         UUID peer = getLanPeer();
         if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
                 MultiplayerGamePacket.PacketType.GAME_STATE_SYNC,
                 peer, getLanGameId(), envelopeLanData(stateData)
-        ));
-    }
-
-    /** 向对方发送输入（实时游戏用，CLIENT 调用） */
-    default void sendInput(String inputData) {
-        UUID peer = getLanPeer();
-        if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.GAME_MOVE,
-                peer, getLanGameId(), inputData
-        ));
-    }
-
-    /** 向对方发送带 session/sequence envelope 的 GAME_OVER。 */
-    default void sendGameOverEnvelope(String data) {
-        UUID peer = getLanPeer();
-        if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.GAME_OVER,
-                peer, getLanGameId(), envelopeLanData(data)
-        ));
-    }
-
-    /** 向对方发送输入的 envelope 版本。 */
-    default void sendInputEnvelope(String inputData) {
-        UUID peer = getLanPeer();
-        if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
-                MultiplayerGamePacket.PacketType.GAME_MOVE,
-                peer, getLanGameId(), envelopeLanData(inputData)
         ));
     }
 
@@ -291,7 +195,7 @@ public interface LanMultiplayerScreen {
     default void sendLeaveGame() {
         UUID peer = getLanPeer();
         if (peer == null) return;
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
                 MultiplayerGamePacket.PacketType.LEAVE_GAME,
                 peer, getLanGameId(), ""
         ));

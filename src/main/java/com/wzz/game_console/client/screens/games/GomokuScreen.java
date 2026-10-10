@@ -134,9 +134,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         if (data.startsWith("RESTART")) {
             // 只有 HOST 可以发起重开，客户端不接受对端客户端的重开请求。
             if (this.lanMode != 2) return;
-            // ★ 修复 LAN 棋盘尺寸不同步死锁：HOST 报文携带棋盘尺寸 "RESTART:<boardSize>"，
-            //   接收端先同步 boardSize 再重开，否则两端各画各的棋盘、走法互相越界。
-            //   兼容无后缀旧报文 "RESTART"：按默认 15 处理；解析 try-catch 防坏包
+            // RESTART:<boardSize> 同步棋盘尺寸；旧 RESTART 报文按 15 路处理。
             try {
                 if (data.contains(":")) {
                     int size = Integer.parseInt(data.substring(data.indexOf(':') + 1).trim());
@@ -156,9 +154,6 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
                 if (p.length < 2) return; // 报文不足两个字段,丢弃
                 int x = Integer.parseInt(p[0]);
                 int y = Integer.parseInt(p[1]);
-                // ★ Bug修复：远程报文越界防御——x/y 可能为负、>= boardSize、
-                //   或 boardSize 切换后旧报文指向不存在的下标。原始 AIOOBE 被
-                //   外层 try 静默吞,玩家看到"对手不动"。这里加双重范围校验。
                 if (this.board == null || x < 0 || x >= this.boardSize
                         || y < 0 || y >= this.boardSize || this.board[x][y] != 0) {
                     return;
@@ -187,8 +182,6 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private int cycleBoardSize() {
-        // ★ 用户需求：9~19 全档可选。原版只有 9/13/15/19 四档,缺 11/17。
-        // 循环顺序：9 → 11 → 13 → 15 → 17 → 19 → 9 ...
         if (this.boardSize == 9)  return 11;
         if (this.boardSize == 11) return 13;
         if (this.boardSize == 13) return 15;
@@ -198,7 +191,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
     }
 
     private int[] getStarPoints() {
-        // 各档星位（按 1-based 算的奇数坐标；与原版 9/13/19 一致，新增 11/17 用近似中心点）
+        // 星位使用从 1 开始的棋盘坐标。
         if (this.boardSize == 9)  return new int[]{2, 6};
         if (this.boardSize == 11) return new int[]{2, 5, 8};
         if (this.boardSize == 13) return new int[]{3, 7, 11};
@@ -591,7 +584,7 @@ public class GomokuScreen extends Screen implements LanMultiplayerScreen {
         }
 
         GameRenderHelper.renderParticles(g, this.particles);
-        GameRenderHelper.drawTopHUD(g, this.width, this.height);
+        GameRenderHelper.drawTopHUD(g, this.width);
         String modeTag = this.localTwoPlayer ? " [本地双人]" : " [" + this.difficulty.label + "]";
         String turnText;
         if (this.localTwoPlayer) {

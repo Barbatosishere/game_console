@@ -53,7 +53,6 @@ public class FlappyBirdScreen extends ControlledGameScreen {
     @Override public void tick() {
         tickCount++;
         if (!canAdvance(state == State.PLAYING)) return;
-        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
         GameRenderHelper.tickParticles(particles);
         birdVel += 0.35f;
         birdY += birdVel;
@@ -170,8 +169,7 @@ public class FlappyBirdScreen extends ControlledGameScreen {
         GameRenderHelper.renderParticles(g, particles);
 
         // HUD
-        GameRenderHelper.drawTopHUD(g, width, height);
-        // ★ 修复：🐦 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "分数: " + score, 8, 7, 0xFFDD44);
         String best = GameText.text("gui.game_console.best", bestScore);
         g.drawString(font, best, width - font.width(best) - 8, 7, 0xFFDD44);

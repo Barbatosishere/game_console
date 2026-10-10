@@ -5,7 +5,6 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * 服务端 → 客户端：通知打开游戏选择界面
@@ -24,6 +23,4 @@ public record GameSelectorPacket() implements CustomPacketPayload {
         return TYPE;
     }
 
-    /** 服务端侧无操作，客户端处理器由 ClientPayloadHandler 注册 */
-    public static void handle(GameSelectorPacket packet, IPayloadContext context) {}
 }

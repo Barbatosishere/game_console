@@ -46,14 +46,13 @@ public class KataGoGoAI implements GoAI {
     private final int timeout;
     private volatile boolean connected = false;
     private final AtomicInteger commandId = new AtomicInteger(0);
-    /** ★ Bug修复：原版每个实例都 addShutdownHook,多次创建引擎会注册多个 hook,
-     *   进程退出时每个 hook 都尝试 process.destroy,前面的空转。改为类级共享 */
+    /** 共享关闭钩子，仅跟踪尚未关闭的引擎实例。 */
     private static final java.util.Set<KataGoGoAI> LIVE_INSTANCES =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
     private static volatile boolean SHUTDOWN_HOOK_REGISTERED = false;
 
     /** AI 执棋颜色，默认白棋 */
-    private GoPlayer aiColor = GoPlayer.WHITE;
+    private final GoPlayer aiColor = GoPlayer.WHITE;
 
     private final BoardSync boardSync = new BoardSync(this::sendCommand);
 
@@ -86,8 +85,6 @@ public class KataGoGoAI implements GoAI {
         if (!exeFile.exists()) {
             throw new FileNotFoundException("KataGo 可执行文件不存在: " + katagoExePath);
         }
-        // ★ Bug修复：Mac/Linux 文件存在但无执行位时,ProcessBuilder 报 "permission denied"
-        //   错误信息玩家看不懂。提前 canExecute 检查并提示 chmod +x
         if (!exeFile.canExecute()) {
             throw new IOException("KataGo 文件无执行权限: " + katagoExePath
                     + " (Mac/Linux 请运行: chmod +x " + exeFile.getName() + ")");
@@ -114,9 +111,7 @@ public class KataGoGoAI implements GoAI {
         LOGGER.info("[KataGo] 启动进程: {}", String.join(" ", cmd));
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        // ★ Bug修复：stderr 不并入 stdout——stdout 必须保持纯 GTP 流，
-        //   引擎日志混入后会被响应解析吞掉/错位；日志改走本进程 stderr。
-        //   stderr 也不能完全不消费——管道缓冲写满会挂死引擎，继承到本进程 stderr
+        // stderr 独立输出，保持 stdout 为纯 GTP 流并避免日志管道阻塞。
         pb.redirectError(ProcessBuilder.Redirect.INHERIT);
         this.process = pb.start();
 
@@ -128,8 +123,6 @@ public class KataGoGoAI implements GoAI {
         rt.setDaemon(true);
         rt.start();
 
-        // 注册关闭钩子
-        // ★ Bug修复：见 PikafishChessAI 同样处理
         LIVE_INSTANCES.add(this);
         if (!SHUTDOWN_HOOK_REGISTERED) {
             SHUTDOWN_HOOK_REGISTERED = true;
@@ -161,17 +154,6 @@ public class KataGoGoAI implements GoAI {
         sendCommand("komi " + GoGame.getConfiguredKomi());
         // 清空棋盘
         sendCommand("clear_board");
-    }
-
-    /**
-     * 设置 AI 的执棋颜色。
-     * <p>
-     * KataGoGoAI 默认执白棋，调用此方法可更改为执黑。
-     *
-     * @param color AI 执棋颜色
-     */
-    public void setAIColor(GoPlayer color) {
-        this.aiColor = (color == GoPlayer.BLACK) ? GoPlayer.BLACK : GoPlayer.WHITE;
     }
 
     /**
@@ -267,13 +249,7 @@ public class KataGoGoAI implements GoAI {
         }
     }
 
-    /**
-     * 发送 GTP 命令并返回该命令的响应正文。
-     * ★ Bug修复：原版 sendCommand 内部读一次响应、调用方 expectSuccess/readResponse 再读一次，
-     *   每条命令的响应被双重消费——第二条读取只能等到下一条命令的响应或超时，
-     *   genmove 必然超时失败，KataGo 引擎 100% 不可用。
-     * 现在发送+读取严格一一对应：成功返回正文，"?" 错误响应抛 IOException。
-     */
+    /** 每条 GTP 命令只读取一次响应；成功返回正文，错误响应抛 IOException。 */
     private String sendCommand(String cmd) throws IOException {
         int id = commandId.incrementAndGet();
         String fullCmd = id + " " + cmd;
@@ -400,7 +376,6 @@ public class KataGoGoAI implements GoAI {
 
     @Override
     public void shutdown() {
-        // ★ Bug修复：从共享 Set 移除自身,避免 hook 重复关闭已关闭实例
         LIVE_INSTANCES.remove(this);
         connected = false;
         running = false;

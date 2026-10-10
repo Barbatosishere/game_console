@@ -29,8 +29,6 @@ public final class ChessRules {
 
     private ChessRules() {}
 
-    // ── 走法生成 ──────────────────────────────────────────────
-
     /**
      * 生成某棋子的伪合法走法（未过滤"走后自将"），返回目标点列表。
      *
@@ -55,23 +53,6 @@ public final class ChessRules {
             case SOLDIER -> soldierMoves(b, col, row, red, m);
         }
         return m;
-    }
-
-    /** 生成红方或黑方的全部伪合法走法，返回 {@code {fc,fr,tc,tr}} */
-    public static List<int[]> allPseudoMoves(int[][] b, boolean red) {
-        List<int[]> out = new ArrayList<>(64);
-        for (int c = 0; c < COLS; c++) {
-            for (int r = 0; r < ROWS; r++) {
-                int p = b[c][r];
-                if (p == 0) continue;
-                if ((red && p > 0) || (!red && p < 0)) {
-                    for (int[] t : pseudoMoves(b, c, r)) {
-                        out.add(new int[]{c, r, t[0], t[1]});
-                    }
-                }
-            }
-        }
-        return out;
     }
 
     /**
@@ -202,11 +183,6 @@ public final class ChessRules {
         return red ? (r >= 7 && r <= 9) : (r >= 0 && r <= 2);
     }
 
-    /** 该走法是否为吃子走法 */
-    public static boolean isCapture(int[][] b, int tc, int tr) {
-        return b[tc][tr] != 0;
-    }
-
     /** 检测某方主帅是否处于被将军状态（含飞将） */
     public static boolean inCheckOnBoard(int[][] b, boolean isRed) {
         int gc = -1, gr = -1;
@@ -258,8 +234,6 @@ public final class ChessRules {
         return false;
     }
 
-    // ── FEN / UCI 坐标 ────────────────────────────────────────
-
     /** 棋子编号 1..7 对应 FEN 字母（红大写，黑小写） */
     private static final String PIECE_LETTER = "KABNRCP";
 
@@ -309,8 +283,6 @@ public final class ChessRules {
     public static String toUciMove(int fc, int fr, int tc, int tr) {
         return "" + (char) ('a' + fc) + (9 - fr) + (char) ('a' + tc) + (9 - tr);
     }
-
-    // ── 估值表（供内置引擎使用） ────────────────────────────────
 
     /** 棋子基础分（下标=棋子编号） */
     public static final int[] PIECE_VAL = {
@@ -409,8 +381,7 @@ public final class ChessRules {
     /** 棋子位置额外得分（从该方视角）。PST 表按 行=rank（横排）/ 列=col 设计，r 已做红方行号镜像 */
     public static int pstBonus(int abs, int col, int row, boolean red) {
         int r = red ? (9 - row) : row;
-        // ★ Bug修复：原先写成 PST_xxx[col][r]，把列当行用（转置索引），位置分整体错位；
-        //   表尾第 10 列是填充 0，转置后 rank9 一律得 0 分
+        // 位置表按行、列索引；黑方镜像行坐标。
         return switch (abs) {
             case HORSE -> PST_HORSE[r][col];
             case CHARIOT -> PST_CHARIOT[r][col];

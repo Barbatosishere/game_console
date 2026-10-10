@@ -16,19 +16,10 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
-/**
- * 2D Minecraft 游戏
- *
- * 修复：
- * 1. 物品栏恢复 renderItem() 3D渲染（之前误改为纯色方块）
- * 2. 即死Bug修复：spawnY = surfaceY（脚底站在地表上方），onGround初始化true
- * 3. 渲染对齐：playerY=脚底，身体向上绘制，与碰撞严格一致
- * 4. 物理重写：solidFeet用 floor(y+0.01)，避免整数边界误判
- */
+/** 2D Minecraft 游戏；playerY 表示脚底，身体向上绘制。 */
 public class Minecraft2DScreen extends Screen {
     boolean showExitConfirm = false;
 
-    // ─── 世界 ─────────────────────────────────────────────────
     private static final int   W   = 120;
     private static final int   H   = 64;
     private static final int   BS  = 20;   // 方块像素（放大以提升清晰度）
@@ -38,7 +29,6 @@ public class Minecraft2DScreen extends Screen {
     private Block[][] world;
     private int[][]   light;
 
-    // ─── 玩家 ─────────────────────────────────────────────────
     /** playerY = 脚底 y（向下为正）*/
     private float  playerX, playerY;
     private float  velX=0, velY=0;
@@ -55,12 +45,10 @@ public class Minecraft2DScreen extends Screen {
     private long   deadAt=0;
     private float  spawnX, spawnY;
 
-    // ─── 相机 ─────────────────────────────────────────────────
     private float camX=0, camY=0;
     /** 渲染/点击共用的整数像素偏移，消除取整不一致导致的偏移 */
     private int camPX=0, camPY=0;
 
-    // ─── 快捷栏 ──────────────────────────────────────────────
     /** 游戏逻辑用（放置/破坏） */
     private final Block[]     hotbarBlock = new Block[9];
     private final int[]       hotbarCount = new int[9];
@@ -69,16 +57,13 @@ public class Minecraft2DScreen extends Screen {
     private int    slot=0;
     private boolean showInv=false;
 
-    // ─── 挖矿 ────────────────────────────────────────────────
     private int    breakBX=-1, breakBY=-1;
     private float  breakProg=0;
     private boolean holdBreak=false;
 
-    // ─── 状态 ────────────────────────────────────────────────
     private boolean started=false;
     private long    tick=0, dayTick=0;
 
-    // ─── 纹理 & 颜色 ─────────────────────────────────────────
     private final Map<Block,ResourceLocation> TEX  = new HashMap<>();
     private static final Map<Block,Integer>   COL  = new HashMap<>();
     private static final Map<Block,Float>     HARD = new HashMap<>();
@@ -122,7 +107,6 @@ public class Minecraft2DScreen extends Screen {
         TEX.put(Blocks.GRAVEL,      ResourceUtil.createInstance("minecraft","textures/block/gravel.png"));
     }
 
-    // ══════════════ 世界生成 ══════════════
     private void initWorld(){
         world=new Block[W][H]; light=new int[W][H];
         Random r=new Random(9999L);
@@ -155,11 +139,11 @@ public class Minecraft2DScreen extends Screen {
         placeOre(Blocks.DIAMOND_ORE, r, 25,45,H-2,0.2f,1);
         caves(r);
 
-        // ★ 修复出生点：脚底 = 地表行（站在地表顶面）
+        // 脚底位于地表顶面。
         int spBX=W/2;
         spawnX=spBX+.5f; spawnY=sy[spBX]; // 脚底恰好在地表方块顶面
         playerX=spawnX; playerY=spawnY;
-        onGround=true; // ★ 初始在地面
+        onGround=true;
 
         for(int x=0;x<W;x++)calcLight(x);
     }
@@ -181,7 +165,6 @@ public class Minecraft2DScreen extends Screen {
         }
     }
 
-    // ══════════════ 快捷栏初始化 ══════════════
     private void initHotbar(){
         setSlot(0, Blocks.GRASS_BLOCK, Items.GRASS_BLOCK, 64);
         setSlot(1, Blocks.DIRT,        Items.DIRT,        64);
@@ -192,10 +175,9 @@ public class Minecraft2DScreen extends Screen {
         hotbarBlock[i]=b; hotbarItem[i]=new ItemStack(item,count); hotbarCount[i]=count;
     }
 
-    // ══════════════ TICK ══════════════
     @Override public void tick(){
         super.tick();
-        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态
+        // 失焦时可能收不到按键释放事件，须清理按键状态。
         if (!minecraft.isWindowActive()) { for (int i = 0; i < keys.length; i++) if (keys[i]) { Arrays.fill(keys, false); break; } }
         if(!started)return;
         if(showExitConfirm)return; // 弹窗期间冻结物理/挖矿/饥饿
@@ -205,7 +187,6 @@ public class Minecraft2DScreen extends Screen {
         physics(dt);breakTick(dt);hungerTick();regenTick();
     }
 
-    // ══════════════ 物理 ══════════════
     private void physics(float dt){
         // 重力
         if(!onGround){
@@ -250,7 +231,7 @@ public class Minecraft2DScreen extends Screen {
         playerY=Math.max(PH,Math.min(H-.01f,playerY));
         if(playerY>H-1)hurt(4f);
     }
-    /** ★ floor(y+0.01) 确保站在整数面上不误判 */
+    /** 容忍浮点误差，避免站在整数地表时误判。 */
     private boolean solidFeet(float x,float y){
         int row=(int)Math.floor(y+.01f);
         return solid((int)Math.floor(x-PW/2+.05f),row)||solid((int)Math.floor(x+PW/2-.05f),row);
@@ -269,14 +250,13 @@ public class Minecraft2DScreen extends Screen {
         Block b=world[x][y];return b!=null&&b!=Blocks.OAK_LEAVES;
     }
 
-    // ══════════════ 挖矿 ══════════════
     private void breakTick(float dt){
         if(!holdBreak||breakBX<0){breakProg=0;return;}
         Block b=world[breakBX][breakBY];if(b==null){holdBreak=false;breakProg=0;return;}
         float hard=HARD.getOrDefault(b,3f);if(hard==Float.MAX_VALUE)return;
         breakProg+=dt/hard;
         if(breakProg>=1f){
-            collect(b);world[breakBX][breakBY]=null;updateLight(breakBX,breakBY);
+            collect(b);world[breakBX][breakBY]=null;updateLight(breakBX);
             holdBreak=false;breakProg=0;hunger=Math.max(0f,hunger-.3f);
         }
     }
@@ -312,12 +292,11 @@ public class Minecraft2DScreen extends Screen {
         if(hotbarItem[i]!=null)hotbarItem[i].setCount(hotbarCount[i]);
     }
 
-    private void hungerTick(){if(tick-lastHungerTick>80&&(Math.abs(velX)>.1f||!onGround)){hunger=Math.max(0f,hunger-.5f);lastHungerTick=tick;}if(hunger<=0&&tick-lastHungerTick>80){hurt(1f);lastHungerTick=tick;}} // 修复：饥饿伤害改固定间隔并更新时间戳，避免饱食度归零后每 tick 扣血
+    private void hungerTick(){if(tick-lastHungerTick>80&&(Math.abs(velX)>.1f||!onGround)){hunger=Math.max(0f,hunger-.5f);lastHungerTick=tick;}if(hunger<=0&&tick-lastHungerTick>80){hurt(1f);lastHungerTick=tick;}} // 饥饿伤害每 80 tick 结算一次。
     private void regenTick(){if(hunger>18f&&hp<maxHp&&tick-lastRegenTick>10){hp=Math.min(maxHp,hp+.5f);lastRegenTick=tick;}}
     private void hurt(float d){if(dead)return;hp=Math.max(0f,hp-d);lastDmgTime=System.currentTimeMillis();if(hp<=0){dead=true;deadAt=System.currentTimeMillis();}}
     private void respawn(){dead=false;hp=maxHp;hunger=20f;playerX=spawnX;playerY=spawnY;velX=velY=0;onGround=true;wasFalling=false;}
 
-    // ══════════════ 相机 ══════════════
     private void updateCam(){
         float tx=playerX-(float)width/(2f*BS),ty=playerY-(float)height/(2f*BS);
         camX+=(tx-camX)*.12f;camY+=(ty-camY)*.12f;
@@ -326,7 +305,6 @@ public class Minecraft2DScreen extends Screen {
         camPX=Math.round(camX*BS);camPY=Math.round(camY*BS);
     }
 
-    // ══════════════ 渲染 ══════════════
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
@@ -360,8 +338,8 @@ public class Minecraft2DScreen extends Screen {
 
     private void renderMenu(GuiGraphics g,int mx,int my){
         g.fill(0,0,width,height,0xFF1A3A1A);
-        drawSh(g,"2D Minecraft",width/2,height/2-60,0x55FF55,2);
-        drawSh(g,"探索 · 挖矿 · 建造",width/2,height/2-42,0xAAAAAA,1);
+        drawSh(g,"2D Minecraft",width/2,height/2-60,0x55FF55);
+        drawSh(g,"探索 · 挖矿 · 建造",width/2,height/2-42,0xAAAAAA);
         String[]tips={"WASD/方向键 移动   空格 跳跃","左键按住 挖矿   右键 放置方块","1-9/滚轮 切换快捷栏   Ctrl 疾跑","E 背包   ESC 退出"};
         for(int i=0;i<tips.length;i++)g.drawCenteredString(font,tips[i],width/2,height/2-16+i*13,0x888888);
         int bw=160,bh=22,bx2=width/2-bw/2,by2=height/2+42;
@@ -370,7 +348,7 @@ public class Minecraft2DScreen extends Screen {
         g.fill(bx2,by2,bx2+bw,by2+1,hv?0xFF66AA66:0xFF336633);
         g.drawCenteredString(font,"开始游戏",width/2,by2+7,0xFFFFFF);
     }
-    private void drawSh(GuiGraphics g,String t,int x,int y,int col,int size){
+    private void drawSh(GuiGraphics g,String t,int x,int y,int col){
         g.drawString(font,t,x-font.width(t)/2+1,y+1,0x000000);
         g.drawString(font,t,x-font.width(t)/2,y,col);
     }
@@ -393,9 +371,7 @@ public class Minecraft2DScreen extends Screen {
         if(b==Blocks.GRASS_BLOCK)g.fill(sx,sy,sx+BS,sy+4,0xFF66BB6A);
     }
 
-    /**
-     * ★ 修复渲染偏移：playerY=脚底，身体从 (screenY-BODY_PX) 到 screenY
-     */
+    /** playerY 表示脚底，身体向上绘制。 */
     private void renderPlayer(GuiGraphics g){
         int px=Math.round(playerX*BS)-camPX;
         int py=Math.round(playerY*BS)-camPY; // 脚底像素y
@@ -450,9 +426,6 @@ public class Minecraft2DScreen extends Screen {
         g.fill(cw-5,ch-1,cw+5,ch+1,0x88FFFFFF);g.fill(cw-1,ch-5,cw+1,ch+5,0x88FFFFFF);
     }
 
-    /**
-     * ★ 恢复 renderItem() 3D物品渲染
-     */
     private void renderHotbar(GuiGraphics g){
         int ss=20,tot=9*ss,stX=(width-tot)/2,hy=height-26;
         g.fill(stX-2,hy-2,stX+tot+2,hy+ss+2,0xAA000000);
@@ -460,7 +433,6 @@ public class Minecraft2DScreen extends Screen {
             int sx=stX+i*ss;boolean sel=i==slot;
             g.fill(sx,hy,sx+ss,hy+ss,sel?0xFF888888:0xFF444444);
             if(sel){g.fill(sx,hy,sx+ss,hy+1,0xFFFFFFFF);g.fill(sx,hy,sx+1,hy+ss,0xFFFFFFFF);g.fill(sx+ss-1,hy,sx+ss,hy+ss,0xFFFFFFFF);g.fill(sx,hy+ss-1,sx+ss,hy+ss,0xFFFFFFFF);}
-            // ★ renderItem 3D渲染
             if(hotbarItem[i]!=null&&hotbarCount[i]>0){
                 g.renderItem(hotbarItem[i],sx+2,hy+2);
                 // 数量标签
@@ -489,7 +461,6 @@ public class Minecraft2DScreen extends Screen {
         for(int i=0;i<9;i++){
             int sx=px+10+i*22,sy=py+22;
             g.fill(sx,sy,sx+21,sy+21,i==slot?0xFF666666:0xFF333333);
-            // ★ 背包里也用 renderItem
             if(hotbarItem[i]!=null&&hotbarCount[i]>0)g.renderItem(hotbarItem[i],sx+2,sy+2);
         }
         g.drawString(font,"石头→鹅卵石  草地→泥土  叶→5%木头",px+8,py+55,0xFFFFFF);
@@ -499,7 +470,7 @@ public class Minecraft2DScreen extends Screen {
     private void renderDeath(GuiGraphics g){
         g.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xAA660000);
-        drawSh(g,"你死了！",width/2,height/2-16,0xFF4444,2);
+        drawSh(g,"你死了！",width/2,height/2-16,0xFF4444);
         g.drawCenteredString(font,"3秒后自动重生...",width/2,height/2+6,0xAAAAAA);
     }
     private String bname(Block b){
@@ -520,28 +491,27 @@ public class Minecraft2DScreen extends Screen {
         showExitConfirm = false;
     }
 
-    // ══════════════ 输入 ══════════════
     @Override public boolean keyPressed(int k,int sc,int m){
         if(!started){
-            // 修复：菜单态不拦截 ESC 会走默认 onClose() 退回 Minecraft 世界，改为返回游戏选择界面
+
             if(k==GLFW.GLFW_KEY_ESCAPE){Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}
             return super.keyPressed(k,sc,m);
         }
-        // 修复：退出确认弹窗打开时，仅允许 ESC（再次按 ESC 关闭弹窗），拦截移动等所有游戏按键输入
+
         if(k==GLFW.GLFW_KEY_ESCAPE){
             if(showExitConfirm){resumeFromExitConfirm();}
             else{showExitConfirm=true;pauseStartTime=System.currentTimeMillis();Arrays.fill(keys,false);} // 清空已按住的按键，防止打开弹窗前按住的 WASD 继续移动
             return true;
         }
         if(showExitConfirm) return true;
-        if(k>=0&&k<keys.length)keys[k]=true; // 修复：GLFW_KEY_UNKNOWN(-1) 等非法 keyCode 会数组越界
+        if(k>=0&&k<keys.length)keys[k]=true;
         if(k>=GLFW.GLFW_KEY_1&&k<=GLFW.GLFW_KEY_9){slot=k-GLFW.GLFW_KEY_1;return true;}
         if(k==GLFW.GLFW_KEY_E){showInv=!showInv;return true;}
         return super.keyPressed(k,sc,m);
     }
-    @Override public boolean keyReleased(int k,int sc,int m){if(k>=0&&k<keys.length)keys[k]=false;return super.keyReleased(k,sc,m);} // 修复：同上，过滤非法 keyCode
+    @Override public boolean keyReleased(int k,int sc,int m){if(k>=0&&k<keys.length)keys[k]=false;return super.keyReleased(k,sc,m);}
     @Override public boolean mouseClicked(double mx,double my,int btn){
-        // 修复：退出后回游戏选择界面，与其他游戏保持一致（原 onClose() 会回到游戏世界）
+
         if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;Minecraft.getInstance().setScreen(new GameSelectorScreen());return true;}if(click==2){resumeFromExitConfirm();return true;}return true;}
         if(!started){
             int bw=160,bh=22,bx2=width/2-bw/2,by2=height/2+42;
@@ -557,15 +527,14 @@ public class Minecraft2DScreen extends Screen {
             hotbarCount[slot]--;
             if(hotbarItem[slot]!=null)hotbarItem[slot].setCount(hotbarCount[slot]);
             if(hotbarCount[slot]==0){hotbarBlock[slot]=null;hotbarItem[slot]=null;}
-            updateLight(bx2,by2);return true;
+            updateLight(bx2);return true;
         }
         return super.mouseClicked(mx,my,btn);
     }
     @Override public boolean mouseReleased(double mx,double my,int btn){if(btn==0){holdBreak=false;breakProg=0;}return super.mouseReleased(mx,my,btn);}
     @Override public boolean mouseScrolled(double mx, double my, double scrollDeltaX, double d){if(started&&!showExitConfirm){slot=(slot+(d>0?-1:1)+9)%9;return true;}return super.mouseScrolled(mx, my, scrollDeltaX, d);}
 
-    // ══════════════ 光照 ══════════════
-    private void updateLight(int cx,int cy){for(int x=Math.max(0,cx-12);x<=Math.min(W-1,cx+12);x++)calcLight(x);}
+    private void updateLight(int cx){for(int x=Math.max(0,cx-12);x<=Math.min(W-1,cx+12);x++)calcLight(x);}
     private void calcLight(int x){
         int s=-1;for(int y=0;y<H;y++)if(world[x][y]!=null){s=y;break;}
         for(int y=0;y<H;y++)light[x][y]=(world[x][y]==null)?(s==-1?15:Math.max(0,15-Math.max(0,s-y))):(s==-1||y<=s?0:Math.max(0,5-(y-s)));

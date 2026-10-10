@@ -115,7 +115,6 @@ public class TetrisGameScreen extends ControlledGameScreen {
         if (input.repeats(GameInput.Action.LEFT, 6, 2) && canPlace(current, cx - 1, cy)) cx--;
         if (input.repeats(GameInput.Action.RIGHT, 6, 2) && canPlace(current, cx + 1, cy)) cx++;
         if (input.repeats(GameInput.Action.DOWN, 6, 2) && canPlace(current, cx, cy + 1)) cy++;
-        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
         GameRenderHelper.tickParticles(particles);
         tickCounter++;
         int speed = Math.max(1, 10 - level);
@@ -213,7 +212,7 @@ public class TetrisGameScreen extends ControlledGameScreen {
         GameRenderHelper.renderParticles(g, particles);
 
         // HUD
-        GameRenderHelper.drawTopHUD(g, width, height);
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "分数: " + score, 8, 7, 0x00FFFF);
         String best = GameText.text("gui.game_console.best", bestScore);
         g.drawString(font, best, width - font.width(best) - 8, 7, 0x00FFFF);

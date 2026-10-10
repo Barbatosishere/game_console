@@ -10,7 +10,6 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
-import net.minecraft.util.Mth;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 import org.jetbrains.annotations.NotNull;
@@ -26,7 +25,6 @@ public class PuzzleGameScreen extends Screen {
     private int PIECE_SIZE = 80;
     private static final int PUZZLE_ROWS = 3;
     private static final int PUZZLE_COLS = 3;
-    private static final int EMPTY_PIECE = PUZZLE_ROWS * PUZZLE_COLS - 1; // 最后一块为空
     
     private PuzzlePiece[][] puzzleGrid;
     private int emptyX, emptyY;
@@ -42,9 +40,6 @@ public class PuzzleGameScreen extends Screen {
         int originalX, originalY; // 原始位置
         int currentX, currentY;   // 当前位置
         boolean isBlank;          // 是否是空白块
-        float animX, animY; // 动画位置（当前未使用，保留供未来平滑动画）
-        boolean isAnimating;
-        int animTargetX, animTargetY;
         
         PuzzlePiece(int originalX, int originalY) {
             this.originalX = originalX;
@@ -117,7 +112,7 @@ public class PuzzleGameScreen extends Screen {
     }
 
     private void shufflePuzzle() {
-        // 修复：先定位真实空格位置（原代码打乱时 emptyX/emptyY 还是默认值0,0，而真实空格在右下角）
+        // 从当前棋盘定位空格。
         for (int y = 0; y < PUZZLE_ROWS; y++) {
             for (int x = 0; x < PUZZLE_COLS; x++) {
                 if (puzzleGrid[y][x].isBlank) {
@@ -227,7 +222,7 @@ public class PuzzleGameScreen extends Screen {
     @Override
     public void init() {
         clearWidgets();
-        // ★ 修复偏移：构造时 width/height 为0，必须在 init 中重新计算拼图位置
+        // 构造时屏幕尺寸未就绪，布局在 init 中计算。
         startX = (this.width - (PUZZLE_COLS * PIECE_SIZE)) / 2;
         startY = (this.height - (PUZZLE_ROWS * PIECE_SIZE)) / 2;
         int centerX = this.width / 2;
@@ -264,12 +259,6 @@ public class PuzzleGameScreen extends Screen {
                 if (!piece.isBlank) {
                     int posX = startX + x * PIECE_SIZE;
                     int posY = startY + y * PIECE_SIZE;
-                    if (piece.isAnimating) {
-                        posX = (int)Mth.lerp(partialTick, startX + piece.currentX * PIECE_SIZE,
-                                startX + piece.animTargetX * PIECE_SIZE);
-                        posY = (int) Mth.lerp(partialTick, startY + piece.currentY * PIECE_SIZE,
-                                startY + piece.animTargetY * PIECE_SIZE);
-                    }
                     // 绘制拼图块背景
                     graphics.fill(posX, posY, posX + PIECE_SIZE, posY + PIECE_SIZE, 0xFF555555);
                     
@@ -357,7 +346,7 @@ public class PuzzleGameScreen extends Screen {
             emptyX = newEmptyX;
             emptyY = newEmptyY;
             moves++;
-            checkPuzzleComplete(); // ★★★ 关键：移动后判定胜利
+            checkPuzzleComplete();
             return true;
         }
 

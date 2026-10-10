@@ -50,10 +50,7 @@ public class MinesweeperScreen extends Screen {
 
     private void placeMinesAvoiding(int avoidX, int avoidY) {
         int placed = 0;
-        // ★ Bug修复：原版用 mineCount*100 步上限 + 3x3 避让,极端小棋盘+多雷时
-        //   attempts 会提前耗尽 → placed < mineCount → 雷数偏少。
-        //   改为更宽松的上限,再补一道兜底:如果仍放不够,则从 firstClick 周围 3x3
-        //   之外的全 board 随机补雷(不会破坏 firstClick 的安全性)。
+        // 首个点击周围保持安全；随机放置不足时从其余位置补足地雷。
         int maxAttempts = mineCount * 200;
         int attempts = 0;
         while (placed < mineCount && attempts++ < maxAttempts) {
@@ -105,7 +102,6 @@ public class MinesweeperScreen extends Screen {
 
     @Override public void tick() {
         tickCount++;
-        // ★ 修复：粒子物理移到 tick() 固定频率推进，弹窗暂停期间冻结（原来在 render 中 update）
         if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
     }
 
@@ -139,8 +135,7 @@ public class MinesweeperScreen extends Screen {
         }
         if (state != State.PLAYING) return super.mouseClicked(mx, my, btn);
 
-        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
-        //   会误命中第0行/列，先按负坐标守卫（与棋盘外点击同样交给 super 处理）
+        // 先排除负坐标，避免整数截断将棋盘外点击映射到第 0 格。
         if (mx < offsetX || my < offsetY) return super.mouseClicked(mx, my, btn);
         int gx = (int)((mx - offsetX) / cellSize);
         int gy = (int)((my - offsetY) / cellSize);
@@ -196,7 +191,6 @@ public class MinesweeperScreen extends Screen {
                 if (c.revealed) {
                     if (c.mine) {
                         g.fill(sx, sy, sx + cellSize, sy + cellSize, 0xFFCC2222);
-                        // ★ 修复：默认字体无 U+1F4A3(💣)，豆腐块概率高，改为自绘地雷：黑色圆身 + 四向短刺 + 灰色高光
                         int mcx = sx + cellSize / 2, mcy = sy + cellSize / 2;
                         int mr = Math.max(2, cellSize / 4);
                         GameRenderHelper.drawCircle(g, mcx, mcy, mr, 0xFF111111);
@@ -218,7 +212,6 @@ public class MinesweeperScreen extends Screen {
                     g.fill(sx + cellSize - 1, sy, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.7f));
                     g.fill(sx, sy + cellSize - 1, sx + cellSize, sy + cellSize, GameRenderHelper.darken(bg, 0.6f));
                     if (c.flagged) {
-                        // ★ 修复：默认字体无 U+1F6A9(🚩)，豆腐块概率高，改为自绘小旗：浅灰旗杆 + 红色三角旗
                         int fx = sx + cellSize / 2, fy = sy + cellSize / 2;
                         int fh = Math.max(3, cellSize / 4);
                         g.fill(fx - 1, fy - fh, fx + 1, fy + fh, 0xFFCCCCCC);
@@ -235,7 +228,7 @@ public class MinesweeperScreen extends Screen {
         }
 
         GameRenderHelper.renderParticles(g, particles);
-        GameRenderHelper.drawTopHUD(g, width, height);
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "地雷: " + mineCount, 8, 7, 0xFF4444);
         g.drawCenteredString(font, "标旗: " + flagCount + " / " + mineCount, width / 2, 7, 0xFFFF44);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  左键揭开  右键标旗");

@@ -24,7 +24,6 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
     private long lastAIMoveTime = 0;
     private int cellSize = 20, gridStartX, gridStartY;
 
-    // ── LAN 联机 ──────────────────────────────────────────────────
     private int lanMode = LAN_NONE;
     private java.util.UUID remotePeer = null;
     /** HOST=X先手，CLIENT=O后手；true=到我落子 */
@@ -47,7 +46,6 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         state = State.PLAYING; // 联机跳过菜单
     }
 
-    // ── LanMultiplayerScreen 接口实现 ──────────────────────────────
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId()        { return "tictactoe"; }
 
@@ -222,7 +220,7 @@ public class TicTacToeScreen extends Screen implements LanMultiplayerScreen {
         }
 
         // HUD
-        GameRenderHelper.drawTopHUD(g, width, height);
+        GameRenderHelper.drawTopHUD(g, width);
         String status;
         if (lanMode == LAN_NONE) {
             status = game.getGameStatus();

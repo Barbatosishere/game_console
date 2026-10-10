@@ -9,11 +9,6 @@ public class LandlordGame {
         DEALING, BIDDING, PLAYING, ENDED
     }
 
-    public enum PlayerType {
-        HUMAN, AI_EASY, AI_HARD
-    }
-
-    private List<Card> deck;
     private List<List<Card>> playerHands;
     private List<Card> landlordCards;
     private GameState gameState;
@@ -35,7 +30,7 @@ public class LandlordGame {
     }
 
     private void initializeGame() {
-        deck = createDeck();
+        List<Card> deck = createDeck();
         Collections.shuffle(deck);
         
         playerHands = new ArrayList<>();
@@ -135,22 +130,19 @@ public class LandlordGame {
                 }
             }
             
-            // 如果其他两人都过牌，清空桌面，下一轮由过牌的玩家开始
+            // 两家过牌后清空桌面，回到上一出牌者领出。
             if (passedCount >= 2 && lastPlayer != -1) {
                 lastPlayedCards.clear();
                 lastPlayer = -1;
                 Arrays.fill(passed, false);
             }
         } else {
-            // 检查出牌是否有效
-            if (!isValidPlay(cards)) {
+            CardPattern played = analyzePattern(cards);
+            if (!isValidPlay(played)) {
                 return false;
             }
 
-            // 移除卡牌——multiset 原子校验：先在副本上逐张扣减，全部成功才应用到真实手牌。
-            // 修复：原版"先 contains 全部、再逐个 remove"两段式，远端 PLAY 报文含重复牌时
-            // （deserializeCards 不去重），第二次 remove 静默落空 → 手牌少扣一张且
-            // lastPlayedCards 记牌数虚高，联机状态永久失真。
+            // 先在副本按张数扣牌，全部成功后才提交，避免重复牌导致部分扣除。
             List<Card> playerHand = playerHands.get(player);
             List<Card> remaining = new ArrayList<>(playerHand);
             for (Card card : cards) {
@@ -167,13 +159,10 @@ public class LandlordGame {
 
             // 出牌统计：春天/反春天判定与炸弹翻倍
             playCounts[player]++;
-            CardPattern played = analyzePattern(cards);
-            if (played != null) {
-                if (played.getType() == CardPattern.Type.JOKER_BOMB) {
-                    rocketPlayed = true;
-                } else if (played.getType() == CardPattern.Type.BOMB) {
-                    bombCount++;
-                }
+            if (played.getType() == CardPattern.Type.JOKER_BOMB) {
+                rocketPlayed = true;
+            } else if (played.getType() == CardPattern.Type.BOMB) {
+                bombCount++;
             }
 
             // 检查是否有人获胜
@@ -189,10 +178,7 @@ public class LandlordGame {
         return true;
     }
 
-    private boolean isValidPlay(List<Card> cards) {
-        if (cards.isEmpty()) return true; // 过牌总是有效的
-        
-        CardPattern pattern = analyzePattern(cards);
+    private boolean isValidPlay(CardPattern pattern) {
         if (pattern == null) return false; // 不是有效牌型
         
         // 如果是第一次出牌或者轮到自己主动出牌
@@ -458,9 +444,7 @@ public class LandlordGame {
         return analyzePattern(cards);
     }
 
-    // ═══════════════════════════════════════════════
     //  LAN 序列化工具（供 LandlordGameScreen 使用）
-    // ═══════════════════════════════════════════════
 
     /**
      * INIT/STATE 的兼容封装。只扩展 GAME_STATE_SYNC 的 data 字段，外层 packet codec
@@ -578,7 +562,7 @@ public class LandlordGame {
                 throw new IllegalArgumentException("invalid card list size");
             }
             validateStatePhase(parsedState, parsedCurrent, parsedLandlord, parsedLast,
-                    parsedCounts, parsedHand, parsedLastCards, parsedBottom);
+                    parsedCounts, parsedLastCards, parsedBottom);
             validateNoCardOverlap(parsedHand, parsedLastCards, parsedBottom, parsedLandlord == myPlayerIndex);
 
             List<List<Card>> newHands = new ArrayList<>();
@@ -611,7 +595,7 @@ public class LandlordGame {
 
     /** 校验状态字段之间的阶段约束，拒绝能让客户端进入不可能阶段的报文。 */
     private static void validateStatePhase(GameState state, int current, int landlord, int last,
-                                           int[] counts, List<Card> hand, List<Card> lastCards,
+                                           int[] counts, List<Card> lastCards,
                                            List<Card> bottom) {
         if (state == GameState.BIDDING) {
             if (landlord != -1 || last != -1 || !lastCards.isEmpty()

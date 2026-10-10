@@ -79,7 +79,7 @@ public class ChessSimulationMain {
                     redAI.setSearchTime(fTimeMs);  redAI.setMaxDepth(fDepth);
                     blackAI.setSearchTime(fTimeMs); blackAI.setMaxDepth(fDepth);
                     try {
-                        playOneGame(redAI, blackAI, fDepth, fTimeMs, r);
+                        playOneGame(redAI, blackAI, r);
                     } finally {
                         redAI.shutdown();
                         blackAI.shutdown();
@@ -99,10 +99,7 @@ public class ChessSimulationMain {
         }
 
         executor.shutdown();
-        // ★ Bug修复：原版 f.get() 无 try/catch,任一 worker 抛 ExecutionException
-        //   会终止整个仿真循环;且 shutdown 后无 awaitTermination,Pikafish 子进程
-        //   可能未完全关闭就退出 main。等待上限随局数缩放：单局可达数分钟，固定
-        //   120s 会把长仿真整体 shutdownNow 吞掉结果
+        // 等待上限随局数缩放；各 worker 的失败不应终止其他对局。
         try {
             long waitSeconds = Math.max(120, totalGames * 600L);
             if (!executor.awaitTermination(waitSeconds, TimeUnit.SECONDS)) {
@@ -171,7 +168,7 @@ public class ChessSimulationMain {
         return new BuiltInChessAI();
     }
 
-    static void playOneGame(ChessAI redAI, ChessAI blackAI, int depth, long timeMs, GameResult r) {
+    static void playOneGame(ChessAI redAI, ChessAI blackAI, GameResult r) {
         int[][] board = initialBoard();
         boolean redTurn = true;
         int moves = 0;

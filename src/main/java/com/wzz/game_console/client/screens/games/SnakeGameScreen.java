@@ -203,7 +203,7 @@ public class SnakeGameScreen extends Screen {
         for (GameRenderHelper.FloatingText ft : floats) ft.render(g, font);
 
         // HUD
-        GameRenderHelper.drawTopHUD(g, width, height);
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "🐍 分数: " + score, 8, 7, 0x44FF44);
         g.drawString(font, "长度: " + snake.size(), width / 2 - 30, 7, 0xCCCCCC);
         int sw = font.width("ESC 菜单  R 重开");

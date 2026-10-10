@@ -46,7 +46,6 @@ public class TowerDefenseScreen extends Screen {
     private boolean gameStarted = false;
     private boolean gameOver = false;
     /** 通关后区分胜利/失败,渲染时显示对应文案与按钮 */
-    private boolean victory = false;
     
     // 游戏对象列表
     private final List<Tower> towers = new ArrayList<>();
@@ -75,7 +74,6 @@ public class TowerDefenseScreen extends Screen {
     
     @Override
     public void init() {
-        // ★ Bug修复：同 WhackAMoleScreen,缩放 init() 重复叠加 6 个按钮
         this.clearWidgets();
         super.init();
 
@@ -462,15 +460,9 @@ public class TowerDefenseScreen extends Screen {
     private void checkGameOver() {
         if (health <= 0) {
             gameOver = true;
-            victory = false;
             gameStarted = false;
         } else if (wave > MAX_WAVE && enemies.isEmpty()) {
-            // ★ Bug修复：原版要求 enemiesSpawned >= (wave - 1) * 10,即第 11 波需
-            //   累计生成 100 个敌人才算胜利,但 MAX_WAVE=10 期间至多 ~110 个,
-            //   公式过于严苛,玩家很可能永远赢不了。简化为"波次 > MAX_WAVE 且
-            //   当前场上无敌人"即胜利,更符合玩家直觉。补一个 victory 字段。
             gameOver = true;
-            victory = true;
             gameStarted = false;
         }
     }
@@ -481,7 +473,6 @@ public class TowerDefenseScreen extends Screen {
         wave = 1;
         gameStarted = false;
         gameOver = false;
-        victory = false;
         enemiesSpawned = 0;
         enemySpawnTimer = 0;
         

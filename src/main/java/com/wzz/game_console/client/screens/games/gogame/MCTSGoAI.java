@@ -12,19 +12,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * 全面升级版 MCTS 围棋 AI。
- * <p>
- * 核心优化：
- * <ul>
- *   <li>并行多线程 MCTS 搜索（每线程独立树，模拟结束后合并）</li>
- *   <li>增强评估函数：死活判断、真假眼、劫材价值、区域控制</li>
- *   <li>杀棋检测：Ladder、Atari 识别</li>
- *   <li>扩展开局定式库</li>
- *   <li>终局判断与收官策略</li>
- *   <li>MCTS 树重用 + RAVE + 共享树并行搜索</li>
- * </ul>
- */
+/** 使用神经网络评估的共享树并行 MCTS 围棋 AI。 */
 public class MCTSGoAI implements GoAI {
     private static final Logger LOGGER = LoggerFactory.getLogger(MCTSGoAI.class);
     /** 默认搜索时间（毫秒） */
@@ -38,9 +26,7 @@ public class MCTSGoAI implements GoAI {
     private static final int PARALLEL_THREADS = Math.max(1,
             Math.min(32, Runtime.getRuntime().availableProcessors() - 1));
 
-    // ══════════════════════════════════════════════════════════════════
     //  动态时间控制参数
-    // ══════════════════════════════════════════════════════════════════
     /** 开局阶段阈值（手数） */
     private static final int OPENING_THRESHOLD = 30;
     /** 终局阶段阈值（棋子数） */
@@ -53,9 +39,7 @@ public class MCTSGoAI implements GoAI {
     /** 早停门槛：最高胜率分支自身至少要被访问这么多次，其胜率才可信（防 2 连胜假信号截断搜索） */
     private static final int MIN_EARLY_STOP_BEST_VISITS = 32;
 
-    // ══════════════════════════════════════════════════════════════════
     //  Dirichlet 噪声参数（根节点探索增强，仅用于自对弈训练）
-    // ══════════════════════════════════════════════════════════════════
     /** Dirichlet 浓度参数；越大越分散，越小越集中 */
     private static final double DIRICHLET_ALPHA = 0.03;
     /** 噪声与均匀先验的混合比例：final = (1-eps) * prior + eps * noise */
@@ -99,9 +83,7 @@ public class MCTSGoAI implements GoAI {
     /** 使超时或关闭后的迟到 worker 无法继续修改已结束的搜索树。 */
     private final AtomicLong searchGeneration = new AtomicLong();
 
-    // ══════════════════════════════════════════════════════════════════
     //  构造函数
-    // ══════════════════════════════════════════════════════════════════
 
     public MCTSGoAI() {
         this(DEFAULT_SEARCH_TIME, DEFAULT_ITERATIONS);
@@ -214,9 +196,7 @@ public class MCTSGoAI implements GoAI {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  动态时间控制
-    // ══════════════════════════════════════════════════════════════════
 
     /**
      * 根据对局阶段计算搜索时间
@@ -300,9 +280,7 @@ public class MCTSGoAI implements GoAI {
         if (bestWinRate == Double.NEGATIVE_INFINITY) {
             return false;
         }
-        // ★ 最访问数门槛：胜率均值在极少访问下方差极大（2 连胜即 100%），
-        //   必胜/必败/置信区间判定都必须建立在最高胜率分支被充分搜索的基础上，
-        //   否则开局几手就可能被低访问高方差的假信号提前截断搜索
+        // 早停依赖充分访问的分支，避免低访问样本的胜率噪声。
         if (bestWinRateVisits < MIN_EARLY_STOP_BEST_VISITS) {
             return false;
         }
@@ -342,9 +320,7 @@ public class MCTSGoAI implements GoAI {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  MCTS 搜索
-    // ══════════════════════════════════════════════════════════════════
 
     @Override
     public int[] getBestMove(GoGame game) {
@@ -884,7 +860,7 @@ public class MCTSGoAI implements GoAI {
 
         List<int[]> childMoves = terminal
                 ? Collections.emptyList()
-                : getSearchMoves(childHash, childBoard, nextPlayer, childPasses);
+                : getSearchMoves(childHash, childBoard, nextPlayer);
         // childMoves is freshly allocated for this child and is not shared with
         // another node; transfer ownership instead of copying every reference.
         MCTSNode child = new MCTSNode(childBoard, nextPlayer, node, move, childMoves, false);
@@ -1211,7 +1187,7 @@ public class MCTSGoAI implements GoAI {
                                int[] cells, int selfCount) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
 
-        // ── 一次性计算所有昂贵原语（棋群遍历仅一次）──
+        // 一次性计算所有昂贵原语（棋群遍历仅一次）
         int captures = countCapturesPrim(board, x, y, player);
         int oppCaptures = countCapturesPrim(board, x, y, opponent);
         board[x][y] = player;
@@ -1238,7 +1214,7 @@ public class MCTSGoAI implements GoAI {
                 oppNbrs++;
         }
 
-        // ── 剪枝判定 ──
+        // 剪枝判定
         int pruneScore = libs * 3 + friendly * 5 + captures * 20 + posBonus;
         if (edgeDist == 0) pruneScore -= 5;
         if (edgeDist == 0 && friendly == 0) pruneScore -= 20;
@@ -1248,7 +1224,7 @@ public class MCTSGoAI implements GoAI {
         // 明显差的走法直接跳过（被剪掉的点不再付出排序分的开销）
         if (pruneScore < -10) return pruneScore;
 
-        // ── 完整排序分 ──
+        // 完整排序分
         int score = captures * 50 - oppCaptures * 40 + libs * 10 + posBonus + friendly * 15;
         if (groupLibs == 1) score -= 30; // ⟺ wouldBeInAtari
         return score;
@@ -1385,9 +1361,7 @@ public class MCTSGoAI implements GoAI {
         return bonus;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  MCTS 选择与模拟
-    // ══════════════════════════════════════════════════════════════════
 
     private static final double UCB_C = 1.414;
     /** FPU（First Play Urgency）：未访问子节点的默认价值，0 表示假设均势 */
@@ -1398,12 +1372,7 @@ public class MCTSGoAI implements GoAI {
             Math.max(2, PARALLEL_THREADS),
             r -> { Thread t = new Thread(r, "mcts-worker"); t.setDaemon(true); return t; });
 
-    /**
-     * 释放本 AI 持有的 native 资源（OpenCL 后端）。
-     * 修复：GoAI.shutdown 原为 default 空实现且本类未覆写，GoGame.close() 对
-     * MCTS 路径是 no-op，GPU 句柄在屏显重开时反复堆积。SHARED_POOL 是跨实例
-     * 共享的静态池，此处不关闭。
-     */
+    /** 释放本实例的 OpenCL 资源；跨实例共享的 SHARED_POOL 保持运行。 */
     @Override
     public void shutdown() {
         shutdown = true;
@@ -1468,9 +1437,7 @@ public class MCTSGoAI implements GoAI {
             } else {
                 winRate = -totalScore / visits;
             }
-            // PUCT（标准 AlphaGo Zero 形式）: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)
-            // ★ 修正：原版探索项用 √log(N)，随搜索增长过慢，先验高但少访问的
-            //   走法迟迟得不到试探；标准式随 √N 增长，prior 引导的探索更充分
+            // PUCT: Q + c_puct * P(s,a) * sqrt(N_parent) / (1 + N_child)。
             double ucb = winRate
                     + UCB_C * child.prior * sqrtParentVisits / (1.0 + visits);
 
@@ -1528,14 +1495,7 @@ public class MCTSGoAI implements GoAI {
     }
 
     private void backpropagate(MCTSNode node, double score) {
-        // score 是 node（叶子）行棋方视角的价值。
-        // 每往上一层，行棋方交替，价值取反 —— 这样每个节点存的是"该节点行棋方视角"。
-        // （价值头输出为当前行棋方视角，见 valueTarget = (s.player==BLACK ? margin : -margin)）
-        // ★ Bug修复：神经网络在极端输入下可能输出 NaN/Infinity（如全 0 plane、batch
-        //   越界等），一旦回传将沿 parent 链把所有 totalScore 污染为 NaN，导致
-        //   shouldTerminateEarly 与 winrate 计算全部失效 → 中盘胜率坍塌。
-        //   这里加一道 finite 守卫：若 score 非有限值则跳过累加，但 visits 仍 +1，
-        //   避免一个坏叶子把整棵树打分全部"毒化"。
+        // 价值采用节点行棋方视角，每向上一层取反；非有限值不累加，但仍计访问次数。
         if (!Double.isFinite(score)) {
             while (node != null) {
                 synchronized (node) { node.visits++; }
@@ -1632,9 +1592,7 @@ public class MCTSGoAI implements GoAI {
         MCTSNode[] children = snapshotChildren(root);
         if (children == null) return null;
 
-        // AlphaZero 标准终局选着：按访问数最大。
-        // 访问数对评估噪声更鲁棒：胜率均值在低访问分支方差大，
-        // 原版按胜率选会偶尔选进"2 连胜假信号"的冷门分支
+        // 按访问数选着，避免低访问分支的胜率噪声。
         MCTSNode best = null;
         double bestVisits = -1;
 
@@ -1662,9 +1620,7 @@ public class MCTSGoAI implements GoAI {
     private int[] sampleMCTSMove(MCTSNode root, int moveCount) {
         MCTSNode[] children = snapshotChildren(root);
         if (children == null) return null;
-        // 温度随探索强度衰减（早期高探索→高温，后期低探索→低温更贪心）
-        // ★ 修正：默认探索强度(1.0)下开局温度应为 1.0（与上方注释一致）。
-        //   原公式 1.5*x+0.1 在默认档得 1.6，开局采样过散，策略训练目标噪声过大
+        // 开局温度随探索强度调整。
         double earlyTemp = 0.9 * explorationScale + 0.1;
         double lateTemp = 0.3 * explorationScale + 0.05;
         double temp = moveCount < 30 ? earlyTemp : lateTemp;
@@ -1698,10 +1654,6 @@ public class MCTSGoAI implements GoAI {
         return lastCandidate < 0 ? getBestMCTSMove(root) : children[lastCandidate].move;
     }
 
-    private boolean movesEqual(int[] a, int[] b) {
-        return a != null && b != null && a[0] == b[0] && a[1] == b[1];
-    }
-
     private static boolean isPass(int[] move) {
         return move != null && move.length >= 2 && move[0] < 0 && move[1] < 0;
     }
@@ -1723,13 +1675,9 @@ public class MCTSGoAI implements GoAI {
         return player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  战术阅读器（深度优先 α-β 搜索）
-    // ══════════════════════════════════════════════════════════════════
 
-    // ══════════════════════════════════════════════════════════════════
     //  局部战术搜索（受限 α-β + 神经网络叶子评估）
-    // ══════════════════════════════════════════════════════════════════
 
     /** 局部搜索最大深度 */
     private static final int TACTICAL_DEPTH = 5;
@@ -1744,12 +1692,7 @@ public class MCTSGoAI implements GoAI {
      */
     private int[] tacticalReading(GoPlayer[][] board, GoPlayer player, long deadline) {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-        // ★ Bug修复（中盘算炸防御）：原版对每个 (x,y) 都重新取棋群并搜索，
-        //   中盘 200+ 步时濒死棋群密集，多个同色连体子被反复扫到，导致
-        //   O(361 × α-β深度5) 的组合爆炸 → 内存/时间耗尽。
-        //   1) 棋群去重：用线程局部锚点标记，已访问过的棋群整体跳过。
-        //   2) 候选点过载保护：collectLocalRegion 返回超过 30 个候选时直接跳过，
-        //      避免在松散棋形上启动深度 5 α-β。
+        // 每个棋群只搜索一次；候选点超过 30 个时跳过深度战术搜索。
         boolean[] visited = SCRATCH_TACTICAL_GROUPS.get();
         Arrays.fill(visited, false);
 
@@ -1956,23 +1899,6 @@ public class MCTSGoAI implements GoAI {
         return legalMovesInRegion(board, player, points, scoreCaptures);
     }
 
-    private List<int[]> legalMovesInRegionLegacy(GoPlayer[][] board, GoPlayer player, Set<String> region) {
-        List<int[]> moves = new ArrayList<>();
-        for (String s : region) {
-            try {
-                String[] p = s.split(",");
-                if (p.length != 2) continue;
-                int x = Integer.parseInt(p[0]), y = Integer.parseInt(p[1]);
-                if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE
-                        || board[x][y] != GoPlayer.NONE) continue;
-                if (isLegalMove(board, x, y, player)) moves.add(new int[]{x, y});
-            } catch (NumberFormatException ignored) {
-                // Preserve the defensive reflection/test entry point.
-            }
-        }
-        return moves;
-    }
-
     private List<int[]> legalMovesInRegion(GoPlayer[][] board, GoPlayer player,
                                           TacticalRegion region, boolean scoreCaptures) {
         List<int[]> moves = new ArrayList<>();
@@ -1988,9 +1914,7 @@ public class MCTSGoAI implements GoAI {
         return moves;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  杀棋检测
-    // ══════════════════════════════════════════════════════════════════
 
     /**
      * 查找杀棋走法（围棋特有战术检测）
@@ -2103,7 +2027,7 @@ public class MCTSGoAI implements GoAI {
                     Set<int[]> group = getGroup(board, x, y);
                     markTacticalGroup(visited, group);
                     if (countGroupLibertiesUpTo(board, group, 2) == 1) {
-                        int[] escape = getEscapeDirection(board, group, opponent);
+                        int[] escape = getEscapeDirection(board, group);
                         if (escape != null && isValid(validMoves, escape[0], escape[1])) return escape;
                     }
                 }
@@ -2115,7 +2039,7 @@ public class MCTSGoAI implements GoAI {
     /**
      * 找棋群最靠近边角的逃生点
      */
-    private int[] getEscapeDirection(GoPlayer[][] board, Set<int[]> group, GoPlayer player) {
+    private int[] getEscapeDirection(GoPlayer[][] board, Set<int[]> group) {
         boolean[] seen = SCRATCH_SEEN.get();
         int[] liberties = SCRATCH_CELLS_B.get();
         Arrays.fill(seen, false);
@@ -2192,7 +2116,7 @@ public class MCTSGoAI implements GoAI {
                     Set<int[]> group = getGroup(board, x, y);
                     markTacticalGroup(visited, group);
                     if (countGroupLibertiesUpTo(board, group, 2) == 1) {
-                        int[] escape = getEscapeDirection(board, group, player);
+                        int[] escape = getEscapeDirection(board, group);
                         if (escape != null && isValid(validMoves, escape[0], escape[1])) return escape;
                     }
                 }
@@ -2252,90 +2176,9 @@ public class MCTSGoAI implements GoAI {
         return false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  终局策略
-    // ══════════════════════════════════════════════════════════════════
 
-    /**
-     * 终局走法（收官）
-     */
-    private int[] getEndgameMove(GoPlayer[][] board, GoPlayer player, List<int[]> validMoves) {
-        int[] bestMove = null;
-        double bestScore = Double.NEGATIVE_INFINITY;
-
-        for (int[] move : validMoves) {
-            double score = evaluateEndgameMove(board, player, move);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMove = move;
-            }
-        }
-        return bestMove;
-    }
-
-    /**
-     * 终局走法评估
-     */
-    private double evaluateEndgameMove(GoPlayer[][] board, GoPlayer player, int[] move) {
-        double score = 0;
-        int x = move[0], y = move[1];
-
-        // 1. 围空评估
-        score += evaluateTerritoryGain(board, player, x, y) * 2.0;
-
-        // 2. 自身安全
-        board[x][y] = player;
-        Set<int[]> group = getGroup(board, x, y);
-        int libs = countGroupLiberties(board, group);
-        score += libs * 0.5;
-        board[x][y] = GoPlayer.NONE;
-
-        // 3. 阻止对手围空
-        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-        score -= evaluateTerritoryGain(board, opponent, x, y) * 1.5;
-
-        // 4. 位置价值
-        score += getPositionBonus(x, y) * 0.3;
-
-        return score;
-    }
-
-    /**
-     * 评估落子后围空增益
-     */
-    private double evaluateTerritoryGain(GoPlayer[][] board, GoPlayer player, int x, int y) {
-        double gain = 0;
-        int radius = 3;
-
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dy = -radius; dy <= radius; dy++) {
-                int nx = x + dx, ny = y + dy;
-                if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                    if (board[nx][ny] == GoPlayer.NONE) {
-                        // 检查这个空点被谁控制
-                        if (isNearPlayer(board, nx, ny, player)) {
-                            gain += 1.0 / (Math.abs(dx) + Math.abs(dy) + 1);
-                        }
-                    }
-                }
-            }
-        }
-        return gain;
-    }
-
-    private boolean isNearPlayer(GoPlayer[][] board, int x, int y, GoPlayer player) {
-        for (int[] dir : DIRS) {
-            int nx = x + dir[0], ny = y + dir[1];
-            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == player) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  开局定式库（覆盖前30手）
-    // ══════════════════════════════════════════════════════════════════
 
     /**
      * 围棋开局定式库。
@@ -2494,7 +2337,6 @@ public class MCTSGoAI implements GoAI {
         value += countFriendlyNeighbors(board, x, y, player) * 10;
 
         // 避免被对手包围
-        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         board[x][y] = player;
         Set<int[]> group = getGroup(board, x, y);
         int libs = countGroupLiberties(board, group);
@@ -2561,9 +2403,7 @@ public class MCTSGoAI implements GoAI {
         return false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  棋盘操作
-    // ══════════════════════════════════════════════════════════════════
 
     private boolean simulatePlaceStone(GoPlayer[][] board, int x, int y, GoPlayer player) {
         return simulatePlaceStone(board, x, y, player, null);
@@ -2645,16 +2485,7 @@ public class MCTSGoAI implements GoAI {
         return count;
     }
 
-    /**
-     * 获取所有合法走法（带知识剪枝 + super-ko 过滤）。
-     * 返回 3 元素数组 [x, y, value]，value 用于剪枝和排序。
-     * 去掉：角部/边部过于深入、无意义的尖、离对手太远的孤立点等。
-     * 并过滤会触发 super-ko（全局同型）的走法。
-     *
-     * <p>性能关键：合法性、提子与 super-ko 哈希在真实棋盘上一次模拟完成，
-     * 哈希用 Zobrist 增量更新（XOR 顺序无关，与全盘 boardHash 逐位一致），
-     * 替代原先每个候选点的整盘深拷贝 + 361 点重哈希。
-     */
+    /** 收集合法走法并过滤 super-ko；返回 [x, y, value]，value 用于剪枝和排序。 */
     private List<int[]> getAllValidMoves(long baseHash, GoPlayer[][] board, GoPlayer player) {
         List<int[]> moves = new ArrayList<>(BOARD_SIZE * BOARD_SIZE);
         if (player == GoPlayer.NONE) return moves;
@@ -2764,9 +2595,7 @@ public class MCTSGoAI implements GoAI {
                 if (legal && koHistory != null && koHistory.contains(hashAfter)) {
                     legal = false; // super-ko 过滤
                 }
-                // 恢复棋盘：先复位提子，再清空落子点（两组点位不相交）。
-                // ★ scoreFusedMove/countCaptures 的契约要求 (x,y) 为空、棋盘为原盘，
-                //   必须先恢复再打分，否则打分失真且污染后续候选点
+                // 先恢复棋盘再打分；scoreFusedMove 和 countCaptures 要求落子点为空。
                 for (int i = 0; i < capturedCount; i++) {
                     int p = captured[i];
                     board[p / BOARD_SIZE][p % BOARD_SIZE] = opponent;
@@ -2787,7 +2616,7 @@ public class MCTSGoAI implements GoAI {
         }
     }
 
-    private List<int[]> getSearchMoves(long baseHash, GoPlayer[][] board, GoPlayer player, int consecutivePasses) {
+    private List<int[]> getSearchMoves(long baseHash, GoPlayer[][] board, GoPlayer player) {
         // getAllValidMoves() never emits pass. Child nodes own this list through
         // MCTSNode's defensive copy, so append the pass in place and avoid a
         // second list plus a full reference copy on every expansion.
@@ -2891,18 +2720,6 @@ public class MCTSGoAI implements GoAI {
         return group;
     }
 
-    private boolean hasLiberty(GoPlayer[][] board, Set<int[]> group) {
-        for (int[] pos : group) {
-            for (int[] dir : DIRS) {
-                int nx = pos[0] + dir[0], ny = pos[1] + dir[1];
-                if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[nx][ny] == GoPlayer.NONE) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     private int countGroupLiberties(GoPlayer[][] board, Set<int[]> group) {
         return countGroupLibertiesUpTo(board, group, Integer.MAX_VALUE);
     }
@@ -2959,9 +2776,7 @@ public class MCTSGoAI implements GoAI {
         return false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
     //  MCTS 节点
-    // ══════════════════════════════════════════════════════════════════
 
     private static class MCTSNode {
         GoPlayer[][] board;

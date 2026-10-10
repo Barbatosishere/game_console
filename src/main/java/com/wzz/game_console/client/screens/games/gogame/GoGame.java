@@ -53,7 +53,6 @@ public class GoGame implements AutoCloseable {
     /** 调试开关：为 true 时输出劫争判定的详细追踪信息（默认关闭，正常对局不刷屏） */
     private static final boolean DEBUG_KO = false;
 
-    // ── Zobrist 哈希表 ──────────────────────────────────────────
     // 64 位随机值，为每个 (x, y, 棋子颜色) 分配一个独立哈希，
     // 局面哈希 = 所有棋子的 Zobrist 值异或和。碰撞概率极低（2^-64），
     // 且增量更新可 O(1) 计算，替代原 Arrays.deepHashCode 的 32 位 int 碰撞风险。
@@ -125,16 +124,6 @@ public class GoGame implements AutoCloseable {
         // would run process creation and GTP handshakes on the client thread.
     }
 
-    /**
-     * 根据 GameSettings 初始化 AI 引擎。
-     * 支持在游戏中途切换引擎（重开时生效）。
-     * 注意：如果 GameSettings 或其他依赖不可用，会回退到默认 MCTS。
-     */
-    public void initAi() {
-        if (!initializeAi) return;
-        replaceAiFromSettings();
-    }
-
     /** 后台搜索线程使用：仅在尚无引擎时创建，避免客户端线程执行外部引擎握手。 */
     public void initAiIfAbsent() {
         if (!initializeAi) return;
@@ -146,26 +135,6 @@ public class GoGame implements AutoCloseable {
                 aiCreationInProgress = true;
                 aiCreationGeneration = generation;
             }
-        }
-        publishCreatedAi(generation, createConfiguredAi());
-    }
-
-    private void replaceAiFromSettings() {
-        if (!initializeAi) return;
-        GoAI oldAi;
-        long generation;
-        synchronized (aiLifecycleLock) {
-            synchronized (stateLock) {
-                aiLifecycleGeneration++;
-                oldAi = ai;
-                ai = null;
-                generation = aiLifecycleGeneration;
-                aiCreationInProgress = true;
-                aiCreationGeneration = generation;
-            }
-        }
-        if (oldAi != null) {
-            try { oldAi.shutdown(); } catch (Throwable ignored) {}
         }
         publishCreatedAi(generation, createConfiguredAi());
     }
@@ -464,13 +433,11 @@ public class GoGame implements AutoCloseable {
     }
     
     public void pass() {
-        // ★ 修复：consecutivePasses/switchPlayer/endGame 原先在 stateLock 之外修改，
-        //   与 placeStone 的持锁协议不一致——并发读端可能看到"已记弃权未换手"的
-        //   撕裂状态。整段状态变更持锁；这里只有内存操作，无 IO 重活，不会长期占锁
+        // 弃权、换手和终局判定必须在同一锁内完成。
         synchronized (stateLock) {
             if (gameOver) return;
 
-            // 先按当前玩家记录弃权（原先在switchPlayer之后记录，会把弃权记到对手名下）
+            // 先记录当前玩家的弃权，再换手。
             moveHistory.add(new GoMove(-1, -1, currentPlayer, 0)); // -1,-1表示弃权
             positionRevision++;
 
@@ -553,17 +520,6 @@ public class GoGame implements AutoCloseable {
             applyAiMoveResult(computation.result());
             return true;
         }
-    }
-
-    /** Computes a typed AI action without applying it. */
-    public GoAI.MoveResult computeAiMoveResult() {
-        return computeAiMoveComputation().result();
-    }
-
-    /** 计算 AI 走法（不落子），返回 {x,y} 或 null（表示建议弃权）。供后台线程计算使用。 */
-    public int[] computeAiMove() {
-        GoAI.MoveResult result = computeAiMoveResult();
-        return result.type() == GoAI.MoveType.MOVE ? result.coordinates() : null;
     }
 
     /** 将 AI 走法应用到棋盘（含非法回退扫描），应在客户端线程调用。 */
@@ -704,9 +660,7 @@ public class GoGame implements AutoCloseable {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
     //  计分（中国规则数子法）
-    // ═══════════════════════════════════════════════════════════════
 
     /**
      * 数子法计算领地（flood-fill 无子区域，判断属于哪方）。
@@ -836,8 +790,6 @@ public class GoGame implements AutoCloseable {
         }
         return group;
     }
-
-    private static long key(int x, int y) { return ((long) x << 32) | (y & 0xffffffffL); }
 
     /**
      * 计算某一方的最终得分（中国规则数子法，白方加贴目）。

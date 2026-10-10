@@ -92,8 +92,6 @@ public interface GoAI {
     /** 四个方向偏移 */
     int[][] DIRS = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
 
-    // ── 工厂方法 ─────────────────────────────────────────────────
-
     /** 懒加载的日志记录器（避免静态初始化时 slf4j 不可用） */
     private static org.slf4j.Logger getFactoryLogger() {
         return org.slf4j.LoggerFactory.getLogger("GoAI");

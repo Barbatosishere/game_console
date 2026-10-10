@@ -110,14 +110,9 @@ public class GomokuAI {
         return this.bestPoint == null ? null : new int[]{this.bestPoint.x, this.bestPoint.y};
     }
 
-    // ══════════════════════════════════════════
     //  棋盘数据
-    // ══════════════════════════════════════════
 
     private void initChessData(int[][] board) {
-        // ★ Bug修复：棋盘尺寸以传入棋盘为准（GomokuScreen 支持 9~19 路切换），
-        //   不再按固定 15 索引——9~13 路时原先会 AIOOBE 使 AI 线程死亡导致卡死，
-        //   17/19 路时 AI 对 15 路域外全盲
         this.boardSize = board.length;
         this.chessData = new int[boardSize][boardSize];
         this.hashcode = 0;
@@ -152,9 +147,7 @@ public class GomokuAI {
         return this.hashcode;
     }
 
-    // ══════════════════════════════════════════
     //  极大极小搜索
-    // ══════════════════════════════════════════
 
     private Point deepeningMinimax(int depth, int maxDepth) {
         this.situationCacheMap = new HashMap<>(2048);
@@ -256,9 +249,7 @@ public class GomokuAI {
         return score;
     }
 
-    // ══════════════════════════════════════════
     //  算杀（VCF / VCT）
-    // ══════════════════════════════════════════
 
     private Point deepening(int depth, int maxDepth, boolean isVcf) {
         this.situationCacheMap = new HashMap<>(2048);
@@ -317,9 +308,7 @@ public class GomokuAI {
         return best;
     }
 
-    // ══════════════════════════════════════════
     //  候选点生成
-    // ══════════════════════════════════════════
 
     private List<Point> getHeuristicPoints(int type) {
         int max = this.difficulty.maxNodes;
@@ -484,9 +473,7 @@ public class GomokuAI {
         return pointList;
     }
 
-    // ══════════════════════════════════════════
     //  评估
-    // ══════════════════════════════════════════
 
     private int evaluate(Point point) {
         int score = 0;
@@ -581,9 +568,7 @@ public class GomokuAI {
         return null;
     }
 
-    // ══════════════════════════════════════════
     //  点位选取
-    // ══════════════════════════════════════════
 
     private Point getBestPoint() {
         Point best = null;
@@ -654,9 +639,7 @@ public class GomokuAI {
         return pointList.subList(0, Math.min(num, pointList.size()));
     }
 
-    // ══════════════════════════════════════════
     //  棋型串
-    // ══════════════════════════════════════════
 
     private String getSituation(Point point, int direction) {
         direction = direction * 2 - 1;
@@ -716,9 +699,7 @@ public class GomokuAI {
         return this.chessData[x][y];
     }
 
-    // ══════════════════════════════════════════
     //  内部类型
-    // ══════════════════════════════════════════
 
     private static class Point {
         final int x;

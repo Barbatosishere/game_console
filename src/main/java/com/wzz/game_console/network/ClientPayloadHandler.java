@@ -16,14 +16,10 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 public class ClientPayloadHandler {
 
     public static void handleGameSelector(GameSelectorPacket packet, IPayloadContext context) {
-        context.enqueueWork(() -> {
-            Minecraft.getInstance().setScreen(new GameSelectorScreen());
-        });
+        context.enqueueWork(() -> Minecraft.getInstance().setScreen(new GameSelectorScreen()));
     }
 
     public static void handleMultiplayerClient(MultiplayerGamePacket packet, IPayloadContext context) {
-        context.enqueueWork(() -> {
-            MultiplayerLobbyScreen.handleIncomingPacket(packet);
-        });
+        context.enqueueWork(() -> MultiplayerLobbyScreen.handleIncomingPacket(packet));
     }
 }
