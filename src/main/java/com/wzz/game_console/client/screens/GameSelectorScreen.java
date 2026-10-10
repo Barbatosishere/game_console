@@ -1,20 +1,17 @@
 package com.wzz.game_console.client.screens;
 
-import com.wzz.game_console.client.screens.games.gogame.GoGame;
-import com.wzz.game_console.client.screens.games.gogame.GoGameScreen;
-import com.wzz.game_console.client.screens.games.landlord.LandlordGameScreen;
-import com.wzz.game_console.client.screens.games.tictactoe.TicTacToeGame;
-import com.wzz.game_console.client.screens.games.tictactoe.TicTacToeScreen;
 import com.wzz.game_console.util.GameRenderHelper;
+import com.wzz.game_console.util.GameCatalog;
+import com.wzz.game_console.util.GameMenuLayout;
+import net.minecraft.locale.Language;
+import com.wzz.game_console.client.GameText;
 import com.wzz.game_console.util.GameSettings;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
-import com.wzz.game_console.client.screens.games.*;
 import org.jetbrains.annotations.NotNull;
 import org.lwjgl.glfw.GLFW;
 
@@ -25,38 +22,37 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 
 @OnlyIn(Dist.CLIENT)
 public class GameSelectorScreen extends Screen {
 
     // ─── 游戏信息记录 ───
-    private record GameEntry(String name, String icon, String description, String category, Supplier<Screen> factory) {}
-
-    private final List<GameEntry> games = new ArrayList<>();
-    private List<GameEntry> filteredGames = List.of();
-    private String filteredCategory;
+    private final List<GameCatalog.Entry> games = GameCatalog.all();
+    private List<GameCatalog.Entry> filteredGames = List.of();
+    private GameCatalog.Category filteredCategory;
     private int currentPage = 0;
     private int gamesPerPage = 8;
     private long tickCount = 0;
     private int hoveredIndex = -1;
-    private String filterCategory = "全部";
-    private boolean lobbyHovered = false;
+    private GameCatalog.Category filterCategory = GameCatalog.Category.ALL;
+    private List<GameMenuLayout.Button> controls = List.of();
+    private int controlsWidth = -1;
+    private Language controlsLanguage;
 
     // 分类
-    private static final String[] CATEGORIES = {"全部", "棋牌", "动作", "益智", "休闲"};
+    private static final GameCatalog.Category[] CATEGORIES = GameCatalog.Category.values();
     // 分类按钮统一的水平内边距与按钮间距（宽度累加与绘制必须使用同一数值）
     private static final int CATEGORY_PADDING = 16;
     private static final int CATEGORY_GAP = 4;
     private int selectedCategoryIndex = 0;
     /** 导入消息（临时显示） */
     private String importMessage = null;
+    private boolean importFailed;
     private long importMessageTime = 0;
     private final AtomicBoolean importInProgress = new AtomicBoolean();
 
     public GameSelectorScreen() {
-        super(Component.literal("Game Console 游戏机"));
-        initializeGames();
+        super(Component.translatable("gui.game_console.title"));
     }
 
     @Override
@@ -66,59 +62,17 @@ public class GameSelectorScreen extends Screen {
         // （原先的 getSoundManager().stop() 会误停唱片、环境音等所有声音，已移除）
     }
 
-    private void initializeGames() {
-        // 棋牌类
-        games.add(new GameEntry("五子棋",    "⚫", "经典棋类对弈，先连成五子者获胜", "棋牌", GomokuScreen::new));
-        games.add(new GameEntry("围棋",      "⚪", "围地为王，黑白博弈的艺术", "棋牌", () -> new GoGameScreen(new GoGame())));
-        games.add(new GameEntry("井字棋",    "✖", "简单而经典的三子连线游戏", "棋牌", () -> new TicTacToeScreen(TicTacToeGame.GameMode.SINGLE_PLAYER)));
-        games.add(new GameEntry("中国象棋",  "♚", "千年国粹，楚河汉界的较量", "棋牌", ChessGameScreen::new));
-        games.add(new GameEntry("国际象棋", "♟", "六十四格，黑白王后的战场", "棋牌", WesternChessScreen::new));
-        games.add(new GameEntry("斗地主",    "🃏", "经典三人扑克牌游戏", "棋牌", LandlordGameScreen::new));
-        games.add(new GameEntry("猜大小",    "🎲", "猜测骰子点数大小，考验运气与直觉", "棋牌", DiceGuessingScreen::new));
-
-        // 动作类
-        games.add(new GameEntry("贪吃蛇",    "🐍", "控制小蛇吃食物，不断成长变长", "动作", SnakeGameScreen::new));
-        games.add(new GameEntry("像素鸟",    "🐦", "点击让小鸟飞过管道间隙", "动作", FlappyBirdScreen::new));
-        games.add(new GameEntry("打砖块",    "🧱", "用挡板反弹球击碎所有砖块", "动作", BreakoutScreen::new));
-        games.add(new GameEntry("平台跳跃",  "🏃", "跳跃平台收集金币的冒险之旅", "动作", PlatformerScreen::new));
-        games.add(new GameEntry("森林冰火人","❄", "双人合作冒险，收集钻石过关", "动作", IceFireGameScreen::new));
-        games.add(new GameEntry("黑洞大作战","🕳", "控制黑洞吞噬一切的io游戏", "动作", BlackHoleGameScreen::new));
-        games.add(new GameEntry("水果忍者",  "🍉", "挥动鼠标切开飞出的水果", "动作", FruitNinjaScreen::new));
-        games.add(new GameEntry("颜色追逐",  "🎨", "在色彩世界中追逐与闪避", "动作", ColorChaseGameScreen::new));
-        games.add(new GameEntry("跳一跳Pro", "⬆", "蓄力跳跃，精准落在平台上", "动作", JumpGameScreen::new));
-
-        // 益智类
-        games.add(new GameEntry("扫雷",      "💣", "找出所有地雷而不触发它们", "益智", MinesweeperScreen::new));
-        games.add(new GameEntry("俄罗斯方块","🟦", "旋转方块组成完整行并消除", "益智", TetrisGameScreen::new));
-        games.add(new GameEntry("接水管",    "🔧", "旋转管道使水流从起点到终点", "益智", PipePuzzleScreen::new));
-        games.add(new GameEntry("推箱子",    "📦", "推动箱子到指定目标位置", "益智", SokobanScreen::new));
-        games.add(new GameEntry("华容道",    "🏯", "滑动方块让曹操到达出口", "益智", KlotskiScreen::new));
-        games.add(new GameEntry("拼图游戏",  "🧩", "移动拼图块还原完整图片", "益智", PuzzleGameScreen::new));
-        games.add(new GameEntry("数独",      "🔢", "填入数字使每行列宫均不重复", "益智", SudokuGameScreen::new));
-
-        // 休闲类
-        games.add(new GameEntry("迷宫",      "🌀", "在迷宫中找到出口，小心鬼魂", "休闲", MazeGameScreen::new));
-        games.add(new GameEntry("记忆翻牌",  "🎴", "翻牌找出所有匹配的对子", "休闲", MemoryCardScreen::new));
-        games.add(new GameEntry("消消乐",    "💎", "交换相邻物品消除三个以上连线", "休闲", Match3GameScreen::new));
-        games.add(new GameEntry("塔防游戏",  "🏰", "建造防御塔抵御怪物入侵", "休闲", TowerDefenseScreen::new));
-        games.add(new GameEntry("记忆反应",  "🧠", "记住并重复越来越长的序列", "休闲", MemoryGameScreen::new));
-        games.add(new GameEntry("鼠标反应",  "🖱", "控制鼠标穿过不断变窄的隧道", "休闲", MouseTunnelGameScreen::new));
-        games.add(new GameEntry("Minecraft 2D", "⛏", "2D版Minecraft，挖掘与建造", "休闲", Minecraft2DScreen::new));
-        games.add(new GameEntry("音游",      "🎵", "跟随节奏点击下落的音符", "休闲", PianoTilesGameScreen::new));
-        games.add(new GameEntry("打地鼠",    "🔨", "快速点击冒出的地鼠", "休闲", WhackAMoleScreen::new));
-    }
-
-    private List<GameEntry> getFilteredGames() {
+    private List<GameCatalog.Entry> getFilteredGames() {
         if (filterCategory.equals(filteredCategory)) return filteredGames;
 
         filteredCategory = filterCategory;
-        if ("全部".equals(filterCategory)) {
+        if (filterCategory == GameCatalog.Category.ALL) {
             filteredGames = List.copyOf(games);
             return filteredGames;
         }
-        List<GameEntry> filtered = new ArrayList<>();
-        for (GameEntry g : games) {
-            if (g.category.equals(filterCategory)) filtered.add(g);
+        List<GameCatalog.Entry> filtered = new ArrayList<>();
+        for (GameCatalog.Entry g : games) {
+            if (g.category() == filterCategory) filtered.add(g);
         }
         filteredGames = List.copyOf(filtered);
         return filteredGames;
@@ -131,9 +85,8 @@ public class GameSelectorScreen extends Screen {
 
     @Override
     public void init() {
-        int cardH = 28;
-        int availableH = this.height - 120;
-        gamesPerPage = Math.max(4, availableH / cardH);
+        controlsWidth = -1;
+        gamesPerPage = Math.max(1, (height - listStartY() - 46) / 28);
     }
 
     @Override
@@ -145,50 +98,31 @@ public class GameSelectorScreen extends Screen {
         GameRenderHelper.renderDecorativeLines(g, width, height, tickCount, 0x002244);
 
         // ─── 标题区域 ───
-        GameRenderHelper.drawShadowedCenteredText(g, font, "Game Console 游戏机", cx, 12, 0xFFDD44, 2);
+        GameRenderHelper.drawShadowedCenteredText(g, font, GameText.text("gui.game_console.title"), cx, 12, 0xFFDD44, 2);
         g.drawCenteredString(font, "Game Console", cx, 32, 0x556688);
 
         // 分割线
         GameRenderHelper.drawDivider(g, cx - 120, 42, 240, GameRenderHelper.ACCENT_BLUE, GameRenderHelper.ACCENT_RED);
 
-        // ─── 分类标签 ───
-        int catY = 48;
-        int catTotalW = 0;
-        for (String cat : CATEGORIES) catTotalW += font.width(cat) + CATEGORY_PADDING + CATEGORY_GAP;
-        // 联机大厅按钮宽度
-        int lobbyW = font.width("🌐 联机大厅") + CATEGORY_PADDING;
-        int totalBarW = catTotalW + 8 + lobbyW;
-        int catX = cx - totalBarW / 2;
-
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            String cat = CATEGORIES[i];
-            int tw = font.width(cat) + CATEGORY_PADDING;
-            boolean isSelected = i == selectedCategoryIndex;
-            boolean isHover = mouseX >= catX && mouseX <= catX + tw && mouseY >= catY && mouseY <= catY + 14;
-
-            if (isSelected) {
-                g.fill(catX, catY, catX + tw, catY + 14, 0xFF2244AA);
-                g.fill(catX, catY + 13, catX + tw, catY + 14, 0xFF44AAFF);
-            } else if (isHover) {
-                g.fill(catX, catY, catX + tw, catY + 14, 0x44FFFFFF);
-            }
-            g.drawString(font, cat, catX + 6, catY + 3, isSelected ? 0xFFFFFF : 0x888888);
-            catX += tw + CATEGORY_GAP;
+        // 分类与大厅共用布局，小窗口和较长的翻译文本自动换行。
+        for (GameMenuLayout.Button button : controls()) {
+            boolean lobby = button.index() == CATEGORIES.length;
+            boolean selected = !lobby && button.index() == selectedCategoryIndex;
+            boolean hover = button.contains(mouseX, mouseY);
+            String label = lobby ? GameText.text("gui.game_console.lobby")
+                    : GameText.text(CATEGORIES[button.index()].translationKey());
+            int color = lobby ? 0xFF143328 : selected ? 0xFF2244AA : hover ? 0x44FFFFFF : 0;
+            if (color != 0) g.fill(button.x(), button.y(), button.x()+button.width(), button.y()+button.height(), color);
+            if (lobby || selected) g.fill(button.x(),button.y()+13,button.x()+button.width(),button.y()+14,lobby?0xFF44CCAA:0xFF44AAFF);
+            g.drawString(font,label,button.x()+6,button.y()+3,lobby?0x44AA88:selected?0xFFFFFF:0x888888);
         }
 
-        // ─── 联机大厅按钮 ───
-        catX += 8; // 间隔
-        lobbyHovered = mouseX >= catX && mouseX <= catX + lobbyW && mouseY >= catY && mouseY <= catY + 14;
-        g.fill(catX, catY, catX + lobbyW, catY + 14, lobbyHovered ? 0xFF1A4A3A : 0xFF143328);
-        g.fill(catX, catY + 13, catX + lobbyW, catY + 14, 0xFF44CCAA);
-        g.drawString(font, "🌐 联机大厅", catX + 6, catY + 3, lobbyHovered ? 0x66FFCC : 0x44AA88);
-
         // ─── 游戏列表 ───
-        List<GameEntry> filtered = getFilteredGames();
+        List<GameCatalog.Entry> filtered = getFilteredGames();
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
         if (currentPage >= totalPages) currentPage = totalPages - 1;
 
-        int listStartY = 68;
+        int listStartY = listStartY();
         int cardW = Math.min(280, width - 40);
         int cardH = 26;
         int startIdx = currentPage * gamesPerPage;
@@ -197,7 +131,7 @@ public class GameSelectorScreen extends Screen {
         hoveredIndex = -1;
         for (int i = startIdx; i < endIdx; i++) {
             int idx = i - startIdx;
-            GameEntry entry = filtered.get(i);
+            GameCatalog.Entry entry = filtered.get(i);
             int cardX = cx - cardW / 2;
             int cardY = listStartY + idx * (cardH + 2);
 
@@ -208,7 +142,7 @@ public class GameSelectorScreen extends Screen {
             int bgColor = hover ? 0xFF252550 : 0xFF1A1A35;
             g.fill(cardX, cardY, cardX + cardW, cardY + cardH, bgColor);
             // 左侧分类色条
-            int catColor = getCategoryColor(entry.category);
+            int catColor = entry.category().color();
             g.fill(cardX, cardY, cardX + 3, cardY + cardH, catColor);
             // 悬停高光边框
             if (hover) {
@@ -217,62 +151,80 @@ public class GameSelectorScreen extends Screen {
             }
 
             // 图标和名称
-            g.drawString(font, entry.icon + " " + entry.name, cardX + 8, cardY + (cardH - 8) / 2, hover ? 0xFFFFFF : 0xCCCCCC);
+            g.drawString(font, entry.icon() + " " + GameText.text(entry.nameKey()), cardX + 8, cardY + (cardH - 8) / 2, hover ? 0xFFFFFF : 0xCCCCCC);
 
             // 分类标签
-            String catLabel = "[" + entry.category + "]";
+            String catLabel = "[" + GameText.text(entry.category().translationKey()) + "]";
             g.drawString(font, catLabel, cardX + cardW - font.width(catLabel) - 5, cardY + (cardH - 8) / 2, 0x666666);
-        }
-
-        // ─── 悬停描述浮窗 ───
-        if (hoveredIndex >= 0 && hoveredIndex < filtered.size()) {
-            GameEntry hovered = filtered.get(hoveredIndex);
-            String desc = hovered.description;
-            int descW = font.width(desc);
-            int tipX = cx - descW / 2 - 6;
-            int tipY = listStartY - 16;
-            g.fill(tipX, tipY, tipX + descW + 12, tipY + 14, 0xEE111122);
-            g.fill(tipX, tipY, tipX + descW + 12, tipY + 1, getCategoryColor(hovered.category));
-            g.drawString(font, desc, tipX + 6, tipY + 3, 0xFFFFFF);
         }
 
         // ─── 翻页控制 ───
         int navY = this.height - 24;
         if (currentPage > 0) {
-            GameRenderHelper.drawSecondaryButton(g, font, "◀ 上一页",
-                    cx - 130, navY, 80, 18, mouseX, mouseY);
+            GameRenderHelper.drawSecondaryButton(g, font, GameText.text("gui.game_console.previous"),
+                    cx - 90, navY, 60, 18, mouseX, mouseY);
         }
         String pageText = (currentPage + 1) + " / " + totalPages;
         g.drawCenteredString(font, pageText, cx, navY + 5, 0x888888);
         if (currentPage < totalPages - 1) {
-            GameRenderHelper.drawSecondaryButton(g, font, "下一页 ▶",
-                    cx + 50, navY, 80, 18, mouseX, mouseY);
+            GameRenderHelper.drawSecondaryButton(g, font, GameText.text("gui.game_console.next"),
+                    cx + 30, navY, 60, 18, mouseX, mouseY);
         }
 
         // ─── 底部信息 ───
-        g.drawCenteredString(font, "共 " + filtered.size() + " 款游戏  |  ESC 退出", cx, height - 10, 0x444444);
+        g.drawCenteredString(font, GameText.text("gui.game_console.game_count", filtered.size()), cx, height - 10, 0x444444);
 
         // ─── 导入设置按钮 ───
-        GameRenderHelper.drawButton(g, font, "导入设置", 5, height - 24, 60, 18, mouseX, mouseY,
+        GameRenderHelper.drawButton(g, font, GameText.text("gui.game_console.import"), 5, height - 46, 60, 18, mouseX, mouseY,
                 0xFF222233, 0xFF333355, 0xFF666688);
+
+        if (hoveredIndex >= 0 && hoveredIndex < filtered.size()) {
+            g.renderTooltip(font, Component.translatable(filtered.get(hoveredIndex).descriptionKey()), mouseX, mouseY);
+        }
 
         // ─── 导入消息（3秒后消失） ───
         if (importMessage != null && System.currentTimeMillis() - importMessageTime < 3000) {
-            int msgColor = importMessage.contains("失败") ? 0xFFFF4444 : 0xFF44FF44;
-            g.drawCenteredString(font, importMessage, cx, height - 40, msgColor);
+            renderImportMessage(g, mouseX, mouseY);
         } else {
             importMessage = null;
         }
     }
 
-    private int getCategoryColor(String category) {
-        return switch (category) {
-            case "棋牌" -> 0xFFFF8800;
-            case "动作" -> 0xFFFF2244;
-            case "益智" -> 0xFF2288FF;
-            case "休闲" -> 0xFF44CC44;
-            default -> 0xFF888888;
-        };
+    private void renderImportMessage(GuiGraphics g, int mouseX, int mouseY) {
+        // Keep the status beside the import button and above the pagination row.
+        int x = 73, y = height - 40;
+        int available = width - x - 8;
+        if (available <= 0) return;
+        String message = importMessage;
+        boolean shortened = font.width(message) > available;
+        if (shortened) {
+            String suffix = "...";
+            if (available < font.width(suffix)) return;
+            message = font.plainSubstrByWidth(message, available - font.width(suffix)) + suffix;
+        }
+        int color = importFailed ? 0xFFFF4444 : 0xFF44FF44;
+        g.drawString(font, message, x, y, color);
+        if (shortened && mouseX >= x && mouseX < x + font.width(message)
+                && mouseY >= y && mouseY < y + font.lineHeight) {
+            g.renderTooltip(font, Component.literal(importMessage), mouseX, mouseY);
+        }
+    }
+
+    private List<GameMenuLayout.Button> controls() {
+        Language language = Language.getInstance();
+        if (controlsWidth == width && controlsLanguage == language) return controls;
+        int[] widths = new int[CATEGORIES.length + 1];
+        for (int i=0; i<CATEGORIES.length; i++) widths[i] = font.width(GameText.text(CATEGORIES[i].translationKey())) + CATEGORY_PADDING;
+        widths[CATEGORIES.length] = font.width(GameText.text("gui.game_console.lobby")) + CATEGORY_PADDING;
+        controls = GameMenuLayout.wrap(width, 48, 14, CATEGORY_GAP, widths);
+        controlsWidth = width;
+        controlsLanguage = language;
+        return controls;
+    }
+
+    private int listStartY() {
+        List<GameMenuLayout.Button> buttons = controls();
+        return buttons.getLast().y() + buttons.getLast().height() + 6;
     }
 
     /** 打开文件对话框导入外部游戏设置 JSON */
@@ -290,7 +242,7 @@ public class GameSelectorScreen extends Screen {
                 //   时 FileDialog 会落在不可见区域,玩家看不见但模态阻塞,只能 Alt+F4。
                 //   setLocationRelativeTo(null) 强制居中到主屏可视区
                 frame.setLocationRelativeTo(null);
-                FileDialog dialog = new FileDialog(frame, "选择游戏设置文件 (.json)", FileDialog.LOAD);
+                FileDialog dialog = new FileDialog(frame, GameText.text("gui.game_console.import_picker"), FileDialog.LOAD);
                 dialog.setFile("*.json");
                 dialog.setLocationRelativeTo(frame);
                 dialog.setVisible(true); // 只阻塞本后台线程，不再冻结游戏
@@ -302,7 +254,8 @@ public class GameSelectorScreen extends Screen {
                 File srcFile = new File(dirPath, filePath);
                 if (!srcFile.isFile() || !srcFile.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".json")) {
                     Minecraft.getInstance().execute(() -> {
-                        importMessage = "导入失败：请选择 JSON 文件";
+                        importFailed = true;
+                        importMessage = GameText.text("gui.game_console.import_json");
                         importMessageTime = System.currentTimeMillis();
                     });
                     return;
@@ -312,12 +265,14 @@ public class GameSelectorScreen extends Screen {
                 // 文件读取、解析和写盘留在后台；仅界面状态在 MC 主线程更新。
                 boolean success = GameSettings.importFromFile(srcPath);
                 Minecraft.getInstance().execute(() -> {
-                    importMessage = success ? "设置导入成功！" : "导入失败：文件格式不正确";
+                    importFailed = !success;
+                    importMessage = success ? GameText.text("gui.game_console.import_ok") : GameText.text("gui.game_console.import_format");
                     importMessageTime = System.currentTimeMillis();
                 });
             } catch (Exception e) {
-                String msg = "导入失败：" + e.getMessage();
+                String msg = GameText.text("gui.game_console.import_error", e.getMessage());
                 Minecraft.getInstance().execute(() -> {
+                    importFailed = true;
                     importMessage = msg;
                     importMessageTime = System.currentTimeMillis();
                 });
@@ -335,43 +290,29 @@ public class GameSelectorScreen extends Screen {
     public boolean mouseClicked(double mx, double my, int btn) {
         int cx = width / 2;
 
-        // ─── 分类标签点击（与渲染逻辑使用同一套宽度常量） ───
-        int catY = 48;
-        int catTotalW = 0;
-        for (String cat : CATEGORIES) catTotalW += font.width(cat) + CATEGORY_PADDING + CATEGORY_GAP;
-        int lobbyW = font.width("🌐 联机大厅") + CATEGORY_PADDING;
-        int totalBarW = catTotalW + 8 + lobbyW;
-        int catX = cx - totalBarW / 2;
-
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            int tw = font.width(CATEGORIES[i]) + CATEGORY_PADDING;
-            if (mx >= catX && mx <= catX + tw && my >= catY && my <= catY + 14) {
-                selectedCategoryIndex = i;
-                filterCategory = CATEGORIES[i];
+        for (GameMenuLayout.Button button : controls()) {
+            if (!button.contains(mx, my)) continue;
+            if (button.index() == CATEGORIES.length) {
+                Minecraft.getInstance().setScreen(new MultiplayerLobbyScreen());
+            } else {
+                selectedCategoryIndex = button.index();
+                filterCategory = CATEGORIES[button.index()];
                 currentPage = 0;
-                return true;
             }
-            catX += tw + CATEGORY_GAP;
-        }
-
-        // ─── 联机大厅点击（保持与渲染相同的间距计算） ───
-        catX += 8;
-        if (mx >= catX && mx <= catX + lobbyW && my >= catY && my <= catY + 14) {
-            Minecraft.getInstance().setScreen(new MultiplayerLobbyScreen());
             return true;
         }
 
         // ─── 游戏卡片点击：按本次点击坐标判断，不能使用上一帧的悬停结果 ───
-        List<GameEntry> filtered = getFilteredGames();
+        List<GameCatalog.Entry> filtered = getFilteredGames();
         int cardW = Math.min(280, width - 40);
         int cardX = cx - cardW / 2;
         if (mx >= cardX && mx <= cardX + cardW) {
             int startIdx = currentPage * gamesPerPage;
             int endIdx = Math.min(startIdx + gamesPerPage, filtered.size());
             for (int i = startIdx; i < endIdx; i++) {
-                int cardY = 68 + (i - startIdx) * 28;
+                int cardY = listStartY() + (i - startIdx) * 28;
                 if (my >= cardY && my <= cardY + 26) {
-                    Minecraft.getInstance().setScreen(filtered.get(i).factory.get());
+                    Minecraft.getInstance().setScreen(GameScreens.create(filtered.get(i).id()));
                     return true;
                 }
             }
@@ -380,17 +321,17 @@ public class GameSelectorScreen extends Screen {
         // ─── 翻页按钮 ───
         int navY = this.height - 24;
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
-        if (mx >= cx - 130 && mx <= cx - 50 && my >= navY && my <= navY + 18 && currentPage > 0) {
+        if (mx >= cx - 90 && mx <= cx - 30 && my >= navY && my <= navY + 18 && currentPage > 0) {
             currentPage--;
             return true;
         }
-        if (mx >= cx + 50 && mx <= cx + 130 && my >= navY && my <= navY + 18 && currentPage < totalPages - 1) {
+        if (mx >= cx + 30 && mx <= cx + 90 && my >= navY && my <= navY + 18 && currentPage < totalPages - 1) {
             currentPage++;
             return true;
         }
 
         // ─── 导入设置按钮 ───
-        if (mx >= 5 && mx <= 65 && my >= navY && my <= navY + 18) {
+        if (mx >= 5 && mx <= 65 && my >= height - 46 && my <= height - 28) {
             importSettingsFromFile();
             return true;
         }
@@ -400,7 +341,7 @@ public class GameSelectorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int key, int scan, int mods) {
-        List<GameEntry> filtered = getFilteredGames();
+        List<GameCatalog.Entry> filtered = getFilteredGames();
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
         if (key == GLFW.GLFW_KEY_LEFT && currentPage > 0) { currentPage--; return true; }
         if (key == GLFW.GLFW_KEY_RIGHT && currentPage < totalPages - 1) { currentPage++; return true; }
@@ -409,7 +350,7 @@ public class GameSelectorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mx, double my, double scrollDeltaX, double delta) {
-        List<GameEntry> filtered = getFilteredGames();
+        List<GameCatalog.Entry> filtered = getFilteredGames();
         int totalPages = Math.max(1, (int) Math.ceil((double) filtered.size() / gamesPerPage));
         if (delta > 0 && currentPage > 0) currentPage--;
         if (delta < 0 && currentPage < totalPages - 1) currentPage++;

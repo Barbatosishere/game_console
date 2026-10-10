@@ -1,6 +1,7 @@
 package com.wzz.game_console.client.screens.games;
 
 import com.wzz.game_console.client.screens.GameSelectorScreen;
+import com.wzz.game_console.client.GameScores;
 import com.wzz.game_console.util.GameRenderHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -96,6 +97,7 @@ public class MouseTunnelGameScreen extends Screen {
 
     public MouseTunnelGameScreen() {
         super(Component.literal("Mouse Tunnel Game"));
+        bestScore = GameScores.best("mousetunnel");
     }
 
     @Override
@@ -341,6 +343,7 @@ public class MouseTunnelGameScreen extends Screen {
         // 更新最佳分数
         if (score > bestScore) {
             bestScore = score;
+            GameScores.record("mousetunnel", score);
         }
 
         // ★ Bug修复：100 分胜利 / 碰墙失败后确保退出弹窗状态被清掉，

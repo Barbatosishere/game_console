@@ -94,8 +94,12 @@
 - 🎨 精美的暗色主题 UI 界面
 - 🏆 部分游戏支持难度选择
 - ⌨️ ESC 退出确认弹窗，防止误操作
+- 🏅 跳一跳、鼠标反应、俄罗斯方块和像素鸟的个人最高分持久化保存
+- 🌏 游戏选择器、联机大厅和公共退出弹窗支持中文与英文
 - ⚙️ JSON 设置导入，可配置围棋搜索时间、模型路径和 GPU 开关
 - 🧠 围棋内置 MCTS 搜索与神经网络评估，支持自对弈、KataGo 对抗训练及可选 OpenCL 加速
+
+个人最高分保存在游戏实例目录的 `game_console/data/game_scores.json`，按玩家 UUID 和游戏 ID 区分。纪录只在提高时更新，并在后台保存；它用于个人纪录展示。俄罗斯方块长按移动按固定 tick 推进，像素鸟跳跃响应每次实际按下；失焦和退出确认期间暂停这两款游戏。
 
 ## 围棋 AI 与设置
 
@@ -138,7 +142,9 @@ Linux / macOS：
 bash ./gradlew test build --no-daemon
 ```
 
-当前产物为 `build/libs/Game Console-1.0.0-NeoForge-1.21.1-beta6.jar`，命名由 [build.gradle](build.gradle) 决定。测试报告位于 `build/reports/tests/test/index.html`。
+当前产物为 `build/libs/Game Console-1.0.0-NeoForge-1.21.1-beta7.jar`，命名由 [build.gradle](build.gradle) 决定。测试报告位于 `build/reports/tests/test/index.html`。
+
+游戏生命周期、输入状态、个人纪录和精灵纹理的设计参考了 [Tejty/GameDiscs 的 NeoForge 1.21.1 分支](https://github.com/Tejty/GameDiscs/tree/neoforge-1.21.1)，并结合本项目的联机和暂停行为重新实现。
 
 仅运行围棋 GPU 压测和生命周期回归：
 
