@@ -29,16 +29,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ChessGameScreen.class);
 
-    // ══════════════════════════════════════════════
     //  常量
-    // ══════════════════════════════════════════════
     static final int COLS = 9, ROWS = 10;
     static final int GENERAL=1, ADVISOR=2, ELEPHANT=3,
                      HORSE=4, CHARIOT=5, CANNON=6, SOLDIER=7;
 
-    // ══════════════════════════════════════════════
     //  游戏模式
-    // ══════════════════════════════════════════════
     public enum GameMode { MENU, PVP, PVA }
     enum Difficulty { EASY, MEDIUM, HARD }
 
@@ -48,14 +44,10 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     /** AI 引擎最后一次失败原因（null 表示 OK），用于在 HUD 给玩家反馈 */
     String aiErrorMessage = null;
 
-    // ══════════════════════════════════════════════
     //  布局（自适应屏幕）
-    // ══════════════════════════════════════════════
     int CELL, PR, bx, by;
 
-    // ══════════════════════════════════════════════
     //  棋盘状态
-    // ══════════════════════════════════════════════
     int[][] board = new int[COLS][ROWS];
 
     // 悔棋（最多2步用于人机模式）
@@ -77,9 +69,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     String resultMsg = "";
     long tick = 0;
 
-    // ══════════════════════════════════════════════
     //  AI 状态
-    // ══════════════════════════════════════════════
     final AtomicBoolean aiThinking = new AtomicBoolean(false);
     volatile int[] aiPendingMove = null;   // {fc,fr,tc,tr} 由AI线程写入
     Thread aiThread = null;
@@ -96,18 +86,14 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     /** aiPendingMove 对应的局代号（-1=无），tick 落地前与最新 aiGen 比对，保证旧结果绝不落地 */
     private volatile int aiPendingGen = -1;
 
-    // ══════════════════════════════════════════════
     //  走法生成方向常量（避免 AI 搜索中每次调用重复创建数组）
-    // ══════════════════════════════════════════════
     static final int[][] DIR_ORTHO = {{0,1},{0,-1},{1,0},{-1,0}};
     static final int[][] DIR_DIAG  = {{1,1},{1,-1},{-1,1},{-1,-1}};
     static final int[][] DIR_ELEPHANT = {{2,2},{2,-2},{-2,2},{-2,-2}};
     static final int[][] HORSE_LEGS = {{1,0},{-1,0},{0,1},{0,-1}};
     static final int[][][] HORSE_DEST = {{{2,1},{2,-1}},{{-2,1},{-2,-1}},{{1,2},{-1,2}},{{1,-2},{-1,-2}}};
 
-    // ══════════════════════════════════════════════
     //  LAN 联机支持
-    // ══════════════════════════════════════════════
     private int lanMode = LAN_NONE;
     /** 防止远程走法回音：收到远程走法时不发送回去 */
     private boolean receivingRemoteMove = false;
@@ -188,11 +174,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             if (fc < 0 || fc >= COLS || fr < 0 || fr >= ROWS || tc < 0 || tc >= COLS || tr < 0 || tr >= ROWS) {
                 LOGGER.warn("[中国象棋] 联机走法坐标越界: {}", data); return;
             }
-            // ★ 修复：远程走法落地前校验（坐标越界已在上面过滤），防伪造/乱序报文打乱本地棋盘：
-            //   ① 当前须轮到远程方（LAN 约定 HOST 执红、CLIENT 执黑）且对局未结束；
-            //   ② from 处须存在远程方棋子；
-            //   ③ 走法须在现有合法走法生成结果内（computeLegal 已过滤走后自将）。
-            //   任一不满足仅记日志丢弃，不落盘
+            // LAN 主机执红；只接受远程方回合内的合法走法。
             boolean remoteRed = lanMode == LAN_CLIENT;
             if (gameOver || lanMode == LAN_NONE || redTurn != remoteRed) {
                 LOGGER.warn("[中国象棋] 丢弃非远程回合/对局已结束的联机走法: {} (redTurn={}, lanMode={})",
@@ -221,17 +203,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         } catch (Exception ignored) {}
     }
 
-    @Override public void onRemoteState(String data) { /* 象棋走法驱动，无需状态同步 */ }
-    @Override public void onRemoteGameOver(String data) { /* 由 doMove 本地检测 */ }
-
     private void sendLanMove(int fc, int fr, int tc, int tr) {
         if (lanMode == LAN_NONE) return;
         sendMoveEnvelope(fc + "," + fr + "," + tc + "," + tr);
     }
 
-    // ══════════════════════════════════════════════
     //  构造
-    // ══════════════════════════════════════════════
     public ChessGameScreen() {
         super(Component.literal("中国象棋"));
     }
@@ -296,9 +273,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         checkNoLegalMovesEnd(); // 兜底判负检测（初始局面恒有合法走法，此处为统一入口）
     }
 
-    // ══════════════════════════════════════════════
     //  Tick — AI调度
-    // ══════════════════════════════════════════════
     @Override
     public void tick() {
         tick++;
@@ -377,10 +352,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
                 }
                 if (failedEngine != null) failedEngine.shutdown();
             } finally {
-                // ★ Bug修复：仅当本线程代数仍是当前代数时才清 thinking 标志。
-                //   迟到线程（悔棋/重开已递增 aiGen）若无条件清除，会误清新一轮
-                //   搜索刚置位的 aiThinking，导致 tick 重复 launchAI。
-                //   旧代数的标志已由 resetBoard/undoMove 主动清除，无需迟到线程代劳
+                // 迟到的 AI 线程不能清除新一轮搜索的 thinking 标志。
                 if (gen == aiGen) {
                     aiThinking.set(false);
                 }
@@ -390,9 +362,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         aiThread.start();
     }
 
-    // ══════════════════════════════════════════════
     //  主渲染
-    // ══════════════════════════════════════════════
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 不渲染默认32x32像素菜单背景纹理和模糊效果,游戏自行绘制不透明背景
@@ -418,14 +388,12 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
             // 再次flush确保弹窗内容在super.render的widget批处理之前完成提交
             if (gameOver || showExitConfirm) g.flush();
             // 注：无合法走法判负检测已从每帧 render 移至 doMove/undoMove/resetBoard 末尾，
-            // 避免 render 每帧做 isCheckmate 全盘扫描的性能开销
+            // 结束状态在走子后更新，避免逐帧扫描合法走法。
         }
         super.render(g, mx, my, pt);
     }
 
-    // ══════════════════════════════════════════════
     //  菜单
-    // ══════════════════════════════════════════════
     void renderMenu(GuiGraphics g, int mx, int my) {
         int cx = width/2, cy = height/2;
 
@@ -497,9 +465,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawString(font,t,x,y+1,color);
     }
 
-    // ══════════════════════════════════════════════
     //  背景 & 棋盘
-    // ══════════════════════════════════════════════
     void drawBackground(GuiGraphics g){
         for(int i=0;i<60;i++){int x=(i*37)%width;g.fill(x,0,x+1,height,0x06FFDDAA);}
         int pw=(COLS-1)*CELL+CELL*3,ph=(ROWS-1)*CELL+CELL*4;
@@ -545,9 +511,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         if(D&&R){g.fill(x+g2+1,y+s,x+s+1,y+s+1,color);g.fill(x+s,y+g2+1,x+s+1,y+s+1,color);}
     }
 
-    // ══════════════════════════════════════════════
     //  高亮层
-    // ══════════════════════════════════════════════
     void drawHighlights(GuiGraphics g,int mx,int my){
         if(lastFC>=0){
             fillRect(g,bx+lastFC*CELL,by+lastFR*CELL,PR+2,0x55FFCC44);
@@ -591,9 +555,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         }
     }
 
-    // ══════════════════════════════════════════════
     //  棋子绘制
-    // ══════════════════════════════════════════════
     void drawPieces(GuiGraphics g){
         for(int c=0;c<COLS;c++) for(int r=0;r<ROWS;r++)
             if(board[c][r]!=0) drawPiece(g,c,r,board[c][r]);
@@ -626,9 +588,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawString(font,name,px-tw/2,  py-4,  cText);
     }
 
-    // ══════════════════════════════════════════════
     //  HUD
-    // ══════════════════════════════════════════════
     void drawHUD(GuiGraphics g){
         int bw=(COLS-1)*CELL, hm=CELL/2;
         // 黑方（上）
@@ -701,9 +661,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(bx+bw-80,topY+20,bx+bw-80+(int)(barW*prog),topY+24,0xFF4466CC);
     }
 
-    // ══════════════════════════════════════════════
     //  游戏结束
-    // ══════════════════════════════════════════════
     void drawGameOver(GuiGraphics g){
         g.flush(); // 半透明遮罩前先 flush，避免与下层棋盘/棋子批次混合导致 z-fighting
         g.fill(0,0,width,height,0x99000000);
@@ -752,9 +710,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawCenteredString(font,"再按 ESC 取消",cx,wy+wh-14,0xFF666666);
     }
 
-    // ══════════════════════════════════════════════
     //  输入
-    // ══════════════════════════════════════════════
     @Override
     public boolean mouseClicked(double mx,double my,int btn){
         if (btn != 0) return super.mouseClicked(mx, my, btn);
@@ -840,9 +796,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         return super.keyPressed(key,scan,mods);
     }
 
-    // ══════════════════════════════════════════════
     //  移动执行 & 悔棋
-    // ══════════════════════════════════════════════
     void doMove(int fc,int fr,int tc,int tr){
         // 压栈（最多2步）
         if(undoCount<2){
@@ -897,9 +851,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         checkNoLegalMovesEnd(); // 悔棋后兜底：当前回合方无合法走法时立即结算
     }
 
-    // ══════════════════════════════════════════════
     //  合法性计算
-    // ══════════════════════════════════════════════
     List<int[]> computeLegal(int col,int row){
         List<int[]> pseudo=pseudoMoves(board,col,row);
         List<int[]> legal=new ArrayList<>();
@@ -1049,12 +1001,6 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         }
         return false;
     }
-    boolean isCheckmate(boolean isRed){
-        return isInCheck(isRed) && !hasLegalMove(isRed);
-    }
-    boolean isStalemate(boolean isRed){
-        return !isInCheck(isRed) && !hasLegalMove(isRed);
-    }
 
     private String positionKey() {
         StringBuilder key = new StringBuilder(COLS * ROWS + 1);
@@ -1071,9 +1017,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
         return count;
     }
 
-    // ══════════════════════════════════════════════
     //  绘图工具
-    // ══════════════════════════════════════════════
     /** 圆形填充缓存：避免每帧对每个棋子重复计算 Math.sqrt */
     private final java.util.Map<Integer,int[]> circleCache = new java.util.HashMap<>();
     /** 圆环缓存：避免每帧重复计算 cos/sin */

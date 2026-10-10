@@ -17,7 +17,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -188,11 +187,11 @@ class MCTSGoAIRegressionTest {
     @Test
     void searchMovesAlwaysIncludePassInOpening() throws Exception {
         var method = MCTSGoAI.class.getDeclaredMethod("getSearchMoves",
-                long.class, GoPlayer[][].class, GoPlayer.class, int.class);
+                long.class, GoPlayer[][].class, GoPlayer.class);
         method.setAccessible(true);
         GoPlayer[][] board = emptyBoard();
         @SuppressWarnings("unchecked")
-        List<int[]> moves = (List<int[]>) method.invoke(ai, GoGame.boardHash(board), board, GoPlayer.BLACK, 0);
+        List<int[]> moves = (List<int[]>) method.invoke(ai, GoGame.boardHash(board), board, GoPlayer.BLACK);
         assertTrue(moves.stream().anyMatch(move -> move[0] < 0 && move[1] < 0));
     }
 

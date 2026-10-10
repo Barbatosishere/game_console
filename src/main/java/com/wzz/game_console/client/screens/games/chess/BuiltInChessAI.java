@@ -42,13 +42,7 @@ public class BuiltInChessAI implements ChessAI {
     private long timeStartNs;
     private long nodeCount;
 
-    /**
-     * 搜索代际：每次 getBestMove 递增，shouldStop 发现代际失配立即中止。
-     * 修复：屏幕重开只 interrupt AI 线程，但内置引擎的搜索循环不响应 interrupt，
-     * 旧线程可继续跑满整个时间预算；期间新对局再次 launchAI 会与旧线程并发
-     * 调用同一实例（TT/killers/timeStartNs 全被交叉写）。代际失效让旧搜索在
-     * 下一个检查点立即 SearchAbort（配合 try-finally 回滚，棋盘不残留脏子）。
-     */
+    /** 新搜索或取消会使旧代际失效；旧搜索在检查点中止并回滚棋盘。 */
     private final java.util.concurrent.atomic.AtomicLong activeGen = new java.util.concurrent.atomic.AtomicLong();
     private final ThreadLocal<Long> myGen = ThreadLocal.withInitial(() -> -1L);
 
@@ -114,7 +108,7 @@ public class BuiltInChessAI implements ChessAI {
                     bestScore = -INF;
                     depthBest = null;
                     for (int[] mv : rootMoves) {
-                        TrieMove undo = makeMove(board, mv);
+                        int captured = makeMove(board, mv);
                         // 根层同样要 finally 回滚：negamax 超时抛 SearchAbort 时若不回滚，
                         // 最后试探的走子会永久残留在调用方棋盘上（吃将/丢子的根源）
                         try {
@@ -124,7 +118,7 @@ public class BuiltInChessAI implements ChessAI {
                                 if (score > alpha) alpha = score;
                             }
                         } finally {
-                            unmakeMove(board, mv, undo);
+                            unmakeMove(board, mv, captured);
                         }
                         if (shouldStop()) throw new SearchAbort();
                     }
@@ -152,8 +146,6 @@ public class BuiltInChessAI implements ChessAI {
         }
         return bestMove == null ? null : new int[]{bestMove[0], bestMove[1], bestMove[2], bestMove[3]};
     }
-
-    // ── α-β 搜索 ─────────────────────────────────────────
 
     private int negamax(int[][] b, boolean red, int depth, int alpha, int beta, int ply, int checkExt) throws SearchAbort {
         nodeCount++;
@@ -215,7 +207,7 @@ public class BuiltInChessAI implements ChessAI {
                 lmrR = Math.min(lmrR, depth - 2);
             }
 
-            TrieMove undo = makeMove(b, mv);
+            int captured = makeMove(b, mv);
             // 递归搜索可抛 SearchAbort：必须 finally 回滚，否则异常冒泡后棋盘残留脏子
             try {
                 // legalMoves 已过滤送将着法，无需逐着再验自将
@@ -250,10 +242,10 @@ public class BuiltInChessAI implements ChessAI {
                 if (score > bestScore) { bestScore = score; bestMove = encodeMove(mv); }
                 if (score > alpha) alpha = score;
             } finally {
-                unmakeMove(b, mv, undo);
+                unmakeMove(b, mv, captured);
             }
             if (alpha >= beta) {
-                if (!capture && bestMove != 0) updateKillerAndHistory(b, mv, ply, depth);
+                if (!capture && bestMove != 0) updateKillerAndHistory(mv, ply, depth);
                 break;
             }
         }
@@ -266,8 +258,6 @@ public class BuiltInChessAI implements ChessAI {
         storeTt(key, bestMove, ttScoreOut, depth, flag);
         return bestScore;
     }
-
-    // ── 静态搜索 ─────────────────────────────────────────
 
     private int quiescence(int[][] b, boolean red, int alpha, int beta, int ply, int checkExt) throws SearchAbort {
         nodeCount++;
@@ -294,7 +284,7 @@ public class BuiltInChessAI implements ChessAI {
 
         for (int[] mv : moves) {
             boolean capture = b[mv[2]][mv[3]] != 0;
-            TrieMove undo = makeMove(b, mv);
+            int captured = makeMove(b, mv);
             // 递归可抛 SearchAbort：finally 保证回滚
             try {
                 if (!ChessRules.inCheckOnBoard(b, red)) {
@@ -305,7 +295,7 @@ public class BuiltInChessAI implements ChessAI {
                     if (score > alpha) alpha = score;
                 }
             } finally {
-                unmakeMove(b, mv, undo);
+                unmakeMove(b, mv, captured);
             }
             if (alpha >= beta) {
                 if (!capture) { int code = encodeMove(mv); history[code] += 4; }
@@ -314,8 +304,6 @@ public class BuiltInChessAI implements ChessAI {
         }
         return alpha;
     }
-
-    // ── 评估 ─────────────────────────────────────────────
 
     /**
      * 增强评估（从走子方视角，正=本方占优）：
@@ -360,8 +348,6 @@ public class BuiltInChessAI implements ChessAI {
         return defenders == 0 ? -12 : defenders <= 2 ? (defenders - 1) * 12 : 20;
     }
 
-    // ── 走法生成与排序 ─────────────────────────────────────
-
     private List<int[]> orderedMoves(int[][] b, boolean red, int ply, int ttMoveCode) {
         List<int[]> legal = ChessRules.legalMoves(b, red);
         int k0 = kill(ply, 0), k1 = kill(ply, 1);
@@ -401,15 +387,13 @@ public class BuiltInChessAI implements ChessAI {
 
     private int kill(int ply, int slot) { return (ply >= 0 && ply < killers.length) ? killers[ply][slot] : 0; }
 
-    private void updateKillerAndHistory(int[][] b, int[] mv, int ply, int depth) {
+    private void updateKillerAndHistory(int[] mv, int ply, int depth) {
         int code = encodeMove(mv);
         if (ply >= 0 && ply < killers.length) {
             if (killers[ply][0] != code) { killers[ply][1] = killers[ply][0]; killers[ply][0] = code; }
         }
         history[code] += depth * depth;
     }
-
-    // ── 置换表 ─────────────────────────────────────────
 
     private void storeTt(long key, int move, int score, int depth, int flag) {
         int idx = (int) key & TT_MASK;
@@ -421,21 +405,15 @@ public class BuiltInChessAI implements ChessAI {
 
     private static int encodeMove(int[] mv) { return (mv[0] * 10 + mv[1]) * 90 + (mv[2] * 10 + mv[3]); }
 
-    // ── 走法执行 ─────────────────────────────────────────
-
-    private static final class TrieMove { final int captured; TrieMove(int c) { captured = c; } }
-
-    private TrieMove makeMove(int[][] b, int[] mv) {
-        TrieMove undo = new TrieMove(b[mv[2]][mv[3]]);
+    private int makeMove(int[][] b, int[] mv) {
+        int captured = b[mv[2]][mv[3]];
         b[mv[2]][mv[3]] = b[mv[0]][mv[1]]; b[mv[0]][mv[1]] = 0;
-        return undo;
+        return captured;
     }
 
-    private void unmakeMove(int[][] b, int[] mv, TrieMove undo) {
-        b[mv[0]][mv[1]] = b[mv[2]][mv[3]]; b[mv[2]][mv[3]] = undo.captured;
+    private void unmakeMove(int[][] b, int[] mv, int captured) {
+        b[mv[0]][mv[1]] = b[mv[2]][mv[3]]; b[mv[2]][mv[3]] = captured;
     }
-
-    // ── Zobrist ─────────────────────────────────────────
 
     private long zobrist(int[][] b, boolean red) {
         long h = 0;

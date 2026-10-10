@@ -33,7 +33,7 @@ public class MemoryCardScreen extends Screen {
     private int startX, startY;
     private int moves;
     private long startTime;
-    private boolean waitingForFlipBack; // 新增: 标记是否正在等待翻回卡片
+    private boolean waitingForFlipBack; // 等待翻回未匹配的卡片
     private int flipBackDelay; // 翻回前的剩余等待tick数(替代tell+sleep，避免冻结主线程)
     private Card pendingFirst; // 等待翻回的第一张卡
     private Card pendingSecond; // 等待翻回的第二张卡
@@ -99,7 +99,7 @@ public class MemoryCardScreen extends Screen {
     @Override
     public void init() {
         clearWidgets();
-        // ★ 修复偏移：构造时 width/height 为0，必须在 init 中重新计算网格位置
+        // 构造时屏幕尺寸未就绪，布局在 init 中计算。
         startX = (this.width - (GRID_COLS * (CARD_SIZE + CARD_MARGIN))) / 2;
         startY = (this.height - (GRID_ROWS * (CARD_SIZE + CARD_MARGIN))) / 2;
         int centerX = this.width / 2;

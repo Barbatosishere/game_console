@@ -25,12 +25,10 @@ import java.util.Random;
 public class BlackHoleGameScreen extends Screen {
     boolean showExitConfirm = false;
     private static final ResourceLocation BACKGROUND = ResourceUtil.createMinecraftInstance("textures/block/obsidian.png");
-    // ★ Bug修复：原版每帧 render 中 new 3 个 ResourceLocation(60FPS=180次/s 反射),
-    //   提升为 static final,启动时创建一次
     private static final ResourceLocation DIAMOND_TEX = ResourceUtil.createMinecraftInstance("textures/block/diamond_block.png");
     private static final ResourceLocation REDSTONE_TEX = ResourceUtil.createMinecraftInstance("textures/block/redstone_block.png");
     private static final ResourceLocation EMERALD_TEX = ResourceUtil.createMinecraftInstance("textures/block/emerald_block.png");
-    
+
     private GameState gameState;
     private Player player;
     private List<Enemy> enemies;
@@ -40,21 +38,20 @@ public class BlackHoleGameScreen extends Screen {
     private int gameTime;
     private float cameraX, cameraY, cameraZ;
     private final boolean[] keys = new boolean[512];
-    
+
     public BlackHoleGameScreen() {
         super(Component.literal("黑洞大作战"));
         this.gameState = GameState.PLAYING;
         this.random = new Random();
         initGame();
     }
-    
+
     private void initGame() {
-        // 修复：重开游戏时清理按键状态，避免残留按键导致角色自动移动
+
         Arrays.fill(keys, false);
-        // 初始化玩家 (屏幕中心)
+
         this.player = new Player(0, 0, 0, 20);
-        
-        // 初始化敌人列表
+
         this.enemies = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
             enemies.add(new Enemy(
@@ -64,8 +61,7 @@ public class BlackHoleGameScreen extends Screen {
                 random.nextFloat() * 15 + 5
             ));
         }
-        
-        // 初始化食物
+
         this.foods = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
             foods.add(new Food(
@@ -75,21 +71,16 @@ public class BlackHoleGameScreen extends Screen {
                 random.nextFloat() * 5 + 1
             ));
         }
-        
+
         this.particles = new ArrayList<>();
         this.gameTime = 0;
         this.cameraX = 0;
         this.cameraY = 0;
         this.cameraZ = 50;
-        // 重开局时恢复为进行中状态，否则游戏结束后重开会一直停留在结算界面
+
         this.gameState = GameState.PLAYING;
     }
-    
-    @Override
-    public void init() {
-        super.init();
-    }
-    
+
     @Override
     public void tick() {
         super.tick();
@@ -99,25 +90,20 @@ public class BlackHoleGameScreen extends Screen {
             updateGame();
         }
     }
-    
+
     private void updateGame() {
-        // 更新玩家位置
+
         updatePlayer();
-        
-        // 更新敌人AI
+
         updateEnemies();
-        
-        // 检测碰撞
+
         checkCollisions();
-        
-        // 更新粒子效果
+
         updateParticles();
-        
-        // 更新摄像机跟随玩家
+
         cameraX = Mth.lerp(0.1f, cameraX, player.x);
         cameraY = Mth.lerp(0.1f, cameraY, player.y);
-        
-        // 生成新的食物
+
         if (gameTime % 60 == 0 && foods.size() < 100) {
             foods.add(new Food(
                 random.nextFloat() * 800 - 400,
@@ -129,30 +115,24 @@ public class BlackHoleGameScreen extends Screen {
 
         generateNearbyEntities();
     }
-    
+
     private void updatePlayer() {
         float speed = 2.0f;
-        
-        // 键盘控制
+
         if (keys[87]) player.y -= speed; // W
         if (keys[83]) player.y += speed; // S
         if (keys[65]) player.x -= speed; // A
         if (keys[68]) player.x += speed; // D
-        
-        // 限制移动范围
-//        player.x = Mth.clamp(player.x, -500, 500);
-//        player.y = Mth.clamp(player.y, -500, 500);
+
     }
 
     private void generateNearbyEntities() {
         int range = 500; // 每次扩展区域的半径
 
-        // 食物生成
         while (foods.size() < 100) {
             float fx = player.x + random.nextFloat() * range * 2 - range;
             float fy = player.y + random.nextFloat() * range * 2 - range;
 
-            // 判断是否已经有食物在这附近
             boolean near = false;
             for (Food f : foods) {
                 if (Math.abs(f.x - fx) < 10 && Math.abs(f.y - fy) < 10) {
@@ -202,7 +182,7 @@ public class BlackHoleGameScreen extends Screen {
             float speed = 0.5f;
 
             if (distance > 0 && distance < 200) {
-                // 修复：distance==0 时除零会产生 NaN 导致敌人坐标崩坏
+                // 距离为零时跳过归一化，避免产生 NaN。
                 dx /= distance;
                 dy /= distance;
 
@@ -217,13 +197,13 @@ public class BlackHoleGameScreen extends Screen {
                 } // 否则就不动
             }
 
-            // 简单的随机移动（增强智能感）
+            // 随机游走
             if (random.nextFloat() < 0.02f) {
                 enemy.x += (random.nextFloat() - 0.5f) * 2;
                 enemy.y += (random.nextFloat() - 0.5f) * 2;
             }
 
-            // 敌人之间碰撞略微推动（保留）
+            // 碰撞后分离敌人
             for (Enemy other : enemies) {
                 if (other != enemy) {
                     float edx = other.x - enemy.x;
@@ -239,10 +219,8 @@ public class BlackHoleGameScreen extends Screen {
             }
         }
 
-        // 移除过小的敌人
         enemies.removeIf(enemy -> enemy.size < 2);
     }
-
 
     private void checkCollisions() {
         // 玩家吃食物
@@ -250,7 +228,7 @@ public class BlackHoleGameScreen extends Screen {
             float dx = player.x - food.x;
             float dy = player.y - food.y;
             float distance = (float) Math.sqrt(dx * dx + dy * dy);
-            
+
             if (distance < player.size / 2 + food.size) {
                 player.size += food.size * 0.2f;
                 createParticles(food.x, food.y, 5);
@@ -258,13 +236,13 @@ public class BlackHoleGameScreen extends Screen {
             }
             return false;
         });
-        
+
         // 玩家与敌人碰撞
         for (Enemy enemy : enemies) {
             float dx = player.x - enemy.x;
             float dy = player.y - enemy.y;
             float distance = (float) Math.sqrt(dx * dx + dy * dy);
-            
+
             if (distance < player.size / 2 + enemy.size / 2) {
                 if (player.size > enemy.size) {
                     player.size += enemy.size * 0.3f;
@@ -276,7 +254,7 @@ public class BlackHoleGameScreen extends Screen {
             }
         }
     }
-    
+
     private void createParticles(float x, float y, int count) {
         for (int i = 0; i < count; i++) {
             particles.add(new Particle(
@@ -291,7 +269,7 @@ public class BlackHoleGameScreen extends Screen {
             Minecraft.getInstance().player.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0F, 1.0F);
         }
     }
-    
+
     private void updateParticles() {
         particles.removeIf(particle -> {
             particle.x += particle.vx;
@@ -300,36 +278,35 @@ public class BlackHoleGameScreen extends Screen {
             return particle.life <= 0;
         });
     }
-    
+
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        // 绘制背景
+
         renderBackground(graphics);
-        
+
         PoseStack poseStack = graphics.pose();
         poseStack.pushPose();
-        
-        // 应用摄像机变换
+
         poseStack.translate(width / 2.0, height / 2.0, 0);
         poseStack.translate(-cameraX, -cameraY, 0);
-        
+
         if (gameState == GameState.PLAYING) {
             // 渲染游戏对象
-            renderFoods(graphics, poseStack);
-            renderPlayer(graphics, poseStack);
-            renderEnemies(graphics, poseStack);
-            renderParticles(graphics, poseStack);
+            renderFoods(graphics);
+            renderPlayer(graphics);
+            renderEnemies(graphics);
+            renderParticles(graphics);
         }
-        
+
         poseStack.popPose();
-        
+
         // 渲染UI
         renderUI(graphics);
-        
+
         super.render(graphics, mouseX, mouseY, partialTick);
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(graphics, font, width, height, mouseX, mouseY);
     }
-    
+
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 游戏已在render()中绘制不透明背景,阻止默认32x32菜单纹理和模糊效果
@@ -340,92 +317,87 @@ public class BlackHoleGameScreen extends Screen {
         RenderSystem.setShaderTexture(0, BACKGROUND);
         graphics.blit(BACKGROUND, 0, 0, 0, 0, width, height, 16, 16);
     }
-    
-    private void renderPlayer(GuiGraphics graphics, PoseStack poseStack) {
+
+    private void renderPlayer(GuiGraphics graphics) {
         int size = (int) (player.size * (50 + cameraZ) / 100.0f);
         int x = (int) player.x - size / 2;
         int y = (int) player.y - size / 2;
-        
+
         // 使用钻石块纹理表示玩家
         graphics.blit(DIAMOND_TEX, x, y, 0, 0, size, size, 16, 16);
-        
+
         // 绘制光环效果
         drawCircle(graphics, (int) player.x, (int) player.y, size / 2 + 2, 0x4400FFFF);
     }
-    
-    private void renderEnemies(GuiGraphics graphics, PoseStack poseStack) {
+
+    private void renderEnemies(GuiGraphics graphics) {
         for (Enemy enemy : enemies) {
             if (enemy.size <= 0) continue;
-            
+
             float distance = (float) Math.sqrt(
-                (enemy.x - cameraX) * (enemy.x - cameraX) + 
+                (enemy.x - cameraX) * (enemy.x - cameraX) +
                 (enemy.y - cameraY) * (enemy.y - cameraY)
             );
-            
+
             int size = (int) (enemy.size * (50 + cameraZ - distance * 0.1f) / 100.0f);
             if (size < 2) continue;
-            
+
             int x = (int) enemy.x - size / 2;
             int y = (int) enemy.y - size / 2;
-            
+
             graphics.blit(REDSTONE_TEX, x, y, 0, 0, size, size, 16, 16);
         }
     }
-    
-    private void renderFoods(GuiGraphics graphics, PoseStack poseStack) {
+
+    private void renderFoods(GuiGraphics graphics) {
         for (Food food : foods) {
             float distance = (float) Math.sqrt(
-                (food.x - cameraX) * (food.x - cameraX) + 
+                (food.x - cameraX) * (food.x - cameraX) +
                 (food.y - cameraY) * (food.y - cameraY)
             );
-            
+
             int size = Math.max(2, (int) (food.size * (50 + cameraZ - distance * 0.1f) / 100.0f));
             int x = (int) food.x - size / 2;
             int y = (int) food.y - size / 2;
-            
+
             graphics.blit(EMERALD_TEX, x, y, 0, 0, size, size, 16, 16);
         }
     }
-    
-    private void renderParticles(GuiGraphics graphics, PoseStack poseStack) {
+
+    private void renderParticles(GuiGraphics graphics) {
         for (Particle particle : particles) {
             int alpha = (int) (255 * particle.life / 60.0f);
             int color = (alpha << 24) | 0xFFFF00;
-            
-            graphics.fill((int) particle.x - 1, (int) particle.y - 1, 
+
+            graphics.fill((int) particle.x - 1, (int) particle.y - 1,
                          (int) particle.x + 1, (int) particle.y + 1, color);
         }
     }
-    
+
     private void renderUI(GuiGraphics graphics) {
-        // 分数显示
+
         String score = "大小: " + String.format("%.1f", player.size);
         graphics.drawString(minecraft.font, score, 10, 10, 0xFFFFFF);
-        
-        // 敌人数量
-//        String enemies = "敌人: " + this.enemies.size();
-//        graphics.drawString(minecraft.font, enemies, 10, 25, 0xFFFFFF);
-        
-        // 游戏结束界面
+
         if (gameState == GameState.GAME_OVER) {
             int centerX = width / 2;
             int centerY = height / 2;
-            
+
             graphics.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
             graphics.fill(0, 0, width, height, 0x80000000);
-            
+
             String gameOver = "游戏结束!";
             int textWidth = minecraft.font.width(gameOver);
-            graphics.drawString(minecraft.font, gameOver, 
+            graphics.drawString(minecraft.font, gameOver,
                               centerX - textWidth / 2, centerY - 20, 0xFF0000);
-            
+
             String restart = "按 R 重新开始";
             int restartWidth = minecraft.font.width(restart);
-            graphics.drawString(minecraft.font, restart, 
+            graphics.drawString(minecraft.font, restart,
                               centerX - restartWidth / 2, centerY + 10, 0xFFFFFF);
         }
     }
-    
+
     private void drawCircle(GuiGraphics graphics, int centerX, int centerY, int radius, int color) {
         for (int i = 0; i < 360; i += 10) {
             double angle = Math.toRadians(i);
@@ -434,7 +406,7 @@ public class BlackHoleGameScreen extends Screen {
             graphics.fill(x - 1, y - 1, x + 1, y + 1, color);
         }
     }
-    
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -444,15 +416,14 @@ public class BlackHoleGameScreen extends Screen {
         }
         if (showExitConfirm) return true;
         if (keyCode >= 0 && keyCode < keys.length) keys[keyCode] = true;
-        
-        // R键重新开始
+
         if (keyCode == 82 && gameState == GameState.GAME_OVER) {
             initGame();
         }
-        
+
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
-    
+
     @Override
     public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
         if (keyCode >= 0 && keyCode < keys.length) keys[keyCode] = false;
@@ -464,22 +435,20 @@ public class BlackHoleGameScreen extends Screen {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         return super.mouseClicked(mx, my, btn);
     }
-    
+
     @Override
     public boolean isPauseScreen() {
         return false;
     }
-    
-    // 游戏状态枚举
+
     private enum GameState {
         PLAYING,
         GAME_OVER
     }
-    
-    // 游戏对象类
+
     private static class GameObject {
         float x, y, z, size;
-        
+
         GameObject(float x, float y, float z, float size) {
             this.x = x;
             this.y = y;
@@ -487,29 +456,29 @@ public class BlackHoleGameScreen extends Screen {
             this.size = size;
         }
     }
-    
+
     private static class Player extends GameObject {
         Player(float x, float y, float z, float size) {
             super(x, y, z, size);
         }
     }
-    
+
     private static class Enemy extends GameObject {
         Enemy(float x, float y, float z, float size) {
             super(x, y, z, size);
         }
     }
-    
+
     private static class Food extends GameObject {
         Food(float x, float y, float z, float size) {
             super(x, y, z, size);
         }
     }
-    
+
     private static class Particle {
         float x, y, vx, vy;
         int life;
-        
+
         Particle(float x, float y, float vx, float vy, int life) {
             this.x = x;
             this.y = y;

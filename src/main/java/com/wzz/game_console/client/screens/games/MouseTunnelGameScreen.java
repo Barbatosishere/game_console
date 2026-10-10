@@ -102,8 +102,6 @@ public class MouseTunnelGameScreen extends Screen {
 
     @Override
     public void init() {
-        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
-        //   都会叠加新按钮,玩家点击可能被最底层旧按钮拦截
         this.clearWidgets();
         super.init();
         boolean playing = gameState == GameState.PLAYING;
@@ -346,8 +344,6 @@ public class MouseTunnelGameScreen extends Screen {
             GameScores.record("mousetunnel", score);
         }
 
-        // ★ Bug修复：100 分胜利 / 碰墙失败后确保退出弹窗状态被清掉，
-        //   否则开始/返回按钮可见但被 showExitConfirm 拦截点击，导致"100分后无反应"
         showExitConfirm = false;
         exitDialogOpenedAtMs = 0;
 

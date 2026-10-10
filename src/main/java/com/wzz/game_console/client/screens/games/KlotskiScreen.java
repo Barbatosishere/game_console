@@ -23,7 +23,6 @@ public class KlotskiScreen extends Screen {
 
     private static final int BW = 4, BH = 5; // 棋盘宽高（格）
 
-    // ── 颜色 ──────────────────────────────────────────
     private static final int C_BG      = 0xFF080E1C;
     private static final int C_BOARD   = 0xFF0D1628;
     private static final int C_BORDER  = 0xFF1E3A5F;
@@ -38,9 +37,7 @@ public class KlotskiScreen extends Screen {
     private static final int C_SOLD_HL = 0xFF666644;
     private static final int C_SEL_BDR = 0xFF00CCFF; // 选中边框
 
-    // ── 状态 ──────────────────────────────────────────
-    // ★ Bug修复：不能带初始化器，否则 init() 的 board==null 首次判断恒 false，首次打开棋盘为空。
-    //   board 只在 loadLevel 中分配，init()（setScreen 首次打开必经）据此加载第一关
+    // board 为 null 表示尚未加载关卡。
     private Piece[][] board;
     private List<Piece> pieces = new ArrayList<>();
     private Piece selected = null;
@@ -55,28 +52,27 @@ public class KlotskiScreen extends Screen {
     private final Deque<int[]> undoStack = new ArrayDeque<>();
     private static final int MAX_UNDO = 200;
 
-    // ── 关卡定义 ──────────────────────────────────────
     // 每关 = 多条 {x, y, w, h, nameIndex, colorType}
     // nameIndex: 0=曹,1=关,2=张,3=马,4=赵,5=黄,6=兵  colorType: 0=曹,1=大将,2=小兵
     private static final String[] NAMES = {"曹","关","张","马","赵","黄","兵"};
     private static final int[][][] LEVELS = {
-        // ── 关卡1 横刀立马 ──
+        // 关卡1 横刀立马
         {{1,0,2,2,0,0},{0,0,1,2,2,1},{3,0,1,2,5,1},{1,2,2,1,1,1},
          {0,2,1,2,4,1},{3,2,1,2,3,1},{1,3,1,1,6,2},{2,3,1,1,6,2},
          {0,4,1,1,6,2},{3,4,1,1,6,2}},
-        // ── 关卡2 指挥若定 ──
+        // 关卡2 指挥若定
         {{1,0,2,2,0,0},{0,0,1,2,3,1},{3,0,1,2,5,1},{0,2,2,1,1,1},
          {2,2,1,2,4,1},{3,2,1,2,2,1},{0,3,1,1,6,2},{1,4,1,1,6,2},
          {2,4,1,1,6,2},{3,4,1,1,6,2}},
-        // ── 关卡3 将拥曹营 ──
+        // 关卡3 将拥曹营
         {{1,1,2,2,0,0},{0,0,1,2,2,1},{3,0,1,2,3,1},{1,0,2,1,1,1},
          {0,3,1,2,4,1},{3,3,1,2,5,1},{1,3,1,1,6,2},{2,3,1,1,6,2},
          {0,2,1,1,6,2},{3,2,1,1,6,2}},
-        // ── 关卡4 兵分三路 ──
+        // 关卡4 兵分三路
         {{1,0,2,2,0,0},{0,0,1,2,3,1},{3,0,1,2,2,1},{0,2,1,1,6,2},
          {3,2,1,1,6,2},{0,3,2,1,1,1},{2,3,2,1,5,1},{1,2,2,1,4,1},
          {0,4,1,1,6,2},{3,4,1,1,6,2}},
-        // ── 关卡5 雷霆万钧 ──
+        // 关卡5 雷霆万钧
         {{1,0,2,2,0,0},{0,0,1,2,2,1},{3,0,1,2,3,1},{1,2,1,2,4,1},
          {2,2,1,2,5,1},{0,2,1,1,6,2},{3,2,1,1,6,2},{0,4,1,1,6,2},
          {1,4,1,1,6,2},{3,4,1,1,6,2}},
@@ -92,16 +88,10 @@ public class KlotskiScreen extends Screen {
         tileSize = Math.max(36, Math.min(64, max));
         bx = (width  - BW * tileSize) / 2;
         by = (height - BH * tileSize) / 2;
-        // ★ Bug修复：原版 !won && pieces.isEmpty() 条件过宽,玩家赢了之后
-        //   pieces 被清空 + won=true,缩放窗口后 !won=false 不进,但代码意图是
-        //   防止"已进行中重置";若逻辑分支(赢后 pieces 残留)不同则可能重置进度。
-        //   改用 board == null 作为首次进入判断,board 是 loadLevel 唯一来源
         if (board == null) loadLevel(currentLevel);
     }
 
-    // ══════════════════════════════════════════════════
     //  关卡加载
-    // ══════════════════════════════════════════════════
     private void loadLevel(int lv) {
         currentLevel = Math.max(1, Math.min(lv, LEVELS.length));
         board = new Piece[BH][BW];
@@ -119,9 +109,7 @@ public class KlotskiScreen extends Screen {
         }
     }
 
-    // ══════════════════════════════════════════════════
     //  棋盘操作
-    // ══════════════════════════════════════════════════
     private void place(Piece p, int nx, int ny) {
         clear(p);
         p.x = nx; p.y = ny;
@@ -176,15 +164,13 @@ public class KlotskiScreen extends Screen {
         }
     }
 
-    // ══════════════════════════════════════════════════
     //  输入
-    // ══════════════════════════════════════════════════
     @Override public void tick() { tickCount++; }
 
     @Override public boolean mouseClicked(double mx, double my, int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
         if (won) {
-            // 下一关按钮（修复：点击区与 drawWin 中的绘制区统一，cay=cy-ch/2=cy-50，按钮在 cay+52..cay+74）
+            // 点击区与 drawWin 中的下一关按钮保持一致。
             int cx = width/2, cy = height/2;
             int cay = cy - 50;
             if (mx >= cx-60 && mx <= cx+60 && my >= cay+52 && my <= cay+74) {
@@ -194,8 +180,7 @@ public class KlotskiScreen extends Screen {
             }
             return true;
         }
-        // ★ Bug修复：Java (int) 向零截断，棋盘原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
-        //   会误命中第0行/列，先按负坐标/超出棋盘统一处理
+        // 先排除负坐标，避免整数截断将棋盘外点击映射到第 0 格。
         if (mx < bx || my < by) { selected = null; return true; }
         int gx = (int)((mx - bx) / tileSize), gy = (int)((my - by) / tileSize);
         if (gx < 0 || gx >= BW || gy < 0 || gy >= BH) { selected = null; return true; }
@@ -237,9 +222,7 @@ public class KlotskiScreen extends Screen {
         return super.keyPressed(key, scan, mods);
     }
 
-    // ══════════════════════════════════════════════════
     //  渲染
-    // ══════════════════════════════════════════════════
     @Override public void render(GuiGraphics g, int mx, int my, float pt) {
         // 背景
         g.fillGradient(0, 0, width, height, C_BG, 0xFF0C1525);
@@ -383,7 +366,6 @@ public class KlotskiScreen extends Screen {
 
     @Override public boolean isPauseScreen() { return false; }
 
-    // ── 棋子数据 ──────────────────────────────────────
     private static class Piece {
         int x, y, w, h;
         final String name;

@@ -23,7 +23,6 @@ public final class GoSelfPlayTrainer {
         public int maxReplaySamples = 20_000;
     }
 
-    // ── 8-fold 对称增强 ──────────────────────────────────────────
     private static final int BOARD_SIZE = 19;
     private static final int BOARD_FEATURES = BOARD_SIZE * BOARD_SIZE;
     private static final int AUX_FEATURES = 24;
@@ -182,9 +181,7 @@ public final class GoSelfPlayTrainer {
             return new Result(games, newSamples.size(), completed, loss, evaluator);
         } finally {
             pool.shutdownNow();
-            // ★ Bug修复：原版 shutdownNow 后立即返回,持有 JNI/native 资源
-            //   (NeuralEvaluator+OpenCLBackend) 的 worker 可能未释放完毕,
-            //   下次训练启动会拿半初始化状态
+            // 等待 worker 释放原生资源后再结束训练。
             try {
                 if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
                     System.err.println("[自对弈] 训练线程池 5s 内未关闭,放弃等待");
@@ -209,19 +206,6 @@ public final class GoSelfPlayTrainer {
             // O(n) 批量移除，避免逐条 remove(0) 的 O(n²)
             replayBuffer.subList(0, replayBuffer.size() - max).clear();
         }
-    }
-
-    /**
-     * 余弦退火学习率。
-     * @param initialLr 初始学习率
-     * @param currentStep 当前步数（0-based）
-     * @param totalSteps 总步数
-     * @return 当前学习率
-     */
-    public static double cosineLearningRate(double initialLr, int currentStep, int totalSteps) {
-        if (totalSteps <= 0) return initialLr;
-        double ratio = (double) currentStep / totalSteps;
-        return initialLr * 0.5 * (1.0 + Math.cos(Math.PI * ratio));
     }
 
     private GameSamples playGame(NeuralEvaluator sharedEvaluator, long seed, double explorationScale) {

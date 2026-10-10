@@ -2,7 +2,7 @@ package com.wzz.game_console.client.screens.games.landlord;
 
 import com.wzz.game_console.client.screens.GameSelectorScreen;
 import com.wzz.game_console.client.screens.games.LanMultiplayerScreen;
-import com.wzz.game_console.init.ModNetworks;
+import net.neoforged.neoforge.network.PacketDistributor;
 import com.wzz.game_console.network.MultiplayerGamePacket;
 import com.wzz.game_console.network.MultiplayerInviteAttempt;
 import com.wzz.game_console.util.GameRenderHelper;
@@ -33,7 +33,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private static final int LAN_NONE=0,LAN_HOST=1,LAN_CLIENT=2;
     private static final int CARD_W=28,CARD_H=42,CARD_SP=22;
 
-    // ── 游戏逻辑 ──────────────────────────────────────
     private LandlordGame game;
     private AIPlayer ai1,ai2;
     private List<Card> selectedCards = new ArrayList<>();
@@ -42,7 +41,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private long  lastAiTick = 0;
     private static final int AI_DELAY = 25;
 
-    // ── LAN ───────────────────────────────────────────
     private int  lanMode     = LAN_NONE;
     private UUID hostSelfUuid = null;  // host's own UUID for 3-player LAN
     private UUID peer1Uuid   = null;
@@ -72,7 +70,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         return token == 0 ? 1 : token;
     }
 
-    // ── UI 状态 ───────────────────────────────────────
     private String msg=""; private long msgTick=-9999;
     private String lastInfo="";
     private long tickCount=0;
@@ -80,7 +77,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private static final int BG1=0xFF060C18,BG2=0xFF081220;
     private static final int PBG=0xFF0D1A2E,PBD=0xFF1E3A5F;
 
-    // ══ 构造器 ════════════════════════════════════════
     public LandlordGameScreen(){
         this(false);
     }
@@ -92,22 +88,18 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         // 让AI使用完整牌型分析（否则只走findSimpleBeat，无炸弹时不会应对顺子/连对等）
         ai1.setGameReference(game); ai2.setGameReference(game);
     }
-    public LandlordGameScreen(boolean isHost, UUID hostSelf, UUID p1, UUID p2){
+    public LandlordGameScreen(UUID hostSelf, UUID p1, UUID p2){
         super(Component.literal("斗地主"));
         lanMode=LAN_HOST; hostSelfUuid=hostSelf; peer1Uuid=p1; peer2Uuid=p2; myPlayerIdx=0;
         game=new LandlordGame();
     }
-    public LandlordGameScreen(boolean isHost,UUID host){
-        this(isHost, host, null);
-    }
-    public LandlordGameScreen(boolean isHost, UUID host, UUID inviteAttemptNonce){
+    public LandlordGameScreen(UUID host, UUID inviteAttemptNonce){
         super(Component.literal("斗地主"));
         lanMode=LAN_CLIENT; hostUuid=host; this.inviteAttemptNonce=inviteAttemptNonce;
         myPlayerIdx=-1; waitingStart=true;
         game=new LandlordGame();
     }
 
-    // ══ LanMultiplayerScreen ═════════════════════════
     @Override public UUID getLanPeer(){return peer1Uuid!=null?peer1Uuid:hostUuid;}
     @Override public String getLanGameId(){return "landlord";}
     /** 三人对局：HOST 端任一客机（peer1/peer2）的退出都合法，其余来源一律拒绝 */
@@ -229,20 +221,19 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
             showMsg("游戏开始！你是 " + name(myPlayerIdx));
         }
     }
-    @Override public void onRemoteGameOver(String d){}
 
     private void sendToHost(String d){
         if (d.startsWith("BID:") || d.startsWith("PLAY:")) {
             d = LandlordLanState.encodeAction(sessionToken, d);
         }
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
             MultiplayerGamePacket.PacketType.GAME_MOVE,hostUuid,"landlord",envelopeLanData(d)));
     }
     private void sendInitAck(long initSequence){
         sendToHost("INIT_ACK:"+myPlayerIdx+":"+sessionToken+":"+initSequence);
     }
     private void sendToPeer(UUID peer,String d){
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
             MultiplayerGamePacket.PacketType.GAME_STATE_SYNC,peer,"landlord",envelopeLanData(d)));
     }
     private void broadcastState(){
@@ -271,7 +262,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         lastInitSendTick=tickCount;
     }
 
-    // ══ Tick ═════════════════════════════════════════
     @Override public void tick(){
         tickCount++;
         if(lanMode==LAN_HOST&&initRetriesActive){
@@ -336,7 +326,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         }
     }
 
-    // ══ 渲染 ═════════════════════════════════════════
     @Override public void render(GuiGraphics g,int mx,int my,float pt){
         g.fillGradient(0,0,width,height,BG1,BG2);
         GameRenderHelper.renderDecorativeLines(g,width,height,tickCount,0x001133);
@@ -388,7 +377,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         g.fill(x-2,y-2,x+42,y+h2,bd); g.fill(x,y,x+40,y+h2-4,PBG);
         for(int i=0;i<Math.min(cnt,14);i++){g.fill(x+3,y+i*8+3,x+37,y+i*8+12,0xFF1A3055);g.fill(x+4,y+i*8+4,x+36,y+i*8+11,0xFF223366);}
         int ty=y+Math.min(cnt,14)*8+8;
-        g.drawCenteredString(font,(active?"":"")+nm,x+20,ty,active?0x44FF88:0xAAAAAA);
+        g.drawCenteredString(font,nm,x+20,ty,active?0x44FF88:0xAAAAAA);
         g.drawCenteredString(font,""+cnt+"张",x+20,ty+10,0xCCCCCC);
     }
 
@@ -485,7 +474,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawCenteredString(font,"↺ 再来一局",cx,cay+80,bh?0xFFFFFF:0x88CCFF);
     }
 
-    // ══ 卡牌渲染 ═════════════════════════════════════
     private void drawCard(GuiGraphics g,Card c,int x,int y,boolean front,boolean hl){
         g.fill(x-1,y-1,x+CARD_W+1,y+CARD_H+1,hl?0xFF00CCFF:0xFF334455);
         if(!front){g.fill(x,y,x+CARD_W,y+CARD_H,0xFF1A3055);for(int dy=2;dy<CARD_H-2;dy+=3)g.fill(x+2,y+dy,x+CARD_W-2,y+dy+1,0xFF223366);return;}
@@ -507,7 +495,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         g.drawCenteredString(font,text,x+w/2,y+(h-8)/2,hov?0xFFFFFF:0xCCCCCC);
     }
 
-    // ══ 鼠标/键盘 ════════════════════════════════════
     @Override public boolean mouseClicked(double mx,double my,int btn){
         if(showExitConfirm){int click=GameRenderHelper.getExitConfirmClick(mx,my,width,height);if(click==1){showExitConfirm=false;exitWithLeave();return true;}if(click==2){showExitConfirm=false;return true;}return true;}
         if(game.getGameState()==LandlordGame.GameState.ENDED){
@@ -551,7 +538,6 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
         return super.keyPressed(k,sc,m);
     }
 
-    // ══ 动作 ═════════════════════════════════════════
     /** 退出对局：联机模式下先通知对方再返回，避免对端干等 */
     private void exitWithLeave(){
         stopInitRetries();
@@ -586,7 +572,7 @@ public class LandlordGameScreen extends Screen implements LanMultiplayerScreen {
     private void sendLeaveTo(UUID peer){
         if(peer==null)return;
         String data=inviteAttemptNonce==null?"":MultiplayerInviteAttempt.encode(inviteAttemptNonce);
-        ModNetworks.PACKET_HANDLER.sendToServer(new MultiplayerGamePacket(
+        PacketDistributor.sendToServer(new MultiplayerGamePacket(
             MultiplayerGamePacket.PacketType.LEAVE_GAME,peer,"landlord",data));
     }
 

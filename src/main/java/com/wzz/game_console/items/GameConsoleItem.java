@@ -1,7 +1,6 @@
 package com.wzz.game_console.items;
 
 import com.wzz.game_console.network.GameSelectorPacket;
-import com.wzz.game_console.util.NetworkHandler;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -13,6 +12,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Rarity;
 import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.level.Level;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.List;
 
@@ -24,8 +24,6 @@ public class GameConsoleItem extends Item {
     @Override
     public void appendHoverText(ItemStack p_41421_, Item.TooltipContext p_41422_, List<Component> p_41423_, TooltipFlag p_41424_) {
         super.appendHoverText(p_41421_, p_41422_, p_41423_, p_41424_);
-        // ★ Bug修复：原版硬编码中文,英文 locale 下显示原中文+奇怪拼接。
-        //   改用 translatable key,en_us.json / zh_cn.json 分别定义
         p_41423_.add(Component.translatable("tooltip.game_console.item_flavor").withStyle(ChatFormatting.GRAY, ChatFormatting.ITALIC));
         p_41423_.add(Component.translatable("tooltip.game_console.item_hint").withStyle(ChatFormatting.DARK_GRAY, ChatFormatting.ITALIC));
     }
@@ -33,7 +31,7 @@ public class GameConsoleItem extends Item {
     @Override
     public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
         if (!level.isClientSide && player instanceof ServerPlayer serverPlayer) {
-            NetworkHandler.sendToPlayer(new GameSelectorPacket(), serverPlayer);
+            PacketDistributor.sendToPlayer(serverPlayer, new GameSelectorPacket());
         }
         return InteractionResultHolder.sidedSuccess(player.getItemInHand(hand), level.isClientSide());
     }

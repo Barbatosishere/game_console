@@ -66,10 +66,7 @@ public class AIPlayer {
             }
         }
 
-        // ★ Bug修复：原版 findMinimalBeat 内部找不到压牌时回退到 findAnyBomb(炸),
-        //   即使"用炸弹压对方一张小牌"明显不划算,联机模式下 HOST 还会再被拒收
-        //   导致 AI 丢回合。先看压牌结果是否真的是 bomb,如果是且手牌较多,
-        //   走"过牌"分支避免无谓消耗。result==null 仍走主动出牌兜底(对手刚出炸等场景)。
+        // 手牌较多时避免用炸弹压普通牌；无压牌结果时交给主动出牌逻辑。
         List<Card> result = findMinimalBeat(hand, lastCards);
 
         // 如果手牌很少，更积极地出牌
@@ -110,8 +107,6 @@ public class AIPlayer {
     }
 
     private List<Card> chooseActivePlay(List<Card> hand) {
-        // ★ Bug修复：原版无空手防御,game.getPlayerHand 返回空时 hand.get(0) 抛
-        //   IOOB 中断 tick 致 game 卡住
         if (hand == null || hand.isEmpty()) return new ArrayList<>();
         // groupByValue 返回 TreeMap（升序）：领出/跟牌都从最小的组开始
         Map<Integer, List<Card>> groups = groupByValue(hand);
@@ -240,16 +235,15 @@ public class AIPlayer {
             case TRIPLE -> findMinimalTriple(sortedHand, targetPattern.getValue());
             case TRIPLE_WITH_ONE -> findMinimalTripleWithOne(sortedHand, targetPattern.getValue());
             case TRIPLE_WITH_PAIR -> findMinimalTripleWithPair(sortedHand, targetPattern.getValue());
-            case STRAIGHT -> findMinimalStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
-            case PAIR_STRAIGHT -> findMinimalPairStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
+            case STRAIGHT -> findMinimalRun(sortedHand, targetPattern.getValue(), targetPattern.getLength(), 1);
+            case PAIR_STRAIGHT -> findMinimalRun(sortedHand, targetPattern.getValue(), targetPattern.getLength(), 2);
             case TRIPLE_STRAIGHT ->
-                    findMinimalTripleStraight(sortedHand, targetPattern.getValue(), targetPattern.getLength());
+                    findMinimalRun(sortedHand, targetPattern.getValue(), targetPattern.getLength(), 3);
             case TRIPLE_STRAIGHT_WITH_SINGLE ->
                     findMinimalTripleStraightWithWings(sortedHand, targetPattern.getValue(), targetPattern.getLength(), false);
             case TRIPLE_STRAIGHT_WITH_PAIR ->
                     findMinimalTripleStraightWithWings(sortedHand, targetPattern.getValue(), targetPattern.getLength(), true);
-            case FOUR_WITH_TWO_SINGLES -> findAnyBomb(sortedHand);
-            case FOUR_WITH_TWO_PAIRS -> findAnyBomb(sortedHand);
+            case FOUR_WITH_TWO_SINGLES, FOUR_WITH_TWO_PAIRS -> findAnyBomb(sortedHand);
             case BOMB -> findMinimalBomb(sortedHand, targetPattern.getValue());
             case JOKER_BOMB -> null;
         };
@@ -263,9 +257,6 @@ public class AIPlayer {
             return findMinimalPair(hand, lastCards.get(0).getValue());
         } else if (lastCards.size() == 3) {
             return findMinimalTriple(hand, lastCards.get(0).getValue());
-        } else if (lastCards.size() == 4) {
-            // 可能是三带一或炸弹，尝试用炸弹
-            return findAnyBomb(hand);
         }
         return findAnyBomb(hand);
     }
@@ -307,9 +298,7 @@ public class AIPlayer {
         // 找合适的三张
         for (int tripleValue : groups.keySet()) {
             if (tripleValue > targetValue && groups.get(tripleValue).size() >= 3) {
-                // 找一张单牌当翅膀：★ Bug修复：原版按 size>=1 取最小值组，会把对子
-                //   甚至炸弹（4张组）拆掉。改为先取精确散牌(size==1)，没有才从
-                //   非炸弹的更大组里拆（见 pickWingGroup），永不碰炸弹
+                // 翅膀优先用散牌，必要时拆非炸弹牌组。
                 Integer singleValue = pickWingGroup(groups, tripleValue, 1);
                 if (singleValue != null) {
                     List<Card> result = new ArrayList<>();
@@ -328,9 +317,7 @@ public class AIPlayer {
         // 找合适的三张
         for (int tripleValue : groups.keySet()) {
             if (tripleValue > targetValue && groups.get(tripleValue).size() >= 3) {
-                // 找一对当翅膀：★ Bug修复：原版按 size>=2 取最小值组，会把三张
-                //   甚至炸弹（4张组）拆掉。改为优先精确对子(size==2)，没有才从
-                //   非炸弹的更大组里拆（见 pickWingGroup），永不碰炸弹
+                // 翅膀优先用对子，必要时拆非炸弹牌组。
                 Integer pairValue = pickWingGroup(groups, tripleValue, 2);
                 if (pairValue != null) {
                     List<Card> result = new ArrayList<>();
@@ -343,15 +330,7 @@ public class AIPlayer {
         return findAnyBomb(hand);
     }
 
-    /**
-     * 为三带一/三带二挑翅膀组（TreeMap 升序迭代，取最小值者）：
-     * 优先张数恰好匹配的组；找不到才从更大的组拆，但绝不碰 size==4 的炸弹，
-     * 避免为凑翅膀拆掉炸弹（旧逻辑 size>=n 的判断会命中 4 张组）。
-     *
-     * @param exactSize 翅膀精确张数（单牌=1，对子=2）
-     * @param exclude   三张主牌的值，不能从自身拆
-     * @return 翅膀组的值；没有合法组返回 null
-     */
+    /** 优先精确匹配的最小翅牌组，再拆较大的组；排除主体和四张炸弹。 */
     private Integer pickWingGroup(Map<Integer, List<Card>> groups, int exclude, int exactSize) {
         // 1) 精确张数的组（最小值优先）
         Integer exact = pickGroupExact(groups, exactSize, exclude);
@@ -364,63 +343,21 @@ public class AIPlayer {
         return null;
     }
 
-    private List<Card> findMinimalStraight(List<Card> hand, int targetValue, int length) {
+    /** 顺子、连对和三顺共用搜索；分组已按点数升序，只取 3-A 范围。 */
+    private List<Card> findMinimalRun(List<Card> hand, int targetValue, int length, int copies) {
         Map<Integer, List<Card>> groups = groupByValue(hand);
         List<Integer> values = new ArrayList<>();
         for (int v : groups.keySet())
-            if (v >= 3 && v <= 14) values.add(v);
-        Collections.sort(values);
+            if (v >= 3 && v <= 14 && groups.get(v).size() >= copies) values.add(v);
         for (int i = 0; i <= values.size() - length; i++) {
             boolean consecutive = true;
             for (int j = 1; j < length; j++) {
                 if (values.get(i + j) != values.get(i) + j) { consecutive = false; break; }
             }
-            if (consecutive && values.get(i) > targetValue) { // 等值压不住（canBeat 严格大于）
+            if (consecutive && values.get(i) > targetValue) {
                 List<Card> result = new ArrayList<>();
                 for (int j = 0; j < length; j++)
-                    result.add(groups.get(values.get(i + j)).get(0));
-                return result;
-            }
-        }
-        return findAnyBomb(hand);
-    }
-
-    private List<Card> findMinimalPairStraight(List<Card> hand, int targetValue, int length) {
-        Map<Integer, List<Card>> groups = groupByValue(hand);
-        List<Integer> pairValues = new ArrayList<>();
-        for (int v : groups.keySet())
-            if (v >= 3 && v <= 14 && groups.get(v).size() >= 2) pairValues.add(v);
-        Collections.sort(pairValues);
-        for (int i = 0; i <= pairValues.size() - length; i++) {
-            boolean consecutive = true;
-            for (int j = 1; j < length; j++) {
-                if (pairValues.get(i + j) != pairValues.get(i) + j) { consecutive = false; break; }
-            }
-            if (consecutive && pairValues.get(i) > targetValue) { // 等值压不住
-                List<Card> result = new ArrayList<>();
-                for (int j = 0; j < length; j++)
-                    result.addAll(groups.get(pairValues.get(i + j)).subList(0, 2));
-                return result;
-            }
-        }
-        return findAnyBomb(hand);
-    }
-
-    private List<Card> findMinimalTripleStraight(List<Card> hand, int targetValue, int length) {
-        Map<Integer, List<Card>> groups = groupByValue(hand);
-        List<Integer> tripleValues = new ArrayList<>();
-        for (int v : groups.keySet())
-            if (v >= 3 && v <= 14 && groups.get(v).size() >= 3) tripleValues.add(v);
-        Collections.sort(tripleValues);
-        for (int i = 0; i <= tripleValues.size() - length; i++) {
-            boolean consecutive = true;
-            for (int j = 1; j < length; j++) {
-                if (tripleValues.get(i + j) != tripleValues.get(i) + j) { consecutive = false; break; }
-            }
-            if (consecutive && tripleValues.get(i) > targetValue) { // 等值压不住
-                List<Card> result = new ArrayList<>();
-                for (int j = 0; j < length; j++)
-                    result.addAll(groups.get(tripleValues.get(i + j)).subList(0, 3));
+                    result.addAll(groups.get(values.get(i + j)).subList(0, copies));
                 return result;
             }
         }

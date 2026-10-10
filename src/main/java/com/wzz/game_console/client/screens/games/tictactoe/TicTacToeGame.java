@@ -142,7 +142,7 @@ public class TicTacToeGame {
             for (int j = 0; j < 3; j++) {
                 if (board[i][j] == Player.NONE) {
                     board[i][j] = player;
-                    // 修复：用试落子的玩家颜色判胜，原来用 currentPlayer 字段导致检测对手威胁永远失效
+                    // 用试落子的玩家颜色判胜，以便检测对手威胁。
                     if (checkWin(player)) {
                         board[i][j] = Player.NONE;
                         return new int[]{i, j};

@@ -10,24 +10,16 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
-/**
- * 游戏渲染工具类 - 提供所有游戏共用的美化渲染方法
- */
+/** 游戏界面共用的绘制方法。 */
 @OnlyIn(Dist.CLIENT)
 public class GameRenderHelper {
 
-    // ═══════════════ 颜色常量 ═══════════════
     public static final int BG_DARK       = 0xFF0D0D1A;
     public static final int BG_PANEL      = 0xFF1A1A2E;
-    public static final int BG_PANEL_LIGHT= 0xFF252545;
-    public static final int TEXT_WHITE     = 0xFFFFFF;
-    public static final int TEXT_GRAY     = 0xAAAAAA;
-    public static final int TEXT_GOLD     = 0xFFFF44;
     public static final int TEXT_GREEN    = 0x44FF44;
     public static final int TEXT_RED      = 0xFF4444;
     public static final int TEXT_CYAN     = 0x44CCFF;
     public static final int ACCENT_BLUE   = 0xFF2244AA;
-    public static final int ACCENT_GREEN  = 0xFF44AA44;
     public static final int ACCENT_RED    = 0xFFAA2200;
     public static final int BTN_NORMAL    = 0xFF2A3D14;
     public static final int BTN_HOVER     = 0xFF446622;
@@ -35,8 +27,6 @@ public class GameRenderHelper {
     private static final int MAX_CACHED_CIRCLE_RADIUS = 128;
     private static final AtomicReferenceArray<int[]> CIRCLE_HALF_WIDTHS =
             new AtomicReferenceArray<>(MAX_CACHED_CIRCLE_RADIUS + 1);
-
-    // ═══════════════ 背景渲染 ═══════════════
 
     /** 深色背景填充 */
     public static void fillDarkBackground(GuiGraphics g, int w, int h) {
@@ -64,8 +54,6 @@ public class GameRenderHelper {
         }
     }
 
-    // ═══════════════ 面板 & 卡片 ═══════════════
-
     /** 绘制圆角面板（用矩形近似） */
     public static void drawPanel(GuiGraphics g, int x, int y, int w, int h, int bgColor, int borderColor) {
         g.fill(x - 1, y - 1, x + w + 1, y + h + 1, borderColor);
@@ -80,8 +68,6 @@ public class GameRenderHelper {
         g.fill(x - 2, y - 2, x + w + 2, y + h + 2, borderColor);
         g.fill(x - 1, y - 1, x + w + 1, y + h + 1, darken(borderColor, 0.8f));
     }
-
-    // ═══════════════ 按钮 ═══════════════
 
     /** 绘制自定义按钮并返回是否悬停 */
     public static boolean drawButton(GuiGraphics g, Font font, String text, int x, int y, int w, int h,
@@ -109,20 +95,6 @@ public class GameRenderHelper {
         return drawButton(g, font, text, x, y, w, h, mx, my, 0xFF222233, 0xFF333355, 0xFF666688);
     }
 
-    /** 蓝色按钮 */
-    public static boolean drawBlueButton(GuiGraphics g, Font font, String text,
-                                          int x, int y, int w, int h, int mx, int my) {
-        return drawButton(g, font, text, x, y, w, h, mx, my, 0xFF142A4A, 0xFF1E3A6A, 0xFF4488CC);
-    }
-
-    /** 红色按钮 */
-    public static boolean drawRedButton(GuiGraphics g, Font font, String text,
-                                         int x, int y, int w, int h, int mx, int my) {
-        return drawButton(g, font, text, x, y, w, h, mx, my, 0xFF4A1414, 0xFF6A1E1E, 0xFFCC4444);
-    }
-
-    // ═══════════════ 文字 ═══════════════
-
     /** 带阴影的居中文字 */
     public static void drawShadowedCenteredText(GuiGraphics g, Font font, String text,
                                                  int x, int y, int color, int scale) {
@@ -135,20 +107,8 @@ public class GameRenderHelper {
         g.pose().popPose();
     }
 
-    /** 带描边的居中文字 */
-    public static void drawOutlinedCenteredText(GuiGraphics g, Font font, String text,
-                                                 int x, int y, int color, int outlineColor) {
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dy = -1; dy <= 1; dy++)
-                if (dx != 0 || dy != 0)
-                    g.drawCenteredString(font, text, x + dx, y + dy, outlineColor);
-        g.drawCenteredString(font, text, x, y, color);
-    }
-
-    // ═══════════════ HUD ═══════════════
-
     /** 顶部HUD栏 */
-    public static void drawTopHUD(GuiGraphics g, int w, int h) {
+    public static void drawTopHUD(GuiGraphics g, int w) {
         g.fill(0, 0, w, 22, 0xCC000000);
         g.fill(0, 22, w, 23, 0x44FFFFFF);
     }
@@ -159,8 +119,6 @@ public class GameRenderHelper {
         g.fill(0, h - 16, w, h - 15, 0x22FFFFFF);
         g.drawCenteredString(font, text, w / 2, h - 12, 0x666666);
     }
-
-    // ═══════════════ 游戏结束遮罩 ═══════════════
 
     /** 半透明游戏结束遮罩 */
     public static void drawGameOverOverlay(GuiGraphics g, int w, int h) {
@@ -191,23 +149,6 @@ public class GameRenderHelper {
         }
     }
 
-    // ═══════════════ 动态尺寸计算 ═══════════════
-
-    /** 计算游戏区域缩放比例 */
-    public static int calcScale(int screenW, int screenH, int gameW, int gameH) {
-        return Math.max(1, Math.min(screenW / gameW, screenH / gameH));
-    }
-
-    /** 计算居中偏移 X */
-    public static int calcOffsetX(int screenW, int gameW, int scale) {
-        return (screenW - gameW * scale) / 2;
-    }
-
-    /** 计算居中偏移 Y */
-    public static int calcOffsetY(int screenH, int gameH, int scale) {
-        return (screenH - gameH * scale) / 2;
-    }
-
     /** 根据屏幕大小计算自适应格子大小 */
     public static int calcCellSize(int screenW, int screenH, int gridW, int gridH, int margin) {
         int availW = screenW - margin * 2;
@@ -215,12 +156,7 @@ public class GameRenderHelper {
         return Math.max(8, Math.min(availW / gridW, availH / gridH));
     }
 
-    // ═══════════════ 绘制形状 ═══════════════
-
-    /**
-     * 绘制实心圆 —— 扫描线算法，每行一次 fill，性能约为逐像素版的 1/r 倍。
-     * 修复：WesternChessScreen 国际象棋卡顿问题（原版每个棋子产生 ~600 次 fill 调用）
-     */
+    /** 用扫描线绘制实心圆，每行调用一次 fill。 */
     public static void drawCircle(GuiGraphics g, int cx, int cy, int radius, int color) {
         if (radius < 0) return;
         int[] widths = radius <= MAX_CACHED_CIRCLE_RADIUS ? circleHalfWidths(radius) : null;
@@ -272,15 +208,6 @@ public class GameRenderHelper {
         if (color2 != 0) g.fill(x, y + 1, x + w, y + 2, color2);
     }
 
-    /** 绘制棋盘格背景 */
-    public static void drawCheckerboard(GuiGraphics g, int ox, int oy, int cols, int rows, int cellSize, int color1, int color2) {
-        for (int x = 0; x < cols; x++)
-            for (int y = 0; y < rows; y++)
-                g.fill(ox + x * cellSize, oy + y * cellSize,
-                        ox + (x + 1) * cellSize, oy + (y + 1) * cellSize,
-                        (x + y) % 2 == 0 ? color1 : color2);
-    }
-
     /** 绘制边长 s 的正方形方块带3D效果 */
     public static void drawBlock3D(GuiGraphics g, int x, int y, int s, int color) {
         drawBlock3D(g, x, y, s, s, color);
@@ -294,27 +221,6 @@ public class GameRenderHelper {
         g.fill(x, y + h - 1, x + w, y + h, darken(color, 0.6f));
         g.fill(x + w - 1, y, x + w, y + h, darken(color, 0.7f));
     }
-
-    /** 绘制网格线 */
-    public static void drawGrid(GuiGraphics g, int ox, int oy, int cols, int rows, int cellSize, int color) {
-        for (int x = 0; x <= cols; x++)
-            g.fill(ox + x * cellSize, oy, ox + x * cellSize + 1, oy + rows * cellSize, color);
-        for (int y = 0; y <= rows; y++)
-            g.fill(ox, oy + y * cellSize, ox + cols * cellSize, oy + y * cellSize + 1, color);
-    }
-
-    /** 绘制标准菜单布局 */
-    public static void drawMenuLayout(GuiGraphics g, Font font, int w, int h, long tick,
-                                       String title, String subtitle, int titleColor, int lineColor) {
-        int cx = w / 2, cy = h / 2;
-        fillGradientBackground(g, w, h, 0xFF0A0A18, 0xFF151530);
-        renderDecorativeLines(g, w, h, tick, lineColor);
-        drawShadowedCenteredText(g, font, title, cx, cy - 60, titleColor, 2);
-        g.drawCenteredString(font, subtitle, cx, cy - 42, darken(titleColor, 0.5f) & 0xFFFFFF);
-        drawDivider(g, cx - 80, cy - 32, 160, titleColor | 0xFF000000, darken(titleColor, 0.5f));
-    }
-
-    // ═══════════════ 颜色工具 ═══════════════
 
     /** 两个颜色之间线性插值 */
     public static int lerpColor(int c1, int c2, float t) {
@@ -353,8 +259,6 @@ public class GameRenderHelper {
     public static int withAlpha(int color, int alpha) {
         return (alpha << 24) | (color & 0xFFFFFF);
     }
-
-    // ═══════════════ 粒子系统 ═══════════════
 
     public static class Particle {
         public float x, y, vx, vy;
@@ -402,16 +306,6 @@ public class GameRenderHelper {
         }
     }
 
-    /** 兼容旧调用点：更新并渲染粒子（尚未迁移 tick() 的游戏继续使用，行为不变） */
-    public static void tickAndRenderParticles(GuiGraphics g, List<Particle> particles) {
-        tickParticles(particles);
-        for (Particle p : particles) {
-            p.render(g);
-        }
-    }
-
-    // ═══════════════ 浮动文字 ═══════════════
-
     public static class FloatingText {
         public String text;
         public float x, y, vy;
@@ -435,8 +329,6 @@ public class GameRenderHelper {
             g.drawCenteredString(font, text, (int) x, (int) y, c);
         }
     }
-
-    // ═══════════════ ESC退出确认弹窗 ═══════════════
 
     /** 绘制ESC退出确认弹窗覆盖层 */
     public static void drawExitConfirmOverlay(GuiGraphics g, Font font, int w, int h, int mx, int my) {

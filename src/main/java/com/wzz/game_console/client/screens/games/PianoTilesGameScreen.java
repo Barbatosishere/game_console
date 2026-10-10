@@ -25,7 +25,7 @@ import java.util.*;
 
 public class PianoTilesGameScreen extends Screen {
     boolean showExitConfirm = false;
-    // 音符数据类
+
     public static class Note {
         public int lane;           // 轨道 (0-3)
         public long timestamp;     // 时间戳 (毫秒)
@@ -63,7 +63,6 @@ public class PianoTilesGameScreen extends Screen {
         }
     }
 
-    // 判定结果枚举
     public enum HitResult {
         PERFECT(100, "Perfect!", 0xFF4CAF50),
         GREAT(75, "Great", 0xFF8BC34A),
@@ -81,7 +80,6 @@ public class PianoTilesGameScreen extends Screen {
         }
     }
 
-    // 游戏常量
     private static final int LANE_COUNT = 4;
     // 每条轨道的颜色（亮色）
     private static final int[] LANE_BRIGHT = {0xFF3F51B5, 0xFF4CAF50, 0xFF9C27B0, 0xFFE91E63};
@@ -89,12 +87,10 @@ public class PianoTilesGameScreen extends Screen {
     // 显示标签与实际按键绑定一致（1/2/3/4为主绑定，另有ASDF/方向键/JK等替代键）
     private static final String[] LANE_KEYS = {"1", "2", "3", "4"};
     private static final int HIT_ZONE_HEIGHT = 80;
-    private static final int PERFECT_THRESHOLD = 80;   // 从20增加到80毫秒
-    private static final int GREAT_THRESHOLD = 150;    // 从40增加到150毫秒
-    private static final int GOOD_THRESHOLD = 250;     // 从60增加到250毫秒
-    private static final int MISS_THRESHOLD = 350;     // 新增：错过阈值350毫秒
-    private static final String MUSIC_FOLDER = ExternalFileManager.MUSIC_FOLDER;
-    private static final String VOICE_FOLDER = ExternalFileManager.VOICE_FOLDER;
+    private static final int PERFECT_THRESHOLD = 80;   // 毫秒
+    private static final int GREAT_THRESHOLD = 150;
+    private static final int GOOD_THRESHOLD = 250;
+    private static final int MISS_THRESHOLD = 350;
     private static final long MAX_PTS_BYTES = 32L * 1024 * 1024;
     private static final int MAX_AUDIO_BYTES = 24 * 1024 * 1024;
     private static final int MAX_AUDIO_BASE64_CHARS = ((MAX_AUDIO_BYTES + 2) / 3) * 4;
@@ -113,148 +109,67 @@ public class PianoTilesGameScreen extends Screen {
         public boolean loadBackgroundMusic(String filePath) {
             javax.sound.sampled.Clip candidate = null;
             try {
-                debugLog("尝试加载音频文件: " + filePath);
                 File audioFile = new File(filePath);
-                debugLog("文件对象创建完成");
-                debugLog("文件存在检查: " + audioFile.exists());
-                debugLog("文件可读检查: " + audioFile.canRead());
-                debugLog("文件大小: " + audioFile.length() + " bytes");
-                debugLog("文件绝对路径: " + audioFile.getAbsolutePath());
-
-                if (!audioFile.exists()) {
-                    debugLog("音频文件不存在: " + filePath);
-
-                    // 尝试列出目录内容进行调试
-                    File parentDir = audioFile.getParentFile();
-                    if (parentDir != null && parentDir.exists()) {
-                        debugLog("父目录存在，内容列表:");
-                        File[] files = parentDir.listFiles();
-                        if (files != null) {
-                            for (File f : files) {
-                                debugLog("  - " + f.getName() + " (大小: " + f.length() + ")");
-                            }
-                        } else {
-                            debugLog("  - 无法列出目录内容");
-                        }
-                    } else {
-                        debugLog("父目录不存在: " + (parentDir != null ? parentDir.getAbsolutePath() : "null"));
-                    }
-
-                    return false;
-                }
-
-                if (!audioFile.canRead()) {
-                    debugLog("音频文件不可读: " + filePath);
-                    return false;
-                }
-
-                if (audioFile.length() == 0) {
-                    debugLog("音频文件为空: " + filePath);
-                    return false;
-                }
-                debugLog("开始创建音频输入流...");
+                if (!audioFile.exists() || !audioFile.canRead() || audioFile.length() == 0) return false;
                 try (java.io.BufferedInputStream bis = new java.io.BufferedInputStream(new java.io.FileInputStream(audioFile));
                      javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bis)) {
-                    debugLog("音频流创建成功");
-                    debugLog("开始创建音频剪辑...");
                     candidate = javax.sound.sampled.AudioSystem.getClip();
                     candidate.open(audioStream);
-                    debugLog("音频剪辑创建成功");
                     long candidateLength = candidate.getMicrosecondLength();
                     closeAudio();
                     backgroundClip = candidate;
                     candidate = null;
                     audioLength = candidateLength;
                     isLoaded = true;
-                    debugLog("音频加载成功，长度: " + (audioLength / 1000000) + " 秒");
                     setVolume(volume);
                     return true;
                 }
             } catch (Exception e) {
                 if (candidate != null) try { candidate.close(); } catch (Exception ignored) {}
-                debugLog("音频加载失败: " + e.getMessage());
                 e.printStackTrace();
                 return false;
             }
         }
 
-        public boolean loadBackgroundMusicFromMemory(byte[] audioData, String format) {
-            if (audioData == null || audioData.length == 0) {
-                debugLog("音频数据为空");
-                return false;
-            }
+        public boolean loadBackgroundMusicFromMemory(byte[] audioData) {
+            if (audioData == null || audioData.length == 0) return false;
             javax.sound.sampled.Clip candidate = null;
-            try {
-                debugLog("尝试直接从内存播放音频，数据大小: " + audioData.length + " bytes");
-                try (ByteArrayInputStream bais = new ByteArrayInputStream(audioData);
-                     javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bais)) {
-                    candidate = javax.sound.sampled.AudioSystem.getClip();
-                    candidate.open(audioStream);
-                    long candidateLength = candidate.getMicrosecondLength();
-                    closeAudio();
-                    backgroundClip = candidate;
-                    candidate = null;
-                    audioLength = candidateLength;
-                    isLoaded = true;
-                    setVolume(volume);
-                    return true;
-                }
+            try (ByteArrayInputStream bais = new ByteArrayInputStream(audioData);
+                 javax.sound.sampled.AudioInputStream audioStream = javax.sound.sampled.AudioSystem.getAudioInputStream(bais)) {
+                candidate = javax.sound.sampled.AudioSystem.getClip();
+                candidate.open(audioStream);
+                long candidateLength = candidate.getMicrosecondLength();
+                closeAudio();
+                backgroundClip = candidate;
+                candidate = null;
+                audioLength = candidateLength;
+                isLoaded = true;
+                setVolume(volume);
+                return true;
             } catch (Exception e) {
                 if (candidate != null) try { candidate.close(); } catch (Exception ignored) {}
-                debugLog("从内存加载音频失败: " + e.getMessage());
                 return false;
             }
         }
 
         public boolean loadBackgroundMusicFromData(byte[] audioData, String format) {
             try {
-                debugLog("尝试从音频数据加载，数据大小: " +
-                        (audioData != null ? audioData.length : 0) + " bytes，格式: " + format);
-                if (audioData == null || audioData.length == 0) {
-                    debugLog("音频数据为空");
-                    return false;
-                }
-                debugLog("=== 策略1: 尝试直接从内存播放 ===");
-                try {
-                    if (loadBackgroundMusicFromMemory(audioData, format)) {
-                        debugLog("策略1成功：直接从内存播放");
+                if (audioData == null || audioData.length == 0) return false;
+                if (loadBackgroundMusicFromMemory(audioData)) return true;
+                String candidatePath = createTempAudioFile(audioData, format);
+                if (candidatePath != null) {
+                    if (loadBackgroundMusic(candidatePath)) {
+                        tempAudioFile = candidatePath;
                         return true;
                     }
-                } catch (Exception e) {
-                    debugLog("策略1失败：" + e.getMessage());
+                    try { Files.deleteIfExists(Paths.get(candidatePath)); } catch (Exception ignored) {}
                 }
-                debugLog("=== 策略2: 尝试临时文件播放 ===");
-                try {
-                    String candidatePath = createTempAudioFile(audioData, format);
-                    if (candidatePath == null) {
-                        debugLog("策略2失败：创建临时音频文件失败");
-                    } else {
-                        debugLog("临时音频文件创建成功: " + candidatePath);
-                        boolean result = loadBackgroundMusic(candidatePath);
-                        if (result) {
-                            tempAudioFile = candidatePath;
-                            debugLog("策略2成功：从临时文件播放");
-                            return true;
-                        }
-                        try { Files.deleteIfExists(Paths.get(candidatePath)); } catch (Exception ignored) {}
-                        debugLog("策略2失败：从临时文件加载音频失败");
-                    }
-                } catch (Exception e) {
-                    debugLog("策略2异常：" + e.getMessage());
-                }
-                debugLog("所有加载策略都失败了");
                 return false;
 
             } catch (Exception e) {
-                debugLog("从音频数据加载失败: " + e.getMessage());
                 e.printStackTrace();
                 return false;
             }
-        }
-
-
-        private void debugLog(String message) {
-            //BlueArchivesLogger.println("[GameAudioPlayer] " + message);
         }
 
         private String createTempAudioFile(byte[] audioData, String format) {
@@ -273,7 +188,6 @@ public class PianoTilesGameScreen extends Screen {
                 }
                 return tempFile.toAbsolutePath().normalize().toString();
             } catch (Exception e) {
-                debugLog("创建临时音频文件异常: " + e.getMessage());
                 if (tempFile != null) {
                     try { Files.deleteIfExists(tempFile); } catch (Exception ignored) {}
                 }
@@ -281,22 +195,16 @@ public class PianoTilesGameScreen extends Screen {
             }
         }
 
-        private boolean isFirstPlay = true;
-
         public void play() {
             if (isLoaded && backgroundClip != null) {
                 backgroundClip.setFramePosition(0); // 重置到开头
                 backgroundClip.start();
-                isFirstPlay = false;
             }
         }
 
         public void resume(long audioScheduledTime) {
             if (isLoaded && backgroundClip != null) {
-                // ★ 前导期暂停恢复修复：未到起播时刻（audioScheduledTime）不能立即 start()，
-                //   否则音频提前起播，且 tick 的延迟起播分支因 isPlaying() 恒真被跳过（音画失准）。
-                //   未到时刻则不动，交给 tick 的延迟起播分支按时起播；
-                //   正常播放后 audioScheduledTime 已归零，此处恒满足、行为与原来一致
+                // 前导期尚未结束时，由 tick 按预定时刻起播，避免音画失准。
                 if (System.currentTimeMillis() >= audioScheduledTime) {
                     backgroundClip.start();
                 }
@@ -307,7 +215,6 @@ public class PianoTilesGameScreen extends Screen {
             if (isLoaded && backgroundClip != null) {
                 backgroundClip.stop();
                 backgroundClip.setFramePosition(0);
-                isFirstPlay = true;
             }
         }
 
@@ -340,12 +247,6 @@ public class PianoTilesGameScreen extends Screen {
                 return backgroundClip.getMicrosecondPosition();
             }
             return 0;
-        }
-
-        public void setPosition(long microseconds) {
-            if (isLoaded && backgroundClip != null) {
-                backgroundClip.setMicrosecondPosition(Math.max(0, Math.min(microseconds, audioLength)));
-            }
         }
 
         public boolean isFinished() {
@@ -580,7 +481,7 @@ public class PianoTilesGameScreen extends Screen {
     private GameAudioPlayer audioPlayer;
 
     // UI按钮
-    private Button startButton, pauseButton, backButton;
+    private Button startButton, backButton;
     private Button prevSongButton, nextSongButton, selectSongButton, importSongButton;
     private boolean importInProgress;
     private String importMessage;
@@ -627,14 +528,6 @@ public class PianoTilesGameScreen extends Screen {
     public void init() {
         super.init();
         calculateLayout();
-        setupButtons();
-    }
-
-    @Override
-    public void resize(Minecraft minecraft, int width, int height) {
-        super.resize(minecraft, width, height);
-        calculateLayout();
-        this.clearWidgets();
         setupButtons();
     }
 
@@ -809,7 +702,6 @@ public class PianoTilesGameScreen extends Screen {
         if (showExitConfirm || countdownRemaining > 0) return true;
         // 如果在歌曲选择模式，使用默认的键盘处理
         if (songSelectMode) {
-            // 可以添加方向键切换歌曲的功能
             if (keyCode == GLFW.GLFW_KEY_LEFT || keyCode == GLFW.GLFW_KEY_A) {
                 // 上一首
                 selectedSongIndex = (selectedSongIndex - 1 + availableSongs.size()) % availableSongs.size();
@@ -894,18 +786,10 @@ public class PianoTilesGameScreen extends Screen {
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
-    private void restartGame() {
-        initializeGame();
-        audioPlayer.stop();
-        startGame();
-        playSound(SoundEvents.UI_BUTTON_CLICK.value());
-    }
-
     private long pauseStartTime = 0; // 暂停开始时间
     /** 恢复倒计时：暂停恢复后显示 3-2-1 再开始，单位秒 */
     private int countdownRemaining = 0;
     private long countdownStartTime = 0;
-    private long totalPausedTime = 0; // 总暂停时间
 
     private void startSongSelectMode() {
         songSelectMode = false;
@@ -923,12 +807,11 @@ public class PianoTilesGameScreen extends Screen {
         noteIndex = 0;
         score = 0;
         combo = 0;
-        maxCombo = 0; // 修复：返回选歌界面时同步清零最大连击，避免残留到下一局
+        maxCombo = 0;
         perfectHits = 0;
         greatHits = 0;
         goodHits = 0;
         missedHits = 0;
-        totalPausedTime = 0;
         countdownRemaining = 0; // 返回选歌时取消未走完的恢复倒计时，避免残留状态影响下一局
 
         audioPlayer.stop();
@@ -936,29 +819,9 @@ public class PianoTilesGameScreen extends Screen {
         setupButtons();
     }
 
-    private void initializeGame() {
-        activeTiles.clear();
-        hitEffects.clear();
-        noteIndex = 0;
-        score = 0;
-        combo = 0;
-        maxCombo = 0;
-        perfectHits = 0;
-        greatHits = 0;
-        goodHits = 0;
-        missedHits = 0;
-        gameActive = false;
-        gamePaused = false;
-        gameOver = false;
-        currentGameTime = 0;
-        countdownRemaining = 0; // 取消未走完的恢复倒计时
-    }
-
     private void startGame() {
-        // 修复：移除全局停声（会误停游戏世界其他声音），改为只停本界面自己的音频
+        // 只停止本界面的音频，避免影响游戏世界。
         audioPlayer.stop();
-        // 开局补齐全量状态重置（逐项对齐 initializeGame）：开始按钮直接调用本方法时
-        // 不会先走 initializeGame，否则上一局的分数/连击/判定统计/特效会残留到新局
         score = 0;
         combo = 0;
         maxCombo = 0;
@@ -977,7 +840,6 @@ public class PianoTilesGameScreen extends Screen {
         audioScheduledTime = System.currentTimeMillis() + START_LEAD_MS;
         noteIndex = 0;
         activeTiles.clear();
-        totalPausedTime = 0;
         // 不立即播放音频，等 lead 结束后自动播放
     }
 
@@ -1011,7 +873,6 @@ public class PianoTilesGameScreen extends Screen {
         super.tick();
         if (!minecraft.isWindowActive()) {
             leftMouseDown = false;
-            currentClickLane = -1;
         }
 
         // 恢复倒计时处理（在 gamePaused 检查之前执行）；退出弹窗/选歌界面期间冻结倒计时
@@ -1024,7 +885,6 @@ public class PianoTilesGameScreen extends Screen {
                     // 倒计时结束，真正恢复游戏
                     gamePaused = false;
                     long pausedMs = System.currentTimeMillis() - pauseStartTime;
-                    totalPausedTime += pausedMs;
                     gameStartTime += pausedMs;
                     if (audioScheduledTime > 0) {
                         audioScheduledTime += pausedMs; // 同步推迟音频启动
@@ -1044,9 +904,7 @@ public class PianoTilesGameScreen extends Screen {
 
         if (!songSelectMode && gameActive && !gamePaused && !gameOver && leftMouseDown && !showExitConfirm) {
             long currentTime = System.currentTimeMillis();
-            if (currentTime - lastClickTime > 100) { // 每100ms最多触发一次
-                // ★ Bug修复：原版 (int)mouseX 直接截断,GUI scale=4 下玩家鼠标
-                //   跨整像素边界时丢精度偏 1-3 像素,点击车道错一格。加 0.5 四舍五入
+            if (currentTime - lastClickTime > 100) {
                 double mouseX = minecraft.mouseHandler.xpos() * minecraft.getWindow().getGuiScaledWidth() / minecraft.getWindow().getScreenWidth() + 0.5;
 
                 if (mouseX >= gameStartX && mouseX < gameStartX + gameAreaWidth) {
@@ -1309,22 +1167,6 @@ public class PianoTilesGameScreen extends Screen {
         }
     }
 
-    private void renderControlHints(GuiGraphics guiGraphics) {
-        String[] hints = {
-                "键盘控制:",
-                "1 2 3 4 - 对应四个轨道",
-                "A S D F - 替代按键"
-        };
-
-        int hintStartY = gameStartY + gameAreaHeight + 50;
-        int hintX = gameStartX;
-
-        for (int i = 0; i < hints.length; i++) {
-            int color = i == 0 ? 0xFFFFD700 : 0xFFAAAAAA; // 第一行标题用金色
-            guiGraphics.drawString(font, hints[i], hintX, hintStartY + i * (font.lineHeight + 2), color);
-        }
-    }
-
     private void renderGameUI(GuiGraphics guiGraphics) {
         // 歌曲信息
         String title = currentSong.name + " - " + currentSong.artist;
@@ -1535,7 +1377,6 @@ public class PianoTilesGameScreen extends Screen {
 
     private boolean leftMouseDown = false;
     private long lastClickTime = 0;
-    private int currentClickLane = -1;
 
     /** 打开文件对话框导入 .pts 谱面。对话框和文件/音频 I/O 均不得阻塞 Minecraft 客户端线程。 */
     private void importSongFromDialog() {
@@ -1688,7 +1529,7 @@ public class PianoTilesGameScreen extends Screen {
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { closeExitConfirmDialog(); return true; } return true; }
         // 倒计时显示仍处于暂停态，必须吞掉点击，避免穿透到底层轨道或控件。
-        if (showExitConfirm || countdownRemaining > 0) return true;
+        if (countdownRemaining > 0) return true;
         if (songSelectMode || !gameActive || gamePaused || gameOver || button != 0) {
             return super.mouseClicked(mouseX, mouseY, button);
         }
@@ -1701,7 +1542,6 @@ public class PianoTilesGameScreen extends Screen {
 
             int lane = (int) ((mouseX - gameStartX) / laneWidth);
             if (lane >= 0 && lane < LANE_COUNT) {
-                currentClickLane = lane;
                 handleLaneClick(lane);
                 return true;
             }
@@ -1714,7 +1554,6 @@ public class PianoTilesGameScreen extends Screen {
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         if (button == 0) {
             leftMouseDown = false;
-            currentClickLane = -1;
         }
         return super.mouseReleased(mouseX, mouseY, button);
     }

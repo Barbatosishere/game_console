@@ -8,8 +8,8 @@ public class Card implements Comparable<Card> {
     }
 
     public enum Rank {
-        THREE(3), FOUR(4), FIVE(5), SIX(6), SEVEN(7), EIGHT(8), 
-        NINE(9), TEN(10), JACK(11), QUEEN(12), KING(13), 
+        THREE(3), FOUR(4), FIVE(5), SIX(6), SEVEN(7), EIGHT(8),
+        NINE(9), TEN(10), JACK(11), QUEEN(12), KING(13),
         ACE(14), TWO(15), SMALL_JOKER(16), BIG_JOKER(17);
 
         private final int value;
@@ -34,8 +34,7 @@ public class Card implements Comparable<Card> {
         return Integer.compare(this.getValue(), other.getValue());
     }
 
-    // 基于花色与点数的值相等：LAN 联机中远端反序列化出的 Card 是新对象，
-    // 若无 equals 则 contains/remove 按引用比较恒为 false，导致联机出牌全被拒
+    // 反序列化会创建新对象，手牌扣除须按花色与点数比较。
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

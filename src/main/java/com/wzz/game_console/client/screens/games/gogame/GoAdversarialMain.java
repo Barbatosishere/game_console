@@ -71,8 +71,7 @@ public final class GoAdversarialMain {
             evaluator.save(weights);
             System.out.println("saved=" + weights.toAbsolutePath());
         } catch (RuntimeException | Error t) {
-            // ★ 崩溃保存：多代训练中途崩（OOM/GTP 异常/引擎崩溃）时，
-            //   已训练完的各代权重不能随进程一起丢掉
+            // 异常退出时仍保存已完成的训练结果。
             try {
                 evaluator.save(weights);
                 System.out.println("saved-on-crash=" + weights.toAbsolutePath());

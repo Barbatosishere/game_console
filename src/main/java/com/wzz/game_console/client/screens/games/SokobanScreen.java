@@ -51,9 +51,7 @@ public class SokobanScreen extends Screen {
         // 更新重开盐：按 R 重开同一关时生成不同布局。
         reshuffleSalt += System.nanoTime();
         generateLevel(currentLevel);
-        // ★ Bug修复：generateLevel 会随关卡数增大 levelWidth/levelHeight，
-        // 但 TILE_SIZE/startX/startY 及重置/下一关按钮的尺寸位置只在首次 init() 时算过一次；
-        // 跳关/重置若不重新 init()，画面会继续沿用旧关卡的几何参数导致错位甚至棋盘溢出可视区。
+        // 关卡尺寸会变化，生成后须重新计算布局和按钮位置。
         init();
     }
 

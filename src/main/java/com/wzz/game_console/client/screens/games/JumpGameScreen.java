@@ -31,9 +31,7 @@ import java.util.Random;
 public class JumpGameScreen extends Screen {
     boolean showExitConfirm = false;
 
-    // ══════════════════════════════════════════════
     //  投影常量（等轴视角）
-    // ══════════════════════════════════════════════
     // 世界坐标 (wx, wy, wz) → 屏幕坐标
     // sx = cx + (wx - wz) * ISO_X
     // sy = cy + (wx + wz) * ISO_Y - wy * ISO_H
@@ -41,9 +39,7 @@ public class JumpGameScreen extends Screen {
     static final float ISO_Y = 0.40f;
     static final float ISO_H = 1.00f;
 
-    // ══════════════════════════════════════════════
     //  游戏参数
-    // ══════════════════════════════════════════════
     static final float GRAVITY       = 0.035f;  // 重力加速度
     static final float JUMP_VY       = 0.42f;   // 固定起跳纵向速度（决定飞行时间 ~24tick）
     static final float MAX_VX        = 0.28f;   // 满蓄力时的水平速度（满蓄 = 6.7格，覆盖DIST_MAX）
@@ -59,9 +55,7 @@ public class JumpGameScreen extends Screen {
     static final float DIST_MIN = 3.5f;         // 下一平台最近距离
     static final float DIST_MAX = 6.0f;         // 下一平台最远距离
 
-    // ══════════════════════════════════════════════
     //  平台
-    // ══════════════════════════════════════════════
     enum PlatType { CYLINDER, BLOCK, BOOK, MUSIC }
 
     static class Platform {
@@ -89,9 +83,7 @@ public class JumpGameScreen extends Screen {
         }
     }
 
-    // ══════════════════════════════════════════════
     //  人物
-    // ══════════════════════════════════════════════
     static class Player {
         float wx, wy, wz;
         float vx, vy, vz;
@@ -104,9 +96,7 @@ public class JumpGameScreen extends Screen {
         float dirX = 1f, dirZ = 0f;
     }
 
-    // ══════════════════════════════════════════════
     //  粒子
-    // ══════════════════════════════════════════════
     static class Particle {
         float wx, wy, wz;
         float vx, vy, vz;
@@ -139,9 +129,7 @@ public class JumpGameScreen extends Screen {
         boolean alive() { return life>0; }
     }
 
-    // ══════════════════════════════════════════════
     //  游戏状态
-    // ══════════════════════════════════════════════
     List<Platform> platforms = new ArrayList<>();
     Player         player    = new Player();
     List<Particle> particles = new ArrayList<>();
@@ -153,7 +141,6 @@ public class JumpGameScreen extends Screen {
     boolean charging  = false; // 是否正在蓄力
     float   charge    = 0f;    // 蓄力量 [0,1]
     boolean gameOver  = false;
-    boolean justLanded= false; // 用于音效/动画触发标记
     long    tick      = 0;
 
     // 镜头（以世界坐标表示观察中心）
@@ -165,9 +152,7 @@ public class JumpGameScreen extends Screen {
 
     Random rng = new Random();
 
-    // ══════════════════════════════════════════════
     //  构造
-    // ══════════════════════════════════════════════
     public JumpGameScreen() {
         super(Component.literal("跳一跳"));
         bestScore = GameScores.best("jump");
@@ -176,7 +161,7 @@ public class JumpGameScreen extends Screen {
     @Override
     public void init() {
         super.init();
-        // 修复：窗口缩放会重复调用 init()，仅首次进入时初始化，避免游戏进行中丢进度
+        // 缩放也会调用 init，已有对局须保留。
         if (platforms.isEmpty()) startGame();
     }
 
@@ -255,20 +240,17 @@ public class JumpGameScreen extends Screen {
         sortedDirty = true; // 平台列表已变，深度排序缓存失效
     }
 
-    // ══════════════════════════════════════════════
     //  Tick
-    // ══════════════════════════════════════════════
     @Override
     public void tick() {
         tick++;
-        // ★ 失焦清键:Screen 基类无 windowFocusChanged 钩子,每 tick 探针 MC 窗口活动状态,
-        //   切窗时收不到 keyReleased 也无影响(与 ESC 弹窗清蓄力逻辑同源)
+        // 失焦时取消蓄力，避免丢失释放事件后持续蓄力。
         if (!minecraft.isWindowActive() && (charging || charge > 0 || predictWX != null)) {
             charging = false; charge = 0; predictWX = null; predictWZ = null; predictWY = null;
         }
         if (showExitConfirm) return; // 弹窗期间暂停游戏（含物理/蓄力/粒子）
 
-        // ── 物理更新（gameOver 时也继续，保证掉落动画正常播放）──
+        // 物理更新（gameOver 时也继续，保证掉落动画正常播放）
         if (!player.onGround) {
             player.wx += player.vx;
             player.wy += player.vy;
@@ -287,13 +269,13 @@ public class JumpGameScreen extends Screen {
             }
         }
 
-        // ── 粒子更新（gameOver 时也继续）──
+        // 粒子更新（gameOver 时也继续）
         particles.removeIf(p -> !p.alive());
         for (Particle p : particles) p.update();
 
         if (gameOver) return; // ← gameOver 后其余逻辑不执行
 
-        // ── 蓄力 ──
+        // 蓄力
         if (charging && player.onGround) {
             charge = Math.min(1f, charge + CHARGE_RATE);
             float sq = 1f - charge * 0.35f;
@@ -304,19 +286,19 @@ public class JumpGameScreen extends Screen {
             predictWX = null; predictWZ = null; predictWY = null;
         }
 
-        // ── 站立微浮动 ──
+        // 站立微浮动
         if (player.onGround) {
             player.bobPhase += 0.08f;
             if (player.landBounce > 0) player.landBounce *= 0.75f;
         }
 
-        // ── 镜头平滑跟随 ──
+        // 镜头平滑跟随
         updateCamera(false);
 
-        // ── 生成更多平台 ──
+        // 生成更多平台
         while (platforms.size() - currentPlatIdx < 10) addPlatform();
 
-        // ── 移除过远的旧平台 ──
+        // 移除过远的旧平台
         while (platforms.size() > 20 && currentPlatIdx > 5) {
             platforms.remove(0);
             currentPlatIdx--;
@@ -342,7 +324,7 @@ public class JumpGameScreen extends Screen {
             return;
         }
 
-        // 修复：落点可能跳过下一个平台落在更远的平台上，扫描全部平台判定落点所在平台
+        // 一次跳跃可能越过多个平台，须检查所有落点。
         Platform landed = null;
         int landedIdx = -1;
         float dist = 0f;
@@ -493,12 +475,7 @@ public class JumpGameScreen extends Screen {
         }
     }
 
-    // ══════════════════════════════════════════════
-    //  投影工具
-    // ══════════════════════════════════════════════
-    // ★ 性能：project 结果轮转静态槽（渲染仅主线程调用，逐个扫描全部调用点后确认
-    //   同一时刻最多 6 个投影结果存活（renderPlayerBlock），16 槽留足余量不会互相踩，
-    //   避免每帧数千次 new float[2] 分配）
+    // 投影结果使用轮转缓冲；仅在渲染线程调用，最多同时持有 6 个结果。
     private static final float[][] PROJECT_SLOTS = new float[16][2];
     private static int projectSlot = 0;
 
@@ -510,9 +487,7 @@ public class JumpGameScreen extends Screen {
         return out;
     }
 
-    // ══════════════════════════════════════════════
     //  主渲染
-    // ══════════════════════════════════════════════
     @Override
     public void render(GuiGraphics g, int mx, int my, float pt) {
         renderBackground(g);
@@ -530,15 +505,12 @@ public class JumpGameScreen extends Screen {
         super.render(g, mx, my, pt);
     }
 
-    // ── 背景 ─────────────────────────────────────
     @Override
     public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         // 游戏已在render()中绘制不透明背景,阻止默认32x32菜单纹理和模糊效果
     }
 
     public void renderBackground(GuiGraphics g) {
-        // 渐变天空（★ 性能：逐像素行 fill 循环改为单次 fillGradient，双色观感不变
-        //   t=0 → 0xFF0D0A1F, t=1 → 0xFF1A140E，与原 lerp 结果一致）
         g.fillGradient(0, 0, width, height, 0xFF0D0A1F, 0xFF1A140E);
         // 星点
         for (int i=0;i<80;i++) {
@@ -557,13 +529,11 @@ public class JumpGameScreen extends Screen {
                 // 只画可见范围
                 if (p[0]<-50||p[0]>width+50||p[1]<-50||p[1]>height+50) continue;
                 float brightness = Math.max(0f, 1f - (Math.abs(gx)+Math.abs(gz))*0.04f);
-                int gridColor = (int)(0x10*brightness)<<24|0x003344;
                 fillQuad(g, p,q,r2,s2, 0xFF000000|(int)(brightness*0x0A)<<16|(int)(brightness*0x22)<<8|(int)(brightness*0x33));
             }
         }
     }
 
-    // ── 平台阴影（落在地面上） ─────────────────────
     void renderShadows(GuiGraphics g) {
         for (Platform p : platforms) {
             int idx = platforms.indexOf(p);
@@ -592,9 +562,6 @@ public class JumpGameScreen extends Screen {
         }
     }
 
-    // ── 平台渲染 ───────────────────────────────────
-    // ★ 性能：深度排序结果缓存，仅当平台列表内容变化（生成/消除/重开）时重排，
-    //   否则每帧直接复用上次排序结果（原每帧 new ArrayList<>(platforms) + sort）
     private final List<Platform> sortedPlatforms = new ArrayList<>();
     private boolean sortedDirty = true;
 
@@ -632,14 +599,13 @@ public class JumpGameScreen extends Screen {
 
         switch (p.type) {
             case CYLINDER -> renderCylinder(g, p.wx, p.wz, hw, h, col, top, isNext);
-            case BLOCK    -> renderBlock(g,    p.wx, p.wz, hw, h, col, top, isNext);
+            case BLOCK    -> renderBlock(g,    p.wx, p.wz, hw, h, col, top);
             case BOOK     -> renderBook(g,     p.wx, p.wz, hw, h);
             case MUSIC    -> renderMusicBlock(g, p.wx, p.wz, hw, h);
         }
 
         // 中心标记（下一个平台）
         if (isNext && !charging) {
-            float[] c = project(p.wx, h+0.02f, p.wz);
             int ca = (int)(100+80*Math.sin(tick*0.15));
             drawIsoCircle(g, p.wx, h+0.02f, p.wz, 0.25f, (ca<<24)|0x00FFFFFF);
         }
@@ -666,7 +632,7 @@ public class JumpGameScreen extends Screen {
     }
 
     void renderBlock(GuiGraphics g, float wx, float wz, float hw, float h,
-                     int col, int top, boolean next) {
+                     int col, int top) {
         // 等轴方块：左面、前面、顶面
         // 顶面
         float[] tfl=project(wx-hw,h,wz-hw), tfr=project(wx+hw,h,wz-hw);
@@ -709,7 +675,7 @@ public class JumpGameScreen extends Screen {
     void renderMusicBlock(GuiGraphics g, float wx, float wz, float hw, float h) {
         // 绿色音符方块
         int col=0xFF065F46, top=0xFF059669;
-        renderBlock(g,wx,wz,hw,h,col,top,false);
+        renderBlock(g,wx,wz,hw,h,col,top);
         // 音符符号（顶面中心画一个音符头+符干）
         float[] nh = project(wx, h + 0.02f, wz);
         int ns = 5;
@@ -721,7 +687,6 @@ public class JumpGameScreen extends Screen {
         g.fill(stemX - 1, (int)stemTop[1], stemX + 1, (int)nh[1] - ns, noteColor);
     }
 
-    // ── 预测轨迹 ────────────────────────────────────
     void renderPredictLine(GuiGraphics g) {
         if (predictWX==null||!charging) return;
         int n=predictWX.length;
@@ -741,7 +706,6 @@ public class JumpGameScreen extends Screen {
             drawCircle(g,(int)lc[0],(int)lc[1],r,(la<<24)|0x00AAFFFF);
     }
 
-    // ── 粒子 ────────────────────────────────────────
     void renderParticles(GuiGraphics g) {
         for (Particle p : particles) {
             float alpha = (float)p.life/p.maxLife;
@@ -768,7 +732,6 @@ public class JumpGameScreen extends Screen {
         }
     }
 
-    // ── 人物 ────────────────────────────────────────
     void renderPlayer(GuiGraphics g) {
         float bob = (float)Math.sin(player.bobPhase)*0.04f;
         float bounce = player.landBounce;
@@ -830,7 +793,6 @@ public class JumpGameScreen extends Screen {
         fillQuad(g,t0,t1,t2,t3,top);
     }
 
-    // ── HUD ─────────────────────────────────────────
     void renderHUD(GuiGraphics g) {
         // 分数
         g.pose().pushPose();
@@ -850,7 +812,6 @@ public class JumpGameScreen extends Screen {
             g.pose().translate(width/2f,72,0);
             float cs=1f+0.1f*(float)Math.sin(tick*0.15);
             g.pose().scale(cs,cs,1);
-            // ★ 修复：🔥 为非 BMP emoji，默认字体有豆腐块风险，改为 ASCII 文本
             String ct="COMBO x"+combo+" 连击！";
             g.drawString(font,ct,-font.width(ct)/2,0,(ca<<24)|0x00FF6600);
             g.pose().popPose();
@@ -889,11 +850,10 @@ public class JumpGameScreen extends Screen {
         g.drawString(font,"R:重开  ESC:退出",6,6,0xFF334455);
     }
 
-    // ── 游戏结束 ────────────────────────────────────
     void renderGameOver(GuiGraphics g) {
         g.flush(); // 防止先绘制的游戏内容盖住遮罩背景（批量渲染text批次后置）
         g.fill(0,0,width,height,0xBB0A0F1A);
-        int cx=width/2, cy=height/2;
+        int cx=width/2;
         int ww=300, wh=160;
         int wx=(width-ww)/2, wy=(height-wh)/2;
 
@@ -907,7 +867,6 @@ public class JumpGameScreen extends Screen {
         g.drawCenteredString(font,"GAME OVER",cx,wy+20,0xFFEF4444);
         g.drawCenteredString(font,"得分  "+score,cx,wy+44,0xFFFFFFFF);
         if (score>=bestScore && score>0)
-            // ★ 修复：🏆 为非 BMP emoji，默认字体有豆腐块风险，改为 ASCII 文本
             g.drawCenteredString(font,"NEW! 新纪录！",cx,wy+62,0xFFFFDD00);
         else
             g.drawCenteredString(font,"最高  "+bestScore,cx,wy+62,0xFF94A3B8);
@@ -922,9 +881,7 @@ public class JumpGameScreen extends Screen {
         g.drawCenteredString(font,"ESC — 退出",wx+ww/2+40,btnY+8,0xFFA78BFA);
     }
 
-    // ══════════════════════════════════════════════
     //  输入
-    // ══════════════════════════════════════════════
     @Override
     public boolean mouseClicked(double mx,double my,int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick((int)mx, (int)my, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
@@ -950,9 +907,7 @@ public class JumpGameScreen extends Screen {
         if (key==GLFW.GLFW_KEY_ESCAPE) {
             if (showExitConfirm) { showExitConfirm = false; return true; }
             if (gameOver) { Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; }
-            // ★ Bug修复：弹窗打开时立即清空蓄力状态（不触发跳跃），否则真实鼠标/空格松开事件
-            // 会被弹窗期间的输入拦截吞掉，charging 悬空为 true，关闭弹窗后 tick() 继续默默蓄力，
-            // 玩家下次点击松开时会在毫无预期的情况下打出满蓄力跳跃
+            // 打开弹窗时取消蓄力，因为弹窗可能拦截随后的释放事件。
             charging = false; charge = 0; predictWX = null; predictWZ = null; predictWY = null;
             showExitConfirm = true; return true;
         }
@@ -970,9 +925,7 @@ public class JumpGameScreen extends Screen {
         return super.keyReleased(key,scan,mods);
     }
 
-    // ══════════════════════════════════════════════
     //  绘图工具
-    // ══════════════════════════════════════════════
 
     /** 填充任意四边形（分成两个三角形，用行扫描） */
     void fillQuad(GuiGraphics g, float[] p0, float[] p1, float[] p2, float[] p3, int color) {
@@ -980,7 +933,7 @@ public class JumpGameScreen extends Screen {
         fillTri(g, p0, p2, p3, color);
     }
 
-    // ★ 性能：fillTri 内部暂存缓冲复用（渲染仅主线程调用），避免每次调用及逐行扫描时分配新数组
+    // 渲染线程独占此缓冲。
     private static final float[][] TRI_PTS  = new float[3][2];
     private static final float[][] TRI_SEGS = new float[3][4];
 

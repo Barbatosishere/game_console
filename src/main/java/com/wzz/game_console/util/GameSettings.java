@@ -191,11 +191,4 @@ public class GameSettings {
         return Collections.unmodifiableSet(new java.util.HashSet<>(settings.keySet()));
     }
 
-    /** 获取某游戏所有设置项的防御性快照。 */
-    public static Map<String, Object> getGameSettings(String gameId) {
-        ensureLoaded();
-        if (gameId == null) return Collections.emptyMap();
-        Map<String, Object> game = settings.get(gameId);
-        return game == null ? Collections.emptyMap() : Collections.unmodifiableMap(new LinkedHashMap<>(game));
-    }
 }

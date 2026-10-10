@@ -8,9 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Collections;
-import java.util.List;
-import java.util.stream.Stream;
 
 /** 管理游戏目录下 game_console 文件夹中的外部文件。 */
 public final class ExternalFileManager {
@@ -30,7 +27,6 @@ public final class ExternalFileManager {
 
     private static final Object INIT_LOCK = new Object();
     private static volatile InitState initState = InitState.UNINITIALIZED;
-    private static volatile Path gameDir;
     private static volatile Path rootDir;
 
     private ExternalFileManager() {}
@@ -46,7 +42,6 @@ public final class ExternalFileManager {
             try {
                 Path resolvedGameDir = FMLPaths.GAMEDIR.get();
                 if (resolvedGameDir == null) {
-                    gameDir = null;
                     rootDir = null;
                     initState = InitState.FAILED;
                     LOGGER.warn("Game directory is not ready; external file API disabled");
@@ -58,13 +53,11 @@ public final class ExternalFileManager {
                 Files.createDirectories(resolvedRootDir.resolve(VOICE_FOLDER));
                 Files.createDirectories(resolvedRootDir.resolve(DATA_FOLDER));
 
-                gameDir = resolvedGameDir;
                 rootDir = resolvedRootDir;
                 initState = InitState.INITIALIZED;
                 LOGGER.info("外部文件夹已创建: {}", resolvedRootDir.toAbsolutePath());
             } catch (Throwable failure) {
                 // 先发布失败状态，确保即使日志后续出现问题也不会重复初始化或重复记录该失败。
-                gameDir = null;
                 rootDir = null;
                 initState = InitState.FAILED;
                 try {
@@ -74,15 +67,6 @@ public final class ExternalFileManager {
                 }
             }
         }
-    }
-
-    public static Path getGameDir() {
-        ensureInitialized();
-        return initState == InitState.INITIALIZED ? gameDir : null;
-    }
-
-    public static Path getRootDir() {
-        return availableRoot();
     }
 
     public static Path getMusicDir() {
@@ -97,117 +81,15 @@ public final class ExternalFileManager {
         return resolveSubFolder(DATA_FOLDER);
     }
 
-    public static List<Path> listFiles(String subFolder, String extension) {
-        Path dir = resolveSubFolder(subFolder);
-        if (dir == null) return Collections.emptyList();
-        try {
-            if (!Files.isDirectory(dir)) return Collections.emptyList();
-            try (Stream<Path> stream = Files.list(dir)) {
-                return stream.filter(Files::isRegularFile)
-                        .filter(path -> extension == null || path.getFileName().toString().endsWith(extension))
-                        .sorted()
-                        .toList();
-            }
-        } catch (Throwable failure) {
-            logOperationFailure("列出文件失败: " + dir, failure);
-            return Collections.emptyList();
-        }
-    }
-
-    public static List<Path> listFiles(String subFolder) {
-        return listFiles(subFolder, null);
-    }
-
-    public static List<String> listSubFolders() {
-        Path root = availableRoot();
-        if (root == null) return Collections.emptyList();
-        try {
-            if (!Files.isDirectory(root)) return Collections.emptyList();
-            try (Stream<Path> stream = Files.list(root)) {
-                return stream.filter(Files::isDirectory)
-                        .map(path -> path.getFileName().toString())
-                        .sorted()
-                        .toList();
-            }
-        } catch (Throwable failure) {
-            logOperationFailure("列出子文件夹失败: " + root, failure);
-            return Collections.emptyList();
-        }
-    }
-
     private static boolean isSafePathPart(String value) {
         return value != null && !value.isEmpty() && !value.equals(".") && !value.contains("..")
                 && !value.contains("/") && !value.contains("\\");
-    }
-
-    private static boolean isSafeFileName(String fileName) {
-        return isSafePathPart(fileName);
-    }
-
-    public static String readTextFile(String subFolder, String fileName) {
-        Path file = resolveFile(subFolder, fileName);
-        if (file == null) return null;
-        try {
-            return Files.isRegularFile(file) ? Files.readString(file, StandardCharsets.UTF_8) : null;
-        } catch (Throwable failure) {
-            logOperationFailure("读取文件失败: " + file, failure);
-            return null;
-        }
-    }
-
-    public static byte[] readBytes(String subFolder, String fileName) {
-        Path file = resolveFile(subFolder, fileName);
-        if (file == null) return null;
-        try {
-            return Files.isRegularFile(file) ? Files.readAllBytes(file) : null;
-        } catch (Throwable failure) {
-            logOperationFailure("读取文件失败: " + file, failure);
-            return null;
-        }
     }
 
     public static boolean writeTextFile(String subFolder, String fileName, String content) {
         Path file = resolveFile(subFolder, fileName);
         if (file == null || content == null) return false;
         return atomicWrite(file, temp -> Files.writeString(temp, content, StandardCharsets.UTF_8));
-    }
-
-    public static boolean writeBytes(String subFolder, String fileName, byte[] data) {
-        Path file = resolveFile(subFolder, fileName);
-        if (file == null || data == null) return false;
-        return atomicWrite(file, temp -> Files.write(temp, data));
-    }
-
-    public static String getFilePath(String subFolder, String fileName) {
-        Path file = resolveFile(subFolder, fileName);
-        if (file == null) return null;
-        try {
-            return file.toAbsolutePath().toString();
-        } catch (Throwable failure) {
-            logOperationFailure("获取文件路径失败: " + file, failure);
-            return null;
-        }
-    }
-
-    public static boolean fileExists(String subFolder, String fileName) {
-        Path file = resolveFile(subFolder, fileName);
-        if (file == null) return false;
-        try {
-            return Files.exists(file);
-        } catch (Throwable failure) {
-            logOperationFailure("检查文件失败: " + file, failure);
-            return false;
-        }
-    }
-
-    public static void ensureSubFolder(String subFolder) {
-        Path dir = resolveSubFolder(subFolder);
-        if (dir == null) return;
-        try {
-            Files.createDirectories(dir);
-        } catch (Throwable failure) {
-            logOperationFailure("创建子文件夹失败: " + subFolder, failure);
-        }
     }
 
     private static void ensureInitialized() {
@@ -240,7 +122,7 @@ public final class ExternalFileManager {
     }
 
     private static Path resolveFile(String subFolder, String fileName) {
-        if (!isSafeFileName(fileName)) return null;
+        if (!isSafePathPart(fileName)) return null;
         Path dir = resolveSubFolder(subFolder);
         if (dir == null) return null;
         try {

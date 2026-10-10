@@ -44,18 +44,8 @@ public class CardPattern {
             return true;
         }
         
-        // 非炸弹不能打炸弹
-        if (type != Type.BOMB && other.type == Type.BOMB) {
-            return false;
-        }
-        
         // 同类型且长度相同才可比较；飞机带单/带对是独立牌型
-        if (type == other.type && length == other.length) {
-            return value > other.value;
-        }
-        
-        // 不同类型或长度不同，不能打
-        return false;
+        return type == other.type && length == other.length && value > other.value;
     }
 
     public Type getType() { return type; }

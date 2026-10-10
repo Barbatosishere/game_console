@@ -49,11 +49,11 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private long tickCount = 0;
     private int cellSize, boardStartX, boardStartY;
 
-    // ── 胜负结果 ──
+    // 胜负结果
     private String resultMsg  = "";
     private boolean myWin     = false;
 
-    // ── LAN 联机 ──
+    // LAN 联机
     private static final int LAN_NONE   = LanMultiplayerScreen.LAN_NONE;
     private static final int LAN_HOST   = LanMultiplayerScreen.LAN_HOST;
     private static final int LAN_CLIENT = LanMultiplayerScreen.LAN_CLIENT;
@@ -64,7 +64,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     /** 防重复发送 LEAVE_GAME 标志 */
     private boolean lanLeaveSent = false;
 
-    // ── AI 引擎设置 ─────────────────────────────────────────
     /** 设置界面中当前选中的引擎 */
     private String settingsEngine = GoAI.normalizeEngine(GameSettings.getString("go", "engine", "mcts"));
     /** 设置界面中当前的搜索时间（ms） */
@@ -85,12 +84,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     private volatile boolean aiComputed = false;
     /** Generation associated with the published result; access under aiWorkerLock. */
     private int aiComputedGeneration = -1;
-    /**
-     * AI 搜索代际：resetGame 时递增，worker 落地前比对。
-     * 修复：worker 的 finally 无条件 aiComputed=true，重开对局后迟到的落地会让
-     * tick 对新 game 调 applyAiMove(null) 强制空过一手。代际守卫使旧 worker 的
-     * 任何落地（含异常路径）全部失效，与 interrupt 的时序无关。
-     */
+    /** 重开时递增代际，旧 worker 的结果和异常均不能影响新对局。 */
     private volatile int aiGeneration = 0;
 
     /** 单机 / AI 构造 */
@@ -114,7 +108,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         this.myTurn     = isHost; // HOST（黑）先手
     }
 
-    // ── LanMultiplayerScreen 接口 ──────────────────────────────
     @Override public java.util.UUID getLanPeer() { return remotePeer; }
     @Override public String getLanGameId() { return "go"; }
 
@@ -230,7 +223,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         } catch (NumberFormatException ignored) {}
     }
 
-
     @Override public void onRemoteState(UUID senderUuid, String data) {
         if (remotePeer == null || !remotePeer.equals(senderUuid) || data == null) return;
         String[] parts = data.split("\\|", -1);
@@ -315,8 +307,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             LOGGER.warn("[围棋] 丢弃畸形结算消息");
         }
     }
-    @Override public void onRemoteState(String data) { }
-    @Override public void onRemoteGameOver(String data) { }
 
     private void sendLanMove(String action) {
         if (lanMode == LAN_NONE || gameEpoch == null) return;
@@ -335,11 +325,8 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         return !game.isAiMode() || game.getCurrentPlayer() == GoPlayer.BLACK;
     }
 
-    // ── 游戏逻辑 ──────────────────────────────────────────────
     private void resetGame() {
-        // ★ Bug修复：玩家在 AI 思考中按 N 重开,旧 AI 线程仍持有旧 game 引用,
-        //   写入的 aiPendingComputation 可能是新 game 还没准备好的状态,后续落子错乱。
-        //   这里中断旧 AI 线程并清空 pending 状态
+        // 重开时取消旧搜索，丢弃其尚未应用的结果。
         Thread old;
         synchronized (aiWorkerLock) {
             old = aiWorker;
@@ -376,10 +363,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         state     = State.PLAYING;
     }
 
-    /**
-     * 游戏结束时计算胜负（中国规则数子法，黑棋贴目 7.5）。
-     * 修复 Bug：原版 endGame() 不计算胜者，导致局域网双方都显示"你赢了"。
-     */
+    /** 按中国规则数子法计算胜负，白方获得配置的贴目。 */
     private void enterScoring() {
         markedDead.clear();
         scoringRevision = 0;
@@ -644,7 +628,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             case SETTINGS -> renderSettings(g, mx, my);
             case PLAYING -> renderPlaying(g, mx, my);
             case SCORING -> { renderPlaying(g, mx, my); renderScoring(g, mx, my); }
-            case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g, mx, my); }
+            case GAME_OVER -> { renderPlaying(g, mx, my); renderGameOver(g); }
         }
         if (katagoPathEditBox != null && katagoPathEditBox.visible) {
             katagoPathEditBox.render(g, mx, my, pt);
@@ -815,7 +799,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         }
         g.drawString(font, "AI: " + engineLabel, infoX + 5, infoY + 92, 0x666666);
 
-        GameRenderHelper.drawTopHUD(g, width, height);
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "⚫⚪ 围棋", 8, 7, 0xFFFFFF);
         GameRenderHelper.drawBottomBar(g, font, width, height, "ESC 菜单  N 新游戏  P 弃权");
     }
@@ -874,7 +858,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
         return GoScoringProtocol.encodeMarks(markedDead);
     }
 
-    private void renderGameOver(GuiGraphics g, int mx, int my) {
+    private void renderGameOver(GuiGraphics g) {
         int cx = width / 2, cy = height / 2;
         g.flush(); // 防止先绘制的棋盘/HUD文字盖住遮罩背景（批量渲染text批次后置）
         g.fill(0, 0, width, height, 0xAA000000);
@@ -900,7 +884,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
     @Override public boolean mouseClicked(double mx, double my, int btn) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mx, my, width, height); if (click == 1) { showExitConfirm = false; sendLeaveGameOnce(); Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
 
-        // ── 设置界面 ──
+        // 设置界面
         if (state == State.SETTINGS) {
             if (katagoPathEditBox != null && katagoPathEditBox.visible
                     && katagoPathEditBox.mouseClicked(mx, my, btn)) {
@@ -1034,9 +1018,7 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
             // 读取现有设置
             java.util.Map<String, java.util.Map<String, Object>> allSettings = new java.util.HashMap<>();
             if (java.nio.file.Files.exists(settingsPath)) {
-                // ★ Bug修复：原版 Files.readString 整文件读入,无大小限制,settings 文件
-                //   被外部异常增长时瞬时占大块堆。改为 BufferedReader + try-with-resources,
-                //   并通过 size 预检拒绝 > 1MB 的文件
+                // 读取设置前限制文件大小，避免异常文件占用大量堆内存。
                 long size = java.nio.file.Files.size(settingsPath);
                 if (size > 1024 * 1024) {
                     // 配置文件超 1MB,视为异常,直接跳过读取
@@ -1058,9 +1040,6 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
             // 更新围棋设置
             java.util.Map<String, Object> goSettings = allSettings.getOrDefault("go", new java.util.HashMap<>());
-            // ★ Bug修复：settingsEngine/KatagoPath 可能为 null(null 进 GSON 序列化为
-            //   "engine": null,后续 getString 虽 instanceof 兜底不崩,但下游分支
-            //   可能因 null 走错路径。改为只 put 非空字段
             if (settingsEngine != null && !settingsEngine.isBlank()) {
                 goSettings.put("engine", settingsEngine);
             }
@@ -1091,4 +1070,3 @@ public class GoGameScreen extends Screen implements LanMultiplayerScreen {
 
     @Override public boolean isPauseScreen() { return false; }
 }
-

@@ -32,7 +32,7 @@ public class SudokuGameScreen extends Screen {
     private int selectedCol = 4;
     private boolean showErrors = true;
     private boolean gameCompleted = false;
-    private boolean rewardGiven = false; // 新增：防止重复给奖励
+    private boolean rewardGiven = false; // 防止重复奖励
     private long startTime;
     private long completedTimeMs; // 通关时的总用时，通关后不再累加
     private int hintsUsed = 0;
@@ -182,8 +182,7 @@ public class SudokuGameScreen extends Screen {
             System.arraycopy(solution[i], 0, puzzle[i], 0, GRID_SIZE);
         }
 
-        // ★ 修复：挖洞不保证唯一解 → 每挖一格都校验解仍唯一（多解则回填）。
-        //   候选格随机顺序遍历一遍，挖到多少是多少（不强求达到目标提示数）
+        // 每挖一格均校验唯一解；达不到目标提示数时保留当前棋盘。
         List<int[]> candidates = new ArrayList<>();
         for (int row = 0; row < GRID_SIZE; row++) {
             for (int col = 0; col < GRID_SIZE; col++) {
@@ -400,11 +399,6 @@ public class SudokuGameScreen extends Screen {
         int titleX = (this.width - font.width(title)) / 2;
         guiGraphics.drawString(font, title, titleX, gameStartY - 40, 0xFFFFFFFF);
 
-        // 游戏信息
-        // ★ Bug修复：游戏结束后顶部小字"时间"也必须冻结，
-        //   原代码用三元表达式虽然正确，但若 gameCompleted 切换瞬时出现一帧
-        //   未冻结的累计时间会让玩家看到秒数跳变。这里再补一次显式分支，
-        //   并给"已通关"标一个绿色✓避免与计时器混淆。
         long playTime;
         if (gameCompleted) {
             playTime = completedTimeMs / 1000;
@@ -466,7 +460,7 @@ public class SudokuGameScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        // 修复：弹窗打开时只响应确认/取消点击，拦截其他点击
+
         if (showExitConfirm) {
             int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height);
             if (click == 1) {
@@ -507,7 +501,6 @@ public class SudokuGameScreen extends Screen {
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-            // 修复：通关后 ESC 也走确认弹窗，与其他游戏保持一致（原先会绕过弹窗直接退出）
             if (showExitConfirm) {
                 resumeFromExitConfirm();
             } else {
@@ -567,7 +560,7 @@ public class SudokuGameScreen extends Screen {
             gameCompleted = true;
             completedTimeMs = System.currentTimeMillis() - startTime;
             playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
-            giveReward(); // 修复：调用统一的奖励方法
+            giveReward();
         }
     }
 
@@ -617,7 +610,7 @@ public class SudokuGameScreen extends Screen {
                 gameCompleted = true;
                 completedTimeMs = System.currentTimeMillis() - startTime;
                 playSound(SoundEvents.UI_TOAST_CHALLENGE_COMPLETE);
-                giveReward(); // 修复：使用提示完成游戏时也给奖励
+                giveReward();
             }
         }
     }
@@ -643,7 +636,7 @@ public class SudokuGameScreen extends Screen {
     }
 
     private boolean isPuzzleComplete() {
-        // 修复：对照生成时保存的完整解判定，防止玩家用“填满但错误”的棋盘骗过通关判定
+        // 对照生成时保存的完整解，填满棋盘不代表解答正确。
         for (int row = 0; row < GRID_SIZE; row++) {
             for (int col = 0; col < GRID_SIZE; col++) {
                 if (puzzle[row][col] != solution[row][col]) {

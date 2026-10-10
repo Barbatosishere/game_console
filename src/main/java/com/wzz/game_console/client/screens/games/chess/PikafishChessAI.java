@@ -39,9 +39,7 @@ public class PikafishChessAI implements ChessAI {
 
     /** UCI 握手/单步命令超时（秒） */
     private static final int CMD_TIMEOUT_MS = 15_000;
-    /** ★ Bug修复：原版每个实例都 addShutdownHook,跑 100 局仿真 = 100 个 hook,
-     *   进程退出时每个 hook 都尝试 process.destroy,前 99 个空转。改为类级共享
-     *   Set 跟踪活动实例,只注册一次 hook 遍历关闭 */
+    /** 共享关闭钩子，仅跟踪尚未关闭的引擎实例。 */
     private static final java.util.Set<PikafishChessAI> LIVE_INSTANCES =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
     private static volatile boolean SHUTDOWN_HOOK_REGISTERED = false;
@@ -49,9 +47,7 @@ public class PikafishChessAI implements ChessAI {
     private final Process process;
     private final BufferedWriter writer;
     private final BufferedReader reader;
-    /** ★ Bug修复：原实现用单线程池提交阻塞 readLine，超时 cancel(true) 后管道读不响应
-     *   中断，僵尸任务永久占住唯一线程并吞行。改为常驻读线程 + 行队列，
-     *   readLine 只做带超时的 poll，超时/取消不再泄漏阻塞任务 */
+    /** 管道读取不响应中断；常驻读线程配合队列 poll 实现超时。 */
     private final LinkedBlockingQueue<String> lineQueue = new LinkedBlockingQueue<>();
     /** 流结束哨兵：读线程退出时入队并回填，让 poll 中的 readLine 立即感知 EOF 而非白等超时 */
     private static final String EOF_SENTINEL = "__PIKAFISH_EOF__";
@@ -96,8 +92,6 @@ public class PikafishChessAI implements ChessAI {
         readerThread.setDaemon(true);
         readerThread.start();
 
-        // ★ Bug修复：原版每个实例都 addShutdownHook,跑 N 局仿真 = N 个 hook,
-        //   进程退出时 N 次空转 destroy。改为类级共享 LIVE_INSTANCES + 仅一次注册
         LIVE_INSTANCES.add(this);
         if (!SHUTDOWN_HOOK_REGISTERED) {
             SHUTDOWN_HOOK_REGISTERED = true;
@@ -244,7 +238,6 @@ public class PikafishChessAI implements ChessAI {
 
     @Override
     public void shutdown() {
-        // ★ Bug修复：从共享 Set 移除自身,避免 hook 重复关闭已关闭实例
         LIVE_INSTANCES.remove(this);
         connected = false;
         try {

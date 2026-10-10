@@ -24,7 +24,6 @@ public class Match3GameScreen extends Screen {
     private int GRID_START_X = 120;
     private int GRID_START_Y = 60;
     
-    // 使用MC原版物品作为游戏元素
     private static final Item[] GAME_ITEMS = {
         Items.DIAMOND,
         Items.EMERALD,
@@ -35,7 +34,7 @@ public class Match3GameScreen extends Screen {
         Items.COAL
     };
 
-    /** ★ 性能：渲染用物品栈缓存（按下标懒初始化），避免 renderGameGrid 每帧 new ItemStack ×64 */
+    /** 按下标缓存渲染用 ItemStack。 */
     private static final ItemStack[] STACK_CACHE = new ItemStack[GAME_ITEMS.length];
 
     private static ItemStack cachedStack(int itemIndex) {
@@ -82,7 +81,7 @@ public class Match3GameScreen extends Screen {
 
         // 随机填充游戏网格，避免初始匹配
         randomFillAvoidingMatches();
-        // ★ 防死局：初始化后若整盘不存在任何可消交换，整体重roll（最多50次，仍失败保留最后结果）
+        // 重排至存在可消交换，最多尝试 50 次。
         for (int attempt = 0; attempt < 50 && !hasAnyMove(); attempt++) {
             randomFillAvoidingMatches();
         }
@@ -133,7 +132,6 @@ public class Match3GameScreen extends Screen {
 
     @Override
     public void init() {
-        // ★ 修复偏移：每次屏幕尺寸变化时重新计算布局
         calcDynamicLayout();
     }
     
@@ -189,7 +187,7 @@ public class Match3GameScreen extends Screen {
     }
     
     private void renderAnimations(GuiGraphics guiGraphics) {
-        // 修复：timer 递减已移到 tick() 固定频率执行，此处只负责绘制，避免动画速度随 FPS 变化
+
         for (AnimationEffect anim : animations) {
             if (anim.timer > 0) {
                 int screenX = GRID_START_X + anim.x * CELL_SIZE;
@@ -212,9 +210,7 @@ public class Match3GameScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (showExitConfirm) { int click = GameRenderHelper.getExitConfirmClick(mouseX, mouseY, width, height); if (click == 1) { showExitConfirm = false; Minecraft.getInstance().setScreen(new GameSelectorScreen()); return true; } if (click == 2) { showExitConfirm = false; return true; } return true; }
-        if (button == 0) { // 左键点击
-            // ★ Bug修复：Java (int) 向零截断，网格原点左侧/上方不足一格的条带内 (int)((mouse-origin)/cell)=0
-            //   会误命中第0行/列，先按负坐标守卫（与网格外点击同样交给 super 处理）
+        if (button == 0) { // 先排除负坐标，避免整数截断将网格外点击映射到第 0 格。
             if (mouseX < GRID_START_X || mouseY < GRID_START_Y) return super.mouseClicked(mouseX, mouseY, button);
             int gridX = (int) ((mouseX - GRID_START_X) / CELL_SIZE);
             int gridY = (int) ((mouseY - GRID_START_Y) / CELL_SIZE);
@@ -328,7 +324,7 @@ public class Match3GameScreen extends Screen {
                 }
             }
         }
-        // ★ 防死局：填满后若不存在任何可消交换，整体重roll（最多50次，仍失败保留最后结果）
+        // 重排至存在可消交换，最多尝试 50 次。
         for (int attempt = 0; attempt < 50 && !hasAnyMove(); attempt++) {
             randomFillAvoidingMatches();
         }
@@ -374,7 +370,7 @@ public class Match3GameScreen extends Screen {
         super.tick();
         if (showExitConfirm) return; // 弹窗期间冻结动画
         calcDynamicLayout();
-        // 修复：动画计时在 tick() 中递减（固定 20次/秒），不再依赖渲染帧率
+        // 动画计时随 tick 更新，避免受帧率影响。
         animations.removeIf(anim -> --anim.timer <= 0);
     }
     

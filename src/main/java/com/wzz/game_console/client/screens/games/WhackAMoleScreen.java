@@ -35,9 +35,6 @@ public class WhackAMoleScreen extends Screen {
     // MC贴图资源
     private static final ResourceLocation DIRT_TEXTURE = ResourceUtil.createInstance("minecraft", "textures/block/dirt.png");
     private static final ResourceLocation GRASS_TEXTURE = ResourceUtil.createInstance("minecraft", "textures/block/grass_block_top.png");
-    private static final ResourceLocation ZOMBIE_HEAD = ResourceUtil.createInstance("minecraft", "textures/entity/zombie/zombie.png");
-    private static final ResourceLocation CREEPER_HEAD = ResourceUtil.createInstance("minecraft", "textures/entity/creeper/creeper.png");
-    private static final ResourceLocation SKELETON_HEAD = ResourceUtil.createInstance("minecraft", "textures/entity/skeleton/skeleton.png");
 
     // 游戏状态
     private GameState gameState = GameState.MENU;
@@ -69,15 +66,13 @@ public class WhackAMoleScreen extends Screen {
         holes.clear();
         for (int row = 0; row < GRID_SIZE; row++) {
             for (int col = 0; col < GRID_SIZE; col++) {
-                holes.add(new MoleHole(row, col));
+                holes.add(new MoleHole(row));
             }
         }
     }
 
     @Override
     public void init() {
-        // ★ Bug修复：窗口缩放会重调 init(),不加 clearWidgets() 每次缩放
-        //   都会叠加 3 个新按钮,玩家点击可能被最底层旧按钮拦截
         this.clearWidgets();
         super.init();
         calculateLayout();
@@ -444,10 +439,7 @@ public class WhackAMoleScreen extends Screen {
             else { pauseStartTime = System.currentTimeMillis(); showExitConfirm = true; }
             return true;
         }
-        // ★ 修复：showExitConfirm 拦截上移到 R 键处理之前，
-        //   防止退出确认弹窗期间按 R 直接重开（弹窗仍悬浮在重开后的对局上）
         if (showExitConfirm) return true;
-        // ★ 用户体验：R 在 GAME_OVER 或 MENU 时直接重开,符合常见约定
         if (keyCode == GLFW.GLFW_KEY_R && (gameState == GameState.GAME_OVER || gameState == GameState.MENU)) {
             startGame();
             return true;
@@ -465,7 +457,7 @@ public class WhackAMoleScreen extends Screen {
     }
 
     private class MoleHole {
-        private final int gridRow, gridCol;
+        private final int gridRow;
         private long hitTime;
         private int x, y;
         private boolean hasMole = false;
@@ -474,9 +466,8 @@ public class WhackAMoleScreen extends Screen {
         private MoleType moleType = MoleType.ZOMBIE;
         private float moleY = 0; // 地鼠的垂直偏移（动画用）
 
-        public MoleHole(int row, int col) {
+        public MoleHole(int row) {
             this.gridRow = row;
-            this.gridCol = col;
         }
 
         public void updatePosition(int x, int y) {
@@ -555,10 +546,7 @@ public class WhackAMoleScreen extends Screen {
                 guiGraphics.enableScissor(x, y, x + HOLE_SIZE, y + HOLE_SIZE);
                 try {
 
-                // ★ Bug修复：原版用 64x64 实体纹理中裁切 8x8 头部再缩放到 32x32，
-                //   但 OptiFine/资源包常使 zombie/creeper/skeleton 纹理尺寸异常
-                //   (32x16 / 32x32 / 64x32 等)，强制按 64x64 采样会显示错位像素。
-                //   这里直接走色块 + 表情符号兜底，兼容性最好，玩家不会看到错位贴图。
+                // 用自绘图形避免依赖资源包中的实体纹理尺寸。
                 int bodyColor = moleType == MoleType.CREEPER ? 0xFF00CC00 :
                         moleType == MoleType.SKELETON ? 0xFFCCCCCC : 0xFF2A8A2A;
                 int eyeColor  = moleType == MoleType.CREEPER ? 0xFF003300 :
@@ -587,12 +575,6 @@ public class WhackAMoleScreen extends Screen {
                 guiGraphics.fill(moleRenderX + MOLE_SIZE / 3, mouthY,
                         moleRenderX + 2 * MOLE_SIZE / 3, mouthY + Math.max(2, eyeSize - 1), eyeColor);
 
-                // ★ 删除上一版"备用 blit 7 参数"逻辑：
-                //   blit 签名 (texture, x, y, uOffset, vOffset, uWidth, vHeight)
-                //   强制按 64x64 纹理 8,8 偏移裁 32x32，会在非 64x64 资源包下采样错位
-                //   导致头部像素显示在身体之外（"贴图错位"原 bug）。改用纯色块 + 表情符号
-                //   兜底，跨资源包/字体均一致。
-
                 // 如果被打中，渲染打击效果
                 if (isHit) {
                     guiGraphics.fill(moleRenderX, moleRenderY,
@@ -614,18 +596,6 @@ public class WhackAMoleScreen extends Screen {
     }
 
     private enum MoleType {
-        ZOMBIE(ZOMBIE_HEAD),
-        CREEPER(CREEPER_HEAD),
-        SKELETON(SKELETON_HEAD);
-
-        private final ResourceLocation texture;
-
-        MoleType(ResourceLocation texture) {
-            this.texture = texture;
-        }
-
-        public ResourceLocation getTexture() {
-            return texture;
-        }
+        ZOMBIE, CREEPER, SKELETON
     }
 }

@@ -53,8 +53,6 @@ public interface ChessAI {
     /** Pikafish 默认路径（文件夹含空格，由 ProcessBuilder 直接处理） */
     String DEFAULT_PIKAFISH_PATH = "E:/皮卡鱼 20260131/pikafish-avx2.exe";
 
-    // ── 工厂方法 ──────────────────────────────────────────────
-
     /** 懒加载的日志记录器（避免静态初始化时 slf4j 不可用） */
     private static org.slf4j.Logger getFactoryLogger() {
         return org.slf4j.LoggerFactory.getLogger("ChessAI");
@@ -94,9 +92,6 @@ public interface ChessAI {
                 path = "";
             }
             if (path.isEmpty()) {
-                // ★ Bug修复：原版默认路径硬编码 "E:/皮卡鱼 20260131/pikafish-avx2.exe",
-                //   Mac/Linux/C/D/F 盘用户/无 Pikafish 用户都失败,仅在用户实际有
-                //   该盘符和路径时才能用。改为空时直接回退内置引擎,日志提示配置
                 path = "";
                 logger.info("[中国象棋] Pikafish 路径未配置,使用内置引擎");
                 return new BuiltInChessAI();

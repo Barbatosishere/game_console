@@ -13,11 +13,7 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 
-/**
- * 接水管游戏 —— 现代风格重制版
- * Bug修复：原版 UI 过于简陋（纯黑背景 + 蓝色色块），
- * 重制为现代科技感界面：渐变背景、发光水管、水流动画、难度选择。
- */
+/** 旋转水管，使起点和终点连通。 */
 @OnlyIn(Dist.CLIENT)
 public class PipePuzzleScreen extends Screen {
     boolean showExitConfirm = false;
@@ -83,18 +79,14 @@ public class PipePuzzleScreen extends Screen {
             if (attempts++ > 200) break;
             grid = new PipeTile[gridSize][gridSize];
             for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++)
-                grid[y][x] = new PipeTile(x, y, rots[random.nextInt(rots.length)]);
-            grid[0][0] = new PipeTile(0,0,PipeType.START);
-            grid[gridSize-1][gridSize-1] = new PipeTile(gridSize-1,gridSize-1,PipeType.END);
+                grid[y][x] = new PipeTile(rots[random.nextInt(rots.length)]);
+            grid[0][0] = new PipeTile(PipeType.START);
+            grid[gridSize-1][gridSize-1] = new PipeTile(PipeType.END);
             for (int y=0;y<gridSize;y++) for (int x=0;x<gridSize;x++) {
                 PipeTile t=grid[y][x];
                 if (t.type.isRotatable()) for (int r=random.nextInt(t.type.rotations.length);r>0;r--) t.rotate();
             }
-            // ★ Bug修复：在 do-while 里只检查"已连通"和"可解性"还不够，
-            //   由于小尺寸（如 4x4）随机排列中两端点可能同时连上导致开局即通，
-            //   即使路径未到终点，玩家旋转一次就会接通；这里额外要求 START 周围
-            //   至少 1 个相邻管口的"无效初始方向"——即 START.RIGHT / START.DOWN
-            //   没有被同向相邻管的开口接住，避免开局第一格/末格已经与管线合流。
+            // 避免起点已有相邻开口连接，使开局仍需旋转水管。
         } while (!findFlowPath().isEmpty() || !isSolvable() || startAlreadyHalfConnected());
         updateFlow();
     }
@@ -274,7 +266,7 @@ public class PipePuzzleScreen extends Screen {
             int bg=sel?0xFF1A5A9A:(hov?0xFF0D2A4A:0xFF071828);
             int bo=sel?0xFF00AAFF:(hov?0xFF1A5A9A:0xFF0D3050);
             g.fill(bx-1,by-1,bx+51,by+23,bo); g.fill(bx,by,bx+50,by+22,bg);
-            g.drawCenteredString(font,(sel?"":"")+dvs[i].label,bx+25,by+7,sel?0x00CCFF:0xAAAAAA);
+            g.drawCenteredString(font,dvs[i].label,bx+25,by+7,sel?0x00CCFF:0xAAAAAA);
         }
         g.drawCenteredString(font,""+difficulty.size+"×"+difficulty.size+" 格",cx,cy+36,0x334455);
 
@@ -328,7 +320,7 @@ public class PipePuzzleScreen extends Screen {
             case RIGHT -> g.fill(cx,cy-hf,px+sz-2,cy+hf,pc);
         }
         if (t.type==PipeType.START) g.drawCenteredString(font,"▶",cx-font.width("▶")/2+1,cy-4,START_C);
-        else if (t.type==PipeType.END) g.drawCenteredString(font,inF?"★":"★",cx-font.width("★")/2+1,cy-4,inF?WIN_C:END_C);
+        else if (t.type==PipeType.END) g.drawCenteredString(font,"★",cx-font.width("★")/2+1,cy-4,inF?WIN_C:END_C);
         if (hov&&t.type.isRotatable()) {
             g.fill(px,py,px+sz,py+1,0x8800CCFF); g.fill(px,py+sz-1,px+sz,py+sz,0x8800CCFF);
             g.fill(px,py,px+1,py+sz,0x8800CCFF); g.fill(px+sz-1,py,px+sz,py+sz,0x8800CCFF);
@@ -365,7 +357,6 @@ public class PipePuzzleScreen extends Screen {
 
     @Override public boolean isPauseScreen() { return false; }
 
-    // ── 数据结构 ──────────────────────────────────────
     private enum PipeType {
         START(new Direction[][]{{Direction.RIGHT,Direction.DOWN}}),
         END  (new Direction[][]{{Direction.LEFT, Direction.UP  }}),
@@ -386,7 +377,7 @@ public class PipePuzzleScreen extends Screen {
 
     private static class PipeTile {
         final PipeType type; int rotation=0;
-        PipeTile(int x,int y,PipeType t){type=t;}
+        PipeTile(PipeType t){type=t;}
         void rotate(){if(type.isRotatable())rotation=(rotation+1)%type.rotations.length;}
         List<Direction> getOpenings(){return type.getOpenings(rotation);}
     }

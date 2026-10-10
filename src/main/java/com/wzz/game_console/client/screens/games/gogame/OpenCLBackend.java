@@ -49,8 +49,7 @@ public class OpenCLBackend implements AutoCloseable {
     // Lifecycle tests can exercise sharing without loading a native driver.
     OpenCLBackend(boolean initialize) {
         if (!initialize) return;
-        // ★ catch Throwable：JNA 缺失/UnsatisfiedLinkError 是 Error 不是 Exception，
-        //   原版 catch (Exception) 拦不住，GPU 探测失败会直接炸掉调用方
+        // JNA 缺失或加载失败可能抛 Error，须回退 CPU。
         try { init(); available = true; }
         catch (Throwable t) {
             System.err.println("[OpenCL] 初始化失败: " + t);
@@ -147,7 +146,7 @@ public class OpenCLBackend implements AutoCloseable {
         System.out.println("[OpenCL] " + deviceName + " 内核: " + kernels.size());
     }
 
-    // ── 完整 GPU Pass 0 前向：子块→字块→顶级，一次批量完成 ──
+    // 完整 GPU Pass 0 前向：子块→字块→顶级，一次批量完成
     /**
      * 在整个 batch 上 GPU 执行 子块/字块/顶级 三层前向（ReLU 中间结果），
      * 并填充成 NeuralEvaluator.trainMiniBatch GPU 路径所需的全部中间量。
@@ -399,7 +398,7 @@ public class OpenCLBackend implements AutoCloseable {
         uploadedOwnerId = 0;
     }
 
-    // ── 数据提取 ──
+    // 数据提取
     private double[][][] extractSubInputs(double[][][][] planes, int B) {
         double[][][] out = new double[81][B][36];
         for (int n = 0; n < B; n++) {
@@ -420,7 +419,7 @@ public class OpenCLBackend implements AutoCloseable {
         return out;
     }
 
-    // ── GPU 内存/执行 ──
+    // GPU 内存/执行
     private Pointer alloc(long bytes) throws Exception {
         IntByReference error = new IntByReference();
         return create("clCreateBuffer", error, context, CL_MEM_READ_WRITE, bytes, null, error);
@@ -440,13 +439,6 @@ public class OpenCLBackend implements AutoCloseable {
             checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
             checkCl("clFinish(read)", calli("clFinish", queue)); double[] flat = m.getDoubleArray(0, out.length);
             System.arraycopy(flat, 0, out, 0, out.length);
-        }
-    }
-    private void readBack1D(Pointer src, double[] out, int n) throws Exception {
-        try (Memory m = new Memory((long)n * 8)) {
-            checkCl("clEnqueueReadBuffer", calli("clEnqueueReadBuffer", queue, src, 1, 0L, m.size(), m, 0, null, null));
-            checkCl("clFinish(read)", calli("clFinish", queue));
-            m.read(0, out, 0, n);
         }
     }
     private void readBack2D(Pointer src, double[][] out, int B, int N) throws Exception {
@@ -511,7 +503,7 @@ public class OpenCLBackend implements AutoCloseable {
         else memory.setInt(offset, (int) value);
     }
 
-    // ── 展平 ──
+    // 展平
     private static Memory flatten3D(double[][][] m) {
         int d1 = m.length, d2 = m[0].length, d3 = m[0][0].length;
         Memory mem = new Memory((long)d1 * d2 * d3 * 8);
@@ -528,7 +520,7 @@ public class OpenCLBackend implements AutoCloseable {
         Memory mem = new Memory((long)v.length * 8); mem.write(0, v, 0, v.length); return mem;
     }
 
-    // ── OpenCL 底层 ──
+    // OpenCL 底层
     private Pointer findDevice(Pointer platform, long type) throws Exception {
         IntByReference n = new IntByReference();
         if (calli("clGetDeviceIDs", platform, type, 0, null, n) != 0 || n.getValue() == 0) return null;

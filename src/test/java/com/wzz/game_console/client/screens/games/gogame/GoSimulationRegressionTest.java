@@ -200,7 +200,7 @@ class GoSimulationRegressionTest {
     @Test
     void escapeDirectionUsesUniqueLibertiesWithoutMutatingBoard() throws Exception {
         Method escape = MCTSGoAI.class.getDeclaredMethod("getEscapeDirection",
-                GoPlayer[][].class, Set.class, GoPlayer.class);
+                GoPlayer[][].class, Set.class);
         escape.setAccessible(true);
         GoPlayer[][] board = emptyBoard();
         board[9][9] = GoPlayer.BLACK;
@@ -208,7 +208,7 @@ class GoSimulationRegressionTest {
         Set<int[]> group = new java.util.LinkedHashSet<>(List.of(
                 new int[]{9, 9}, new int[]{9, 10}));
         GoPlayer[][] before = copy(board);
-        int[] selected = (int[]) escape.invoke(ai, board, group, GoPlayer.BLACK);
+        int[] selected = (int[]) escape.invoke(ai, board, group);
         assertNotNull(selected);
         assertEquals(GoPlayer.NONE, board[selected[0]][selected[1]]);
         int selectedScore = Math.min(Math.min(selected[0], selected[1]),
@@ -228,7 +228,7 @@ class GoSimulationRegressionTest {
         for (int[] point : new int[][]{{8, 9}, {10, 9}, {9, 8}, {8, 10}, {10, 10}, {9, 11}}) {
             blocked[point[0]][point[1]] = GoPlayer.WHITE;
         }
-        assertNull(escape.invoke(ai, blocked, group, GoPlayer.BLACK));
+        assertNull(escape.invoke(ai, blocked, group));
     }
 
     @Test

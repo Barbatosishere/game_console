@@ -33,9 +33,7 @@ import java.nio.file.StandardOpenOption;
  */
 public class NeuralEvaluator {
 
-    // ══════════════════════════════════════════════════════════════════════
     //  常量
-    // ══════════════════════════════════════════════════════════════════════
 
     private static final int BOARD_SIZE = 19;
     private static final int PLANES = 4;
@@ -75,7 +73,6 @@ public class NeuralEvaluator {
     private static final int MODEL_FORMAT = 3;
     private static final int LEGACY_MODEL_MAGIC = 0x4E455632; // NEV2
     private static final int LEGACY_MODEL_FORMAT = 2;
-    private static final int MAX_CACHE_SIZE = 10000;
     private static final AtomicInteger GPU_OWNER_SEQ = new AtomicInteger(1);
 
     /** Per-caller feature buffers. They are only reused after forward() returns. */
@@ -123,9 +120,7 @@ public class NeuralEvaluator {
     // 四方向
     private static final int[][] DIRS = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
 
-    // ══════════════════════════════════════════════════════════════════════
     //  分块索引（静态计算）
-    // ══════════════════════════════════════════════════════════════════════
 
     /** 9 个一级字块的左上角 (bx, by) */
     private static final int[][] BLOCK_STARTS = new int[9][2];
@@ -173,9 +168,7 @@ public class NeuralEvaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  权重矩阵
-    // ══════════════════════════════════════════════════════════════════════
 
     // 第 1 级：二级子块（9 套独立权重）
     private final double[][][] subW1;  // [block][input=36][hidden=16]
@@ -200,10 +193,7 @@ public class NeuralEvaluator {
     private double valueB2;
 
     private final ReentrantReadWriteLock modelLock = new ReentrantReadWriteLock();
-    /**
-     * 与 release 互斥：前向/训练可并发持有读锁，关闭时独占写锁。
-     * 原先用独占 ReentrantLock 会把 30 路自对弈的 GPU 前向串成一条。
-     */
+    /** 前向和训练持读锁，释放原生资源时独占写锁。 */
     private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private volatile boolean released;
     private volatile long modelVersion;
@@ -250,11 +240,7 @@ public class NeuralEvaluator {
         }
     }
 
-    /**
-     * 释放 OpenCL native 资源（kernel/program/queue/context）。
-     * 修复：此前 OpenCLBackend.close() 全项目无调用点，屏显重开反复创建
-     * MCTSGoAI 会堆积 native 句柄只能靠 GC 兜底。重复调用安全（幂等）。
-     */
+    /** 幂等释放 OpenCL 的 kernel、program、queue 和 context。 */
     public void release() {
         lifecycleLock.writeLock().lock();
         try {
@@ -273,9 +259,7 @@ public class NeuralEvaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  构造
-    // ══════════════════════════════════════════════════════════════════════
 
     public NeuralEvaluator() {
         this(false);
@@ -320,9 +304,7 @@ public class NeuralEvaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  权重初始化
-    // ══════════════════════════════════════════════════════════════════════
 
     private void initWeights() {
         Random rnd = new Random(42);
@@ -360,9 +342,7 @@ public class NeuralEvaluator {
         valueB2 = 0.0;
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  输入平面构建
-    // ══════════════════════════════════════════════════════════════════════
 
     /**
      * 构建 4×19×19 输入平面。
@@ -418,9 +398,7 @@ public class NeuralEvaluator {
         return libs;
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  辅助特征（24 维，沿用旧版计算逻辑）
-    // ══════════════════════════════════════════════════════════════════════
 
     /**
      * 提取 24 维全局辅助特征：气数直方图(8) + 眼形特征(8) + 全局特征(8)。
@@ -438,7 +416,6 @@ public class NeuralEvaluator {
         GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
         int BS = BOARD_SIZE;
 
-        // ── 气数直方图 [0..7] ──────────────────────────────────────────
         int[] libertyHist = scratch.histogram;
         Arrays.fill(libertyHist, 0);
         for (int group = 0; group < scratch.groupCount; group++) {
@@ -450,7 +427,6 @@ public class NeuralEvaluator {
             aux[i] = histSum > 0 ? (libertyHist[i] * 2.0 / histSum - 1.0) : 0.0;
         }
 
-        // ── 眼形特征 [8..15] ──────────────────────────────────────────
         int myTrueEyes = 0, myFalseEyes = 0, oppTrueEyes = 0, oppFalseEyes = 0;
         for (int x = 0; x < BS; x++) {
             for (int y = 0; y < BS; y++) {
@@ -503,7 +479,6 @@ public class NeuralEvaluator {
         aux[12] = eyeHolesMy / 30.0;
         aux[13] = eyeHolesOpp / 30.0;
 
-        // ── 全局特征 [16..23] ──────────────────────────────────────────
         int myStones = 0, oppStones = 0;
         for (int x = 0; x < BS; x++) for (int y = 0; y < BS; y++) {
             if (board[x][y] == player) myStones++; else if (board[x][y] == opponent) oppStones++;
@@ -535,9 +510,7 @@ public class NeuralEvaluator {
 
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  前向传播
-    // ══════════════════════════════════════════════════════════════════════
 
     /** GPU 加速是否启用（可选配置 go.gpu，默认开）。false 时一律走 CPU，不初始化 OpenCL。 */
     private static volatile Boolean gpuEnabledCache = null;
@@ -584,8 +557,7 @@ public class NeuralEvaluator {
                 openclDisabled = false;
                 return created;
             } catch (Throwable t) {
-                // ★ 兜底：JNA 缺失/UnsatisfiedLinkError 等属于 Error，
-                //   不能让 GPU 探测失败把整条推理路径炸掉，降级 CPU
+                // JNA 缺失或加载失败可能抛 Error，须回退 CPU。
                 System.err.println("[NeuralEvaluator] OpenCL 初始化失败，回退 CPU: " + t);
                 opencl = null;
                 recordOpenCLFailure();
@@ -819,7 +791,6 @@ public class NeuralEvaluator {
 
     private ForwardResult cpuForward(double[][][] planes, double[] auxFeatures) {
             CpuForwardScratch scratch = CPU_FORWARD_SCRATCH.get();
-            // ── 第 1 级：二级子块 ──────────────────────────────────────
             // subOut[b][s][h] — 大块 b 的第 s 个子块的 16 维输出
             double[][][] subOut = scratch.subOut;
             for (int b = 0; b < NUM_BLOCKS; b++) {
@@ -839,7 +810,6 @@ public class NeuralEvaluator {
                 }
             }
 
-            // ── 第 2 级：一级字块 ──────────────────────────────────────
             double[][] blockOut = scratch.blockOut;
             for (int b = 0; b < NUM_BLOCKS; b++) {
                 // 拼接 9 个子块输出 → 144 维
@@ -852,7 +822,6 @@ public class NeuralEvaluator {
                 cpuDense(blockW1[b], blockB1[b], input, blockOut[b], true);
             }
 
-            // ── 第 3 级：顶级 ──────────────────────────────────────────
             double[] topInput = scratch.topInput;
             int idx = 0;
             for (int b = 0; b < NUM_BLOCKS; b++)
@@ -865,7 +834,6 @@ public class NeuralEvaluator {
             double[] shared = scratch.shared;
             cpuDense(topW1, topB1, topInput, shared, true);
 
-            // ── 策略头 ──────────────────────────────────────────────────
             double[] policy = new double[POLICY_SIZE];
             cpuDense(policyW, policyB, shared, policy, false);
             double maxLogit = Double.NEGATIVE_INFINITY;
@@ -881,7 +849,6 @@ public class NeuralEvaluator {
             double invSum = 1.0 / Math.max(sumExp, 1e-30);
             for (int j = 0; j < POLICY_SIZE; j++) policy[j] *= invSum;
 
-            // ── 价值头 ──────────────────────────────────────────────────
             double[] vh = scratch.valueHidden;
             cpuDense(valueW1, valueB1, shared, vh, true);
             double valueSum = valueB2;
@@ -987,16 +954,7 @@ public class NeuralEvaluator {
         return Math.tanh(valueSum);
     }
 
-    /**
-     * 仅计算策略头（用于 MCTS 节点扩展获取先验概率）。
-     */
-    public double[] forwardPolicy(double[][][] planes, double[] auxFeatures) {
-        return forward(planes, auxFeatures).policy;
-    }
-
-    // ══════════════════════════════════════════════════════════════════════
     //  训练（反向传播）
-    // ══════════════════════════════════════════════════════════════════════
 
     static void validateTrainingParameters(double learningRate, double l2, double gradientClip, double momentum) {
         if (!Double.isFinite(learningRate) || learningRate < 0
@@ -1041,7 +999,6 @@ public class NeuralEvaluator {
             try {
             // 确保动量缓冲就绪
             if (momentum > 0) ensureVelocities();
-            // ── 梯度累加器 ──────────────────────────────────────────────
             double[][][] gSubW = new double[NUM_BLOCKS][SUB_INPUT][SUB_HIDDEN];
             double[][] gSubB = new double[NUM_BLOCKS][SUB_HIDDEN];
             double[][][] gBlockW = new double[NUM_BLOCKS][BLOCK_INPUT][BLOCK_HIDDEN];
@@ -1056,7 +1013,7 @@ public class NeuralEvaluator {
             double gValueB2 = 0;
             double totalLoss = 0;
 
-            // ── OpenCL GPU 路径：Pass 0 预计算子块/字块并批量运行顶级 FC ──
+            // OpenCL GPU 路径：Pass 0 预计算子块/字块并批量运行顶级 FC
             boolean useGpu = false;
             OpenCLBackend oc = null;
             double[][][][] bSubIn = null, bSubZ = null;
@@ -1094,9 +1051,7 @@ public class NeuralEvaluator {
                 double vTgt = valueTargets[n];
                 double[] pTgt = policyTargets[n];
 
-                // ═══════════════════════════════════════════════════════════
                 //  前向（保存中间结果供反向使用）
-                // ═══════════════════════════════════════════════════════════
 
                 double[][][] subIn; double[][][] subZ;
                 double[][] blkIn; double[][] blkZ;
@@ -1107,7 +1062,7 @@ public class NeuralEvaluator {
                     blkIn = bBlkIn[n]; blkZ = bBlkZ[n];
                     topIn = bTopIn[n]; shZ = bShZ[n]; shared = bShared[n];
                 } else {
-                    // ── 第 1 级：二级子块 ──
+                    // 第 1 级：二级子块
                     subIn = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_INPUT];
                     subZ = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
                     double[][][] subOut = new double[NUM_BLOCKS][SUBS_PER_BLOCK][SUB_HIDDEN];
@@ -1129,7 +1084,7 @@ public class NeuralEvaluator {
                             }
                         }
                     }
-                    // ── 第 2 级：一级字块 ──
+                    // 第 2 级：一级字块
                     blkIn = new double[NUM_BLOCKS][BLOCK_INPUT];
                     blkZ = new double[NUM_BLOCKS][BLOCK_HIDDEN];
                     double[][] blkOut = new double[NUM_BLOCKS][BLOCK_HIDDEN];
@@ -1146,7 +1101,7 @@ public class NeuralEvaluator {
                             blkOut[b][j] = Math.max(0, sum);
                         }
                     }
-                    // ── 第 3 级：顶级 ──
+                    // 第 3 级：顶级
                     topIn = new double[TOP_INPUT];
                     int topIdx = 0;
                     for (int b = 0; b < NUM_BLOCKS; b++)
@@ -1208,7 +1163,6 @@ public class NeuralEvaluator {
                     value = Math.tanh(valuePre);
                 }
 
-                // ── Loss ──────────────────────────────────────────────
                 double vLoss = (value - vTgt) * (value - vTgt);
                 double pLoss = 0;
                 for (int j = 0; j < POLICY_SIZE; j++) {
@@ -1217,28 +1171,23 @@ public class NeuralEvaluator {
                 }
                 totalLoss += vLoss + pLoss;
 
-                // ═══════════════════════════════════════════════════════════
                 //  反向传播
-                // ═══════════════════════════════════════════════════════════
 
-                // ── 价值头 ──────────────────────────────────────────────
                 double dValue = 2.0 * (value - vTgt) * (1.0 - value * value);
                 double[] dVh = new double[VALUE_HIDDEN];
                 for (int i = 0; i < VALUE_HIDDEN; i++) {
                     gValueW2[i] += dValue * vh[i];
                     dVh[i] = dValue * valueW2[i] * (vhZ[i] > 0 ? 1 : 0);
-                    gValueB1[i] += dVh[i]; // 价值头隐藏层偏置梯度（此前遗漏，偏置永久冻结）
+                    gValueB1[i] += dVh[i];
                 }
                 gValueB2 += dValue;
 
-                // ── 策略头 ──────────────────────────────────────────────
                 double[] dLogit = new double[POLICY_SIZE];
                 for (int j = 0; j < POLICY_SIZE; j++) {
                     dLogit[j] = policy[j] - pTgt[j];
                     gPolicyB[j] += dLogit[j];
                 }
 
-                // ── 共享层梯度 ──────────────────────────────────────────
                 double[] dShared = new double[TOP_HIDDEN];
                 for (int i = 0; i < TOP_HIDDEN; i++) {
                     double fromPolicy = 0;
@@ -1259,7 +1208,6 @@ public class NeuralEvaluator {
                     for (int i = 0; i < TOP_HIDDEN; i++)
                         gTopW[k][i] += dShared[i] * topIn[k];
 
-                // ── 第 2 级：一级字块 ──────────────────────────────────
                 double[] dTopIn = new double[TOP_INPUT];
                 for (int k = 0; k < TOP_INPUT; k++)
                     for (int i = 0; i < TOP_HIDDEN; i++)
@@ -1279,7 +1227,6 @@ public class NeuralEvaluator {
                         for (int j = 0; j < BLOCK_HIDDEN; j++)
                             gBlockW[b][i][j] += dBlkZ[j] * blkIn[b][i];
 
-                    // ── 第 1 级：二级子块 ──────────────────────────────
                     double[] dBlkIn = new double[BLOCK_INPUT];
                     for (int i = 0; i < BLOCK_INPUT; i++)
                         for (int j = 0; j < BLOCK_HIDDEN; j++)
@@ -1296,13 +1243,11 @@ public class NeuralEvaluator {
                 }
             }
 
-            // ── 应用梯度（平均 + L2 + 裁剪） ──────────────────────────
             double scale = 1.0 / batchSize;
             double norm = gradientNorm(gSubW, gSubB, gBlockW, gBlockB, gTopW, gTopB,
                                        gPolicyW, gPolicyB, gValueW1, gValueB1, gValueW2, gValueB2);
             if (!Double.isFinite(norm)) {
-                // ★ Bug修复：NaN 与裁剪阈值比较恒为 false，NaN 梯度会绕过裁剪直接写入全部权重且无法回滚。
-                // 范数非有限时直接跳过本次权重更新，保留上一步的有效权重。
+                // 非有限梯度不能写入权重。
                 System.err.println("[NeuralEvaluator] 检测到非有限梯度范数(" + norm + ")，跳过本次权重更新");
                 return totalLoss / batchSize;
             }
@@ -1353,7 +1298,6 @@ public class NeuralEvaluator {
         }
     }
 
-    // ── 梯度更新辅助（支持动量）─────────────────────────────────────
     /**
      * 更新 3D 权重：w -= v, v = momentum * v + rate * (g + l2 * w)
      * 当 v == null 或 momentum == 0 时退化为纯 SGD：w -= rate * (g + l2 * w)
@@ -1449,9 +1393,7 @@ public class NeuralEvaluator {
         return Math.sqrt(s);
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  辅助方法（眼形、连接、领地等，沿用旧版）
-    // ══════════════════════════════════════════════════════════════════════
 
     private static class EyeInfo { boolean isTrue, isPotential; }
 
@@ -1610,72 +1552,6 @@ public class NeuralEvaluator {
         return result;
     }
 
-    private double heuristicEvaluation(GoPlayer[][] board, GoPlayer player) {
-        GoPlayer opponent = player == GoPlayer.BLACK ? GoPlayer.WHITE : GoPlayer.BLACK;
-        double score = 0;
-        boolean[][] visited = new boolean[BOARD_SIZE][BOARD_SIZE];
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] != GoPlayer.NONE && !visited[x][y]) {
-                Set<int[]> group = getGroup(board, x, y);
-                int libs = countGroupLiberties(board, group);
-                boolean isOwn = board[x][y] == player;
-                if (libs >= 6) score += isOwn ? 15 : -15;
-                else if (libs == 5) score += isOwn ? 12 : -12;
-                else if (libs == 4) score += isOwn ? 8 : -8;
-                else if (libs == 3) score += isOwn ? 4 : -4;
-                else if (libs == 2) score += isOwn ? 1 : -3;
-                else if (libs == 1) score += isOwn ? -25 : 25;
-                else score += isOwn ? -40 : 40;
-                if (isOwn && group.size() >= 5) score += group.size() * 2;
-                if (!isOwn && libs <= 2) score += 20;
-                for (int[] p : group) visited[p[0]][p[1]] = true;
-            }
-        }
-        int myEyes = 0, oppEyes = 0;
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] != GoPlayer.NONE && isPotentialEye(board, x, y)) {
-                if (board[x][y] == player) myEyes++; else oppEyes++;
-            }
-        }
-        score += (myEyes - oppEyes) * 8;
-        int myControl = 0, oppControl = 0;
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] == GoPlayer.NONE) {
-                double myInf = 0, oppInf = 0;
-                for (int dx = -2; dx <= 2; dx++) for (int dy = -2; dy <= 2; dy++) {
-                    int nx = x + dx, ny = y + dy;
-                    if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                        double w = INFLUENCE_WEIGHT[dx + 3][dy + 3];
-                        if (board[nx][ny] == player) myInf += w;
-                        else if (board[nx][ny] == opponent) oppInf += w;
-                    }
-                }
-                if (myInf > oppInf + 0.5) myControl++;
-                else if (oppInf > myInf + 0.5) oppControl++;
-            }
-        }
-        score += (myControl - oppControl) * 0.5;
-        int myStones = 0, oppStones = 0;
-        for (int x = 0; x < BOARD_SIZE; x++) for (int y = 0; y < BOARD_SIZE; y++) {
-            if (board[x][y] == player) myStones++;
-            else if (board[x][y] == opponent) oppStones++;
-        }
-        score += (myStones - oppStones) * 2;
-        return score;
-    }
-
-    private boolean isPotentialEye(GoPlayer[][] board, int x, int y) {
-        int friendly = 0, empty = 0;
-        for (int[] d : DIRS) {
-            int nx = x + d[0], ny = y + d[1];
-            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                if (board[nx][ny] == board[x][y]) friendly++;
-                else if (board[nx][ny] == GoPlayer.NONE) empty++;
-            }
-        }
-        return friendly + empty >= 3;
-    }
-
     private double countSurrounding(GoPlayer[][] board, int x, int y, GoPlayer player) {
         double influence = 0;
         for (int[] d : DIRS) {
@@ -1731,15 +1607,7 @@ public class NeuralEvaluator {
         return libertySet.size();
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  Zobrist 哈希（复用 GoGame 的表）
-    // ══════════════════════════════════════════════════════════════════════
-
-    private long computeZobristHash(GoPlayer[][] board, GoPlayer player) {
-        long hash = GoGame.boardHash(board);
-        if (player == GoPlayer.WHITE) hash ^= 0xFFFFFFFFL;
-        return hash;
-    }
 
     private static final class CacheKey {
         final long hash, version;
@@ -1752,14 +1620,9 @@ public class NeuralEvaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════
     //  快照与持久化
-    // ══════════════════════════════════════════════════════════════════════
 
     public long getModelVersion() { return modelVersion; }
-
-    public int getCacheSize() { synchronized (evaluationCache) { return evaluationCache.size(); } }
-    public void clearCache() { synchronized (evaluationCache) { evaluationCache.clear(); } }
 
     /** Immutable model snapshot. */
     public static final class ModelWeights {

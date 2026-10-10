@@ -169,7 +169,7 @@ public final class GoAdversarialTrainer {
             return new Result(games, newSamples.size(), completed, loss, evaluator, ourWins);
         } finally {
             pool.shutdownNow();
-            // ★ Bug修复：等待 worker 释放 native 资源,见 GoSelfPlayTrainer 同改
+            // 等待 worker 释放原生资源后再结束训练。
             try {
                 if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
                     System.err.println("[对抗训练] 训练线程池 5s 内未关闭,放弃等待");
@@ -192,7 +192,6 @@ public final class GoAdversarialTrainer {
         int max = Math.max(1, config.maxReplaySamples);
         int overflow = replayBuffer.size() - max;
         if (overflow > 0) {
-            // ★ 修复：原版 while(remove(0)) 逐条前移，O(n²)；subList 批量清除一次完成
             replayBuffer.subList(0, overflow).clear();
         }
     }
@@ -255,10 +254,7 @@ public final class GoAdversarialTrainer {
             }
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.directory(exeFile.getParentFile()); // 设置工作目录为 KataGo 目录（找到 DLL 和调优缓存）
-            // ★ 修复：不再 redirectErrorStream——stdout 必须保持纯 GTP 流，
-            //   引擎日志混入 stdout 会被当作响应解析，导致 GTP 解析错位分叉；
-            //   stderr 也不能完全不消费——管道缓冲写满会挂死引擎，继承到本进程 stderr
+            pb.directory(exeFile.getParentFile()); // 引擎目录用于查找 DLL 和调优缓存；stderr 独立输出，保持 stdout 为纯 GTP 流。
             pb.redirectError(ProcessBuilder.Redirect.INHERIT);
             process = pb.start();
             java.io.BufferedWriter writer = new java.io.BufferedWriter(
@@ -341,8 +337,7 @@ public final class GoAdversarialTrainer {
                 boolean ourWin = kataResigned
                         ? true
                         : (ourIsBlack && margin > 0) || (!ourIsBlack && margin < 0);
-                // ★ 修复：resign 是"黑方（KataGo 或我方）认输"——我方执白时黑（对手）实际输了，
-                //   blackValue 应为 -1 而非 +1，否则训练标签方向完全颠倒
+                // resign 的输方由当前行棋颜色决定，训练值采用黑方视角。
                 double blackValue = kataResigned ? (ourIsBlack ? 1.0 : -1.0) : clamp(margin / 100.0);
 
                 for (Sample s : samples) {
@@ -370,9 +365,7 @@ public final class GoAdversarialTrainer {
         } finally {
             // Every early-return and initialization failure must release the private evaluator.
             ourAI.shutdown();
-            // ★ Bug修复：此前 kataGo 变量从未真正赋值，异常路径下真正持有子进程的 process
-            // 完全没被清理——GTP 通信异常/超时会让 KataGo 残留为僵尸进程占用显存。
-            // 无论正常返回还是任意异常路径，这里保证子进程被强杀。
+            // 通信失败时也必须关闭 KataGo 子进程。
             if (process != null && process.isAlive()) {
                 process.destroyForcibly();
             }
@@ -425,7 +418,7 @@ public final class GoAdversarialTrainer {
                     // 响应前的引擎日志/横幅行不属于 GTP 响应，丢弃
                     noise.append(line).append('\n');
                 }
-                // EOF：若此前还有未终止的内容（半行响应），不得当作成功返回
+                // EOF 前的响应若未完整终止，不能当作成功返回。
                 if (noise.length() > 0) {
                     errorRef.set(new IOException("KataGo 进程已退出（响应不完整）"));
                 }
@@ -486,8 +479,6 @@ public final class GoAdversarialTrainer {
         int gtpCol = x + (x >= 8 ? 1 : 0);
         return String.valueOf((char) ('a' + gtpCol)) + (y + 1);
     }
-
-    // ── 训练（与 GoSelfPlayTrainer 相同） ──────────────────────────
 
     private static final int BOARD_SIZE = 19;
     private static final int BOARD_FEATURES = BOARD_SIZE * BOARD_SIZE;

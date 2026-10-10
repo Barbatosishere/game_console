@@ -27,7 +27,6 @@ public class FruitNinjaScreen extends Screen {
     private final List<int[]> mouseTrail = new ArrayList<>();
     private int score, lives, spawnTimer, comboCount, comboTimer;
     private long tickCount;
-    private int lastMX = -1, lastMY = -1;
     private final Random random = new Random();
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private final List<GameRenderHelper.FloatingText> floats = new ArrayList<>();
@@ -46,16 +45,13 @@ public class FruitNinjaScreen extends Screen {
     private void startGame() {
         fruits.clear(); sliceEffects.clear(); mouseTrail.clear(); particles.clear(); floats.clear();
         score = 0; lives = 3; spawnTimer = 0; comboCount = 0; comboTimer = 0;
-        lastMX = -1; lastMY = -1;
         state = State.PLAYING;
     }
 
     @Override public void tick() {
         tickCount++;
-        if (state != State.PLAYING || showExitConfirm) return; // 弹窗期间暂停游戏
-        // ★ 修复：浮字推进原在状态守卫之前执行，暂停/菜单期间仍会飘走耗尽，移到守卫之后
+        if (state != State.PLAYING || showExitConfirm) return;
         floats.removeIf(f -> { f.update(); return !f.isAlive(); });
-        // ★ 修复：粒子物理移到 tick() 固定频率推进（原来在 render 中 update，帧率依赖且暂停期间不停）
         GameRenderHelper.tickParticles(particles);
 
         spawnTimer++;
@@ -129,7 +125,7 @@ public class FruitNinjaScreen extends Screen {
         GameRenderHelper.fillDarkBackground(g, width, height);
         switch (state) {
             case MENU -> renderMenu(g, mx, my);
-            case PLAYING -> renderPlaying(g, mx, my);
+            case PLAYING -> renderPlaying(g);
             case GAME_OVER -> renderGameOver(g, mx, my);
         }
         if (showExitConfirm) GameRenderHelper.drawExitConfirmOverlay(g, font, width, height, mx, my);
@@ -152,7 +148,7 @@ public class FruitNinjaScreen extends Screen {
         GameRenderHelper.drawPrimaryButton(g, font, "开始游戏", cx - 60, cy + 45, 120, 22, mx, my);
     }
 
-    private void renderPlaying(GuiGraphics g, int mx, int my) {
+    private void renderPlaying(GuiGraphics g) {
         GameRenderHelper.fillGradientBackground(g, width, height, 0xFF0A0A18, 0xFF1A1A2A);
         // 鼠标轨迹
         for (int i = 1; i < mouseTrail.size(); i++) {
@@ -177,16 +173,11 @@ public class FruitNinjaScreen extends Screen {
                     // 红色十字危险标记
                     g.fill(bx - 2, by - half + 4, bx + 2, by + half - 4, 0xFFFF2200);
                     g.fill(bx - half + 4, by - 2, bx + half - 4, by + 2, 0xFFFF2200);
-                    // 引线（顶部，更明显）
-                    // ★ Bug修复：fill(x1,y1,x2,y2,color) 后两参数是绝对坐标，此前误传成宽高字面量，
-                    //   炸弹坐标较大时矩形会从屏幕左上角一路拉伸过来，改为 x1+宽/y1+高 换算出正确的 x2/y2
                     g.fill(bx - 1, by - half - 8, bx + 2, by - half, 0xFFFF6600);
                     g.fill(bx - 4, by - half - 10, bx + 5, by - half - 7, 0xFFFF6600);
                     // 警告圈（红色闪烁轮廓）
                     int bombPulse = (int)(System.currentTimeMillis() / 300) % 2 == 0 ? 0xFFFF2200 : 0xFF880000;
                     GameRenderHelper.drawCircle(g, bx, by, half + 3, bombPulse);
-                    // ★ Bug修复：默认 Minecraft 字体不包含 emoji "💣"，豆腐块概率高。
-                    //   改用 ASCII 字符 "B"（黑底白字 + 红色描边），跨字体/语言包稳定可读。
                     int bw = font.width("B");
                     // 红色描边（4 方向各偏移 1px）
                     g.drawString(font, "B", bx - bw / 2 - 1, by - 4,     0xFFFF0000);
@@ -206,13 +197,8 @@ public class FruitNinjaScreen extends Screen {
         for (GameRenderHelper.FloatingText ft : floats) ft.render(g, font);
 
         // HUD
-        GameRenderHelper.drawTopHUD(g, width, height);
-        // ★ 修复：🍉 为非 BMP emoji，默认字体有豆腐块风险，改为纯文本
+        GameRenderHelper.drawTopHUD(g, width);
         g.drawString(font, "分数: " + score, 8, 7, 0xFF4444);
-        // ★ Bug修复：lives 无上限时 "❤".repeat(lives) 字符串爆炸,font.width
-        //   返回极大值,width - width - 8 变成巨大负数,字符串渲染到屏幕外。
-        //   ★ 性能：改为启动时预计算 0~20 帧表,render 每帧只做一次数组索引,
-        //     不再每帧 repeat 分配新字符串
         String livesStr = HEARTS_FRAMES[Math.max(0, Math.min(lives, HEARTS_FRAMES.length - 1))];
         g.drawString(font, livesStr, width - font.width(livesStr) - 8, 7, 0xFF4444);
         if (comboCount >= 3) g.drawCenteredString(font, "✦ Combo x" + comboCount + " ✦", width/2, 7, 0xFFAA00);
@@ -220,7 +206,7 @@ public class FruitNinjaScreen extends Screen {
     }
 
     private void renderGameOver(GuiGraphics g, int mx, int my) {
-        renderPlaying(g, mx, my);
+        renderPlaying(g);
         GameRenderHelper.drawGameOverOverlay(g, width, height);
         int cx = width/2, cy = height/2;
         GameRenderHelper.drawGameOverPanel(g, font, cx, cy, false, "游戏结束！", "最终分数: " + score);

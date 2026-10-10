@@ -28,9 +28,7 @@ public class MemoryGameScreen extends Screen {
     
     // 颜色定义
     private static final int NORMAL_COLOR = 0xFF404040;
-    private static final int HIGHLIGHT_COLOR = 0xFFFFFF00;
     private static final int BORDER_COLOR = 0xFF808080;
-    private static final int CLICKED_COLOR = 0xFF00FF00;
     
     // 游戏状态
     private enum GameState {
@@ -75,7 +73,6 @@ public class MemoryGameScreen extends Screen {
     
     @Override
     public void init() {
-        // ★ Bug修复：缩放 init() 重复添加 startButton/resetButton
         this.clearWidgets();
         super.init();
         this.gridStartX = (this.width - GRID_WIDTH) / 2;
