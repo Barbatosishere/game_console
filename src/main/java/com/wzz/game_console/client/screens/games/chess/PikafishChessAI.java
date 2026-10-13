@@ -6,12 +6,14 @@ import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.Closeable;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -37,7 +39,7 @@ public class PikafishChessAI implements ChessAI {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("PikafishAI");
 
-    /** UCI 握手/单步命令超时（秒） */
+    /** 每个 UCI 握手阶段的总超时（毫秒）。 */
     private static final int CMD_TIMEOUT_MS = 15_000;
     /** 共享关闭钩子，仅跟踪尚未关闭的引擎实例。 */
     private static final java.util.Set<PikafishChessAI> LIVE_INSTANCES =
@@ -96,7 +98,7 @@ public class PikafishChessAI implements ChessAI {
         if (!SHUTDOWN_HOOK_REGISTERED) {
             SHUTDOWN_HOOK_REGISTERED = true;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                for (PikafishChessAI ai : LIVE_INSTANCES) {
+                for (PikafishChessAI ai : LIVE_INSTANCES.toArray(new PikafishChessAI[0])) {
                     try { ai.shutdown(); } catch (Throwable ignored) {}
                 }
             }));
@@ -118,22 +120,24 @@ public class PikafishChessAI implements ChessAI {
     private void initUci(int threads) throws IOException {
         writer.write("uci\n");
         writer.flush();
-        String line;
-        boolean uciok = false;
-        while ((line = readLine(CMD_TIMEOUT_MS)) != null) {
-            if ("uciok".equals(line.trim())) { uciok = true; break; }
-        }
-        if (!uciok) throw new IOException("未收到 uciok");
+        if (!awaitResponse(lineQueue, "uciok", CMD_TIMEOUT_MS)) throw new IOException("未收到 uciok");
 
         writer.write("setoption name Threads value " + threads + "\n");
         writer.write("isready\n");
         writer.flush();
 
-        boolean ready = false;
-        while ((line = readLine(CMD_TIMEOUT_MS)) != null) {
-            if ("readyok".equals(line.trim())) { ready = true; break; }
+        if (!awaitResponse(lineQueue, "readyok", CMD_TIMEOUT_MS)) throw new IOException("未收到 readyok");
+    }
+
+    static boolean awaitResponse(BlockingQueue<String> responses, String expected, long timeoutMillis) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (true) {
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0) return false;
+            String line = readLine(responses, Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+            if (line == null) return false;
+            if (expected.equals(line.trim())) return true;
         }
-        if (!ready) throw new IOException("未收到 readyok");
     }
 
     @Override
@@ -153,7 +157,7 @@ public class PikafishChessAI implements ChessAI {
             while (true) {
                 long remainingMs = (deadline - System.nanoTime()) / 1_000_000L;
                 if (remainingMs <= 0) break;
-                line = readLine(remainingMs);
+                line = readLine(lineQueue, remainingMs);
                 if (line == null) break;
                 String trimmed = line.trim();
                 if (trimmed.startsWith("bestmove")) {
@@ -169,7 +173,7 @@ public class PikafishChessAI implements ChessAI {
                 long drainDeadline = System.nanoTime() + 5_000_000_000L;
                 while (System.nanoTime() < drainDeadline) {
                     long remainingMs = (drainDeadline - System.nanoTime()) / 1_000_000L;
-                    line = readLine(Math.max(1, remainingMs));
+                    line = readLine(lineQueue, Math.max(1, remainingMs));
                     if (line == null) break;
                     if (line.trim().startsWith("bestmove")) break;
                 }
@@ -202,7 +206,10 @@ public class PikafishChessAI implements ChessAI {
     @Override
     public void cancelSearch() {
         connected = false;
-        if (process != null && process.isAlive()) process.destroy();
+        if (process != null && process.isAlive()) {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroy();
+        }
     }
 
     @Override
@@ -221,12 +228,12 @@ public class PikafishChessAI implements ChessAI {
      * （握手阶段判定 uciok/readyok 失败；搜索阶段走 stop+排空残留响应），
      * 不再像旧实现那样抛"读取超时"异常导致排空逻辑不可达。
      */
-    private String readLine(long timeoutMillis) throws IOException {
+    private static String readLine(BlockingQueue<String> responses, long timeoutMillis) throws IOException {
         try {
-            String line = lineQueue.poll(timeoutMillis, TimeUnit.MILLISECONDS);
+            String line = responses.poll(timeoutMillis, TimeUnit.MILLISECONDS);
             if (line == null) return null; // 超时
             if (EOF_SENTINEL.equals(line)) {
-                lineQueue.offer(EOF_SENTINEL); // 哨兵回填，后续调用同样立即得到 EOF
+                responses.offer(EOF_SENTINEL); // 哨兵回填，后续调用同样立即得到 EOF
                 return null;
             }
             return line;
@@ -240,13 +247,18 @@ public class PikafishChessAI implements ChessAI {
     public void shutdown() {
         LIVE_INSTANCES.remove(this);
         connected = false;
-        try {
-            if (writer != null) { writer.write("quit\n"); writer.flush(); }
-        } catch (Exception ignored) {}
-        try { if (writer != null) writer.close(); } catch (IOException ignored) {}
-        try { if (reader != null) reader.close(); } catch (IOException ignored) {}
-        // 常驻读线程为 daemon：reader.close()/进程销毁使管道 EOF 后自动退出，无需显式取消
+        lineQueue.offer(EOF_SENTINEL);
+        closeProcess(process, writer, reader);
+        LOGGER.info("[Pikafish] 已关闭");
+    }
+
+    static void closeProcess(Process process, Closeable writer, Closeable reader) {
+        // 先终止进程解除读线程的阻塞，再关闭管道；反过来会在 BufferedReader.close() 卡住。
         if (process != null && process.isAlive()) {
+            java.util.List<ProcessHandle> descendants = process.descendants().toList();
+            descendants.forEach(child -> {
+                try { child.destroy(); } catch (Exception ignored) {}
+            });
             process.destroy();
             try {
                 if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly();
@@ -254,7 +266,16 @@ public class PikafishChessAI implements ChessAI {
                 Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
+            // cmd/sh wrappers can leave descendants alive after the parent exits;
+            // force only survivors so external engine children cannot leak.
+            descendants.forEach(child -> {
+                try {
+                    if (child.isAlive()) child.destroyForcibly();
+                } catch (Exception ignored) {}
+            });
         }
-        LOGGER.info("[Pikafish] 已关闭");
+        try { if (process != null) process.getInputStream().close(); } catch (IOException ignored) {}
+        try { if (writer != null) writer.close(); } catch (IOException ignored) {}
+        try { if (reader != null) reader.close(); } catch (IOException ignored) {}
     }
 }

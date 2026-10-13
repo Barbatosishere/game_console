@@ -10,7 +10,6 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
-import net.minecraft.sounds.SoundSource;
 import org.lwjgl.glfw.GLFW;
 
 import java.awt.FileDialog;
@@ -1664,7 +1663,7 @@ public class PianoTilesGameScreen extends Screen {
 
     private void playSound(SoundEvent sound) {
         if (minecraft != null && minecraft.level != null) {
-            minecraft.level.playLocalSound(0, 0, 0, sound, SoundSource.MASTER, 0.8f, 1.0f, false);
+            GameSoundHelper.playUiSound(minecraft, sound, 1.0f, 0.8f);
         }
     }
 
