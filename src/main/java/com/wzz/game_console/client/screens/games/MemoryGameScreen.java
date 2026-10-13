@@ -6,7 +6,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
@@ -263,21 +262,16 @@ public class MemoryGameScreen extends Screen {
     }
     
     private void playHighlightSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f + currentSequenceIndex * 0.1f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.EXPERIENCE_ORB_PICKUP,
+                1.0f + currentSequenceIndex * 0.1f, 0.25f);
     }
-    
+
     private void playSuccessSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.2f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.EXPERIENCE_ORB_PICKUP, 1.2f, 0.25f);
     }
-    
+
     private void playFailSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.VILLAGER_NO, 1.0f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.VILLAGER_NO, 1.0f, 0.25f);
     }
     
     /** 弹窗打开时间戳：关闭时据此平移定时基准，补偿暂停期间流逝的墙钟时间 */

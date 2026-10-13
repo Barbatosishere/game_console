@@ -7,7 +7,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.util.Mth;
@@ -429,21 +428,15 @@ public class MouseTunnelGameScreen extends Screen {
     }
 
     private void playWarningSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.NOTE_BLOCK_BASS, 0.5f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.NOTE_BLOCK_BASS.value(), 0.5f, 0.25f);
     }
 
     private void playSuccessSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.EXPERIENCE_ORB_PICKUP, 1.0f, 0.25f);
     }
 
     private void playFailSound() {
-        if (this.minecraft != null && this.minecraft.getSoundManager() != null) {
-            this.minecraft.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.VILLAGER_NO, 1.0f));
-        }
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.VILLAGER_NO, 1.0f, 0.25f);
     }
 
     /** 弹窗打开时刻：关闭弹窗时平移墙上时钟基准，避免暂停期间计入生存时间/难度计时 */

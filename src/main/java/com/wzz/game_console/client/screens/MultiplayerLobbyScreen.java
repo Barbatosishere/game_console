@@ -112,6 +112,23 @@ public class MultiplayerLobbyScreen extends Screen {
         }
     }
 
+    private static void clearInviteForQuit(UUID quitter) {
+        if (quitter == null) return;
+        if (pendingInvite != null && Objects.equals(pendingInvite.getSenderUuid(), quitter)) {
+            pendingInvite = null;
+            inviterName = null;
+            pendingInviteArrivalMs = 0;
+        }
+        clearAcceptedInvite(quitter, acceptedInviteGameId);
+    }
+
+    public static void clearInvitations() {
+        pendingInvite = null;
+        inviterName = null;
+        pendingInviteArrivalMs = 0;
+        clearAcceptedInvite(acceptedInviteHostUuid, acceptedInviteGameId);
+    }
+
     public MultiplayerLobbyScreen() {
         super(Component.translatable("gui.game_console.lobby"));
         // 进入大厅时清理已过期的邀请
@@ -339,6 +356,7 @@ public class MultiplayerLobbyScreen extends Screen {
                     } catch (Exception e) {
                         return;
                     }
+                    clearInviteForQuit(quitter);
                     if (mc.screen instanceof LanMultiplayerScreen s && s.isLeaveFromPeer(quitter)) {
                         String name = packet.getSenderName() == null || packet.getSenderName().isEmpty()
                                 ? GameText.text("gui.game_console.peer") : packet.getSenderName();
