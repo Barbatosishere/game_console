@@ -98,7 +98,7 @@ public class PikafishChessAI implements ChessAI {
         if (!SHUTDOWN_HOOK_REGISTERED) {
             SHUTDOWN_HOOK_REGISTERED = true;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                for (PikafishChessAI ai : LIVE_INSTANCES) {
+                for (PikafishChessAI ai : LIVE_INSTANCES.toArray(new PikafishChessAI[0])) {
                     try { ai.shutdown(); } catch (Throwable ignored) {}
                 }
             }));
@@ -266,8 +266,12 @@ public class PikafishChessAI implements ChessAI {
                 Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
+            // cmd/sh wrappers can leave descendants alive after the parent exits;
+            // force only survivors so external engine children cannot leak.
             descendants.forEach(child -> {
-                try { child.destroyForcibly(); } catch (Exception ignored) {}
+                try {
+                    if (child.isAlive()) child.destroyForcibly();
+                } catch (Exception ignored) {}
             });
         }
         try { if (process != null) process.getInputStream().close(); } catch (IOException ignored) {}

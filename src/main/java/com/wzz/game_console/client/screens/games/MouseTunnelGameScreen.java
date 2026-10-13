@@ -428,7 +428,7 @@ public class MouseTunnelGameScreen extends Screen {
     }
 
     private void playWarningSound() {
-        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.NOTE_BLOCK_BASS.value(), 0.5f, 0.25f);
+        GameSoundHelper.playUiSound(this.minecraft, SoundEvents.NOTE_BLOCK_BASS, 0.5f, 0.25f);
     }
 
     private void playSuccessSound() {
