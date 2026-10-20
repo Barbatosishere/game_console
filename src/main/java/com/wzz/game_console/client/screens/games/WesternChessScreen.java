@@ -61,6 +61,9 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     private final List<GameRenderHelper.Particle> particles = new ArrayList<>();
     private volatile boolean aiThinking = false;
     private volatile Thread aiThread;
+    /** 主线程保存搜索结果；退出确认框关闭后，由 tick 统一落子。 */
+    private int[] aiPendingMove;
+    private boolean aiResultReady;
     private boolean inCheck = false;
     private boolean promoPending = false;
     private int promoRow, promoCol;
@@ -133,6 +136,8 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         aiThread = null;
         aiThinking = false;
+        aiPendingMove = null;
+        aiResultReady = false;
         super.removed();
     }
 
@@ -210,6 +215,8 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         }
         aiThread = null;
         aiThinking = false;
+        aiPendingMove = null;
+        aiResultReady = false;
         board = new int[8][8];
         board[0] = new int[]{BR,BN,BB,BQ,BK,BB,BN,BR};
         for (int c=0;c<8;c++) board[1][c]=BP;
@@ -225,9 +232,20 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
     }
 
     @Override public void tick() {
+        if (disposed || showExitConfirm) return;
         tickN++;
-        if (!showExitConfirm) GameRenderHelper.tickParticles(particles);
+        GameRenderHelper.tickParticles(particles);
         if (lanMode != LAN_NONE) return;
+        if (aiResultReady) {
+            int[] best = aiPendingMove;
+            aiPendingMove = null;
+            aiResultReady = false;
+            // applyMove 根据 aiThinking 区分 AI 自动升后和玩家升变选择。
+            if (best != null) applyMove(best, false);
+            aiThinking = false;
+            checkEnd();
+            return;
+        }
         if (state==S.PLAYING && vsAI && !whiteTurn && !aiThinking && !promoPending) {
             aiThinking = true;
             final int gen = boardGen;
@@ -240,9 +258,8 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
                     int[] best = findBestMove(snapshot, snapshotCastling, snapshotEp, false);
                     Minecraft.getInstance().execute(() -> {
                         if (disposed || gen != boardGen) return;
-                        if (best != null) applyMove(best, false);
-                        aiThinking = false;
-                        checkEnd();
+                        aiPendingMove = best;
+                        aiResultReady = true;
                     });
                 } catch (Throwable t) {
                     LOGGER.warn("[国际象棋] AI 计算失败", t);
@@ -408,6 +425,15 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
         if (state!=S.PLAYING) return;
         // 每次走子完成后入档当前局面 key（含 checkEnd 的所有调用路径：玩家/AI/联机/升变完成）
         positionKeys.add(positionKey());
+        // A mating move ends the game before any move-count or repetition draw.
+        if (legalMoves(board,whiteTurn).isEmpty()) {
+            state=S.OVER;
+            boolean check = kingInCheck(board,whiteTurn);
+            resultOutcome = check ? (whiteTurn?-1:1) : 0;
+            resultMsg = check ? (whiteTurn?"黑方胜利！将死":"白方胜利！将死") : "僵局！平局";
+            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
+            return;
+        }
         if (halfmoveClock >= 100) {
             state=S.OVER; resultOutcome=0; resultMsg="50回合规则和棋";
             if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
@@ -426,12 +452,6 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
             state=S.OVER; resultOutcome=0; resultMsg="三次重复和棋";
             if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
             return;
-        }
-        if (legalMoves(board,whiteTurn).isEmpty()) {
-            state=S.OVER;
-            resultOutcome = kingInCheck(board,whiteTurn) ? (whiteTurn?-1:1) : 0; // whiteTurn=被将死一方
-            resultMsg = kingInCheck(board,whiteTurn) ? (whiteTurn?"黑方胜利！将死":"白方胜利！将死") : "僵局！平局";
-            if (Minecraft.getInstance().player!=null) Minecraft.getInstance().player.playSound(SoundEvents.PLAYER_LEVELUP,1f,1f);
         }
     }
 
@@ -462,12 +482,14 @@ public class WesternChessScreen extends Screen implements LanMultiplayerScreen {
                 || (nonKings == 2 && bishops == 2 && knights == 0);
     }
 
-    /** 构造局面 key：棋盘内容 + 行棋方 + 四个易位权 + ep 目标格（三次重复和棋判定用） */
+    /** Repetition depends on legal moves, so an unavailable en-passant target is omitted. */
     private String positionKey() {
+        boolean legalEnPassant = epTarget != null && legalMoves(board,whiteTurn).stream()
+                .anyMatch(move -> move[4] == SP_EN_PASSANT);
         StringBuilder sb = new StringBuilder(96);
         sb.append(whiteTurn?'w':'b')
           .append('|').append(wCK?'1':'0').append(wCQ?'1':'0').append(bCK?'1':'0').append(bCQ?'1':'0')
-          .append('|').append(epTarget==null?"-":epTarget[0]+","+epTarget[1]);
+          .append('|').append(legalEnPassant?epTarget[0]+","+epTarget[1]:"-");
         for (int r=0;r<8;r++) for (int c=0;c<8;c++) sb.append('|').append(board[r][c]);
         return sb.toString();
     }

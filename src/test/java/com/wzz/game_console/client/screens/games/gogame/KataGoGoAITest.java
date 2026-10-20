@@ -157,6 +157,7 @@ class KataGoGoAITest {
                 @Override public java.io.OutputStream getOutputStream() { return java.io.OutputStream.nullOutputStream(); }
                 @Override public java.io.InputStream getInputStream() { return java.io.InputStream.nullInputStream(); }
                 @Override public java.io.InputStream getErrorStream() { return java.io.InputStream.nullInputStream(); }
+                @Override public java.util.stream.Stream<ProcessHandle> descendants() { return java.util.stream.Stream.empty(); }
                 @Override public int waitFor() { return 0; }
                 @Override public boolean waitFor(long timeout, java.util.concurrent.TimeUnit unit) { return !alive; }
                 @Override public int exitValue() { return 0; }

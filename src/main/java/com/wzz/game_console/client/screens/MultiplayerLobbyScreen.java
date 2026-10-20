@@ -129,18 +129,25 @@ public class MultiplayerLobbyScreen extends Screen {
         clearAcceptedInvite(acceptedInviteHostUuid, acceptedInviteGameId);
     }
 
-    public MultiplayerLobbyScreen() {
-        super(Component.translatable("gui.game_console.lobby"));
-        // 进入大厅时清理已过期的邀请
+    private static void clearExpiredPendingInvite() {
         if (pendingInvite != null && System.currentTimeMillis() - pendingInviteArrivalMs > INVITE_TIMEOUT_MS) {
             pendingInvite = null;
             inviterName = null;
+            pendingInviteArrivalMs = 0;
         }
+    }
+
+    public MultiplayerLobbyScreen() {
+        super(Component.translatable("gui.game_console.lobby"));
+        // 进入大厅时清理已过期的邀请
+        clearExpiredPendingInvite();
     }
 
     /** 由网络包处理器调用 */
     public static void handleIncomingPacket(MultiplayerGamePacket packet) {
         Minecraft mc = Minecraft.getInstance();
+        // Invitations also arrive while another screen is active and the lobby is not ticking.
+        clearExpiredPendingInvite();
         switch (packet.getType()) {
             case INVITE -> {
                 UUID sender = packet.getSenderUuid();
@@ -213,12 +220,14 @@ public class MultiplayerLobbyScreen extends Screen {
                             && Objects.equals(acceptedInviteHostUuid, packet.getSenderUuid())
                             && Objects.equals(acceptedInviteGameId, packet.getGameId())
                             && MultiplayerInviteAttempt.matches(packet.getData(), acceptedInviteNonce)
-                            && System.currentTimeMillis() - acceptedInviteMs <= ACCEPTED_INVITE_VALID_MS
-                            && !(mc.screen instanceof MultiplayerLobbyScreen)) {
-                        acceptedInviteHostUuid = null;
-                        acceptedInviteGameId = null;
-                        acceptedInviteNonce = null;
-                        acceptedInviteMs = 0;
+                            && System.currentTimeMillis() - acceptedInviteMs <= ACCEPTED_INVITE_VALID_MS) {
+                        clearAcceptedInvite(packet.getSenderUuid(), packet.getGameId());
+                        // A departed game's delayed cancellation must not close the next screen.
+                        if (!(mc.screen instanceof LanMultiplayerScreen current)
+                                || !Objects.equals(current.getLanGameId(), packet.getGameId())
+                                || !current.isGamePacketFromPeer(packet.getSenderUuid())) {
+                            return;
+                        }
                         mc.setScreen(new MultiplayerLobbyScreen());
                         if (mc.player != null) {
                             mc.player.displayClientMessage(
@@ -587,10 +596,7 @@ public class MultiplayerLobbyScreen extends Screen {
             terminateWaiting(GameText.text("gui.game_console.invite_timeout"));
         }
         // 收到的邀请超时清理：避免过期的邀请弹窗一直遮挡界面
-        if (pendingInvite != null && System.currentTimeMillis() - pendingInviteArrivalMs > INVITE_TIMEOUT_MS) {
-            pendingInvite = null;
-            inviterName = null;
-        }
+        clearExpiredPendingInvite();
     }
 
     @Override
