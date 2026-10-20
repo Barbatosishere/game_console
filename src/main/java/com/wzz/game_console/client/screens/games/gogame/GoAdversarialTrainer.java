@@ -220,6 +220,8 @@ public final class GoAdversarialTrainer {
         ourAI.setRandomSeed(seed ^ 0x12345678);
 
         Process process = null;
+        java.io.BufferedWriter writer = null;
+        java.io.BufferedReader reader = null;
         try {
             String katagoPath = config.katagoPath;
             if (katagoPath.isEmpty()) {
@@ -257,9 +259,9 @@ public final class GoAdversarialTrainer {
             pb.directory(exeFile.getParentFile()); // 引擎目录用于查找 DLL 和调优缓存；stderr 独立输出，保持 stdout 为纯 GTP 流。
             pb.redirectError(ProcessBuilder.Redirect.INHERIT);
             process = pb.start();
-            java.io.BufferedWriter writer = new java.io.BufferedWriter(
+            writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(process.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
-            java.io.BufferedReader reader = new java.io.BufferedReader(
+            reader = new java.io.BufferedReader(
                 new java.io.InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
 
             // 初始化 GTP，使用与训练标签相同的固定贴目快照。
@@ -346,8 +348,6 @@ public final class GoAdversarialTrainer {
 
                 // 关闭 KataGo（优先优雅退出，外层 finally 兜底强杀，覆盖所有异常路径）
                 sendGTP(process, writer, reader, "quit");
-                writer.close();
-                reader.close();
                 process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS);
 
                 return new GameResult(samples, ourWin, true);
@@ -365,10 +365,8 @@ public final class GoAdversarialTrainer {
         } finally {
             // Every early-return and initialization failure must release the private evaluator.
             ourAI.shutdown();
-            // 通信失败时也必须关闭 KataGo 子进程。
-            if (process != null && process.isAlive()) {
-                process.destroyForcibly();
-            }
+            // Stop launchers and their engine children before closing either pipe.
+            KataGoGoAI.closeProcess(process, writer, reader);
         }
     }
 
@@ -441,7 +439,7 @@ public final class GoAdversarialTrainer {
                 }
             }
         } catch (java.util.concurrent.TimeoutException | InterruptedException e) {
-            if (process != null) process.destroyForcibly();
+            KataGoGoAI.terminateProcessTree(process);
             throw e;
         }
         Throwable error = errorRef.get();

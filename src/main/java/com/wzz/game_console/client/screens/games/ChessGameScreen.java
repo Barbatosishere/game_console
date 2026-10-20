@@ -276,6 +276,7 @@ public class ChessGameScreen extends Screen implements LanMultiplayerScreen {
     //  Tick — AI调度
     @Override
     public void tick() {
+        if (showExitConfirm || aiClosed) return;
         tick++;
         if (gameMode != GameMode.PVA || gameOver || redTurn) return;
         // AI的轮到了

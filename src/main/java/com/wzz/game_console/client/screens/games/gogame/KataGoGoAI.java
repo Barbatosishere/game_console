@@ -387,9 +387,24 @@ public class KataGoGoAI implements GoAI {
     }
 
     static void closeProcess(Process process, Closeable writer, Closeable reader) {
-        // Terminate the child first. Closing a reader before the child exits can
-        // block on platform pipes while KataGo is still writing its response.
+        terminateProcessTree(process);
+        // Unblock any reader before acquiring BufferedReader's lock in close().
+        try { if (process != null) process.getInputStream().close(); } catch (IOException ignored) {}
+        try {
+            if (writer != null) writer.close();
+        } catch (IOException ignored) {}
+        try {
+            if (reader != null) reader.close();
+        } catch (IOException ignored) {}
+    }
+
+    /** Snapshot descendants before killing a launcher; its children may outlive it. */
+    static void terminateProcessTree(Process process) {
         if (process != null && process.isAlive()) {
+            List<ProcessHandle> descendants = process.descendants().toList();
+            descendants.forEach(child -> {
+                try { child.destroy(); } catch (Exception ignored) {}
+            });
             process.destroy();
             try {
                 if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly();
@@ -397,13 +412,11 @@ public class KataGoGoAI implements GoAI {
                 Thread.currentThread().interrupt();
                 process.destroyForcibly();
             }
+            descendants.forEach(child -> {
+                try {
+                    if (child.isAlive()) child.destroyForcibly();
+                } catch (Exception ignored) {}
+            });
         }
-
-        try {
-            if (writer != null) writer.close();
-        } catch (IOException ignored) {}
-        try {
-            if (reader != null) reader.close();
-        } catch (IOException ignored) {}
     }
 }
